@@ -143,11 +143,20 @@ func (g *Generator) Generate() (Case, error) {
 	return Case{Source: source, Features: features, Tape: g.c.tape, Stats: g.c.stats}, nil
 }
 
+// typePool is the declarable type set: scalars always, string when enabled.
+func (g *Generator) typePool() []Type {
+	pool := scalarTypes()
+	if g.enabled("strings") {
+		pool = append(pool, Str())
+	}
+	return pool
+}
+
 // declare emits the variable declarations: the one-per-type floor plus
 // cfg.Vars extras, each with a drawn liveness tier. Initializers are plain
 // literals so a declaration can never depend on generation order.
 func (g *Generator) declare(out *emitter) {
-	pool := scalarTypes()
+	pool := g.typePool()
 	for _, typ := range pool {
 		g.declareOne(out, typ)
 	}

@@ -1,6 +1,9 @@
 package gen
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // value is a generated expression together with the one fact the generator
 // must track about it: whether Go will treat it as a CONSTANT.
@@ -15,14 +18,22 @@ type value struct {
 	constant bool
 }
 
+// stringWords is the string-literal alphabet. Deliberately includes the empty
+// string and a multi-byte rune: len counts BYTES (len("µ") == 2), a classic
+// clone divergence, and concatenation with "" is an identity edge.
+var stringWords = []string{``, `go`, `fuzz`, `gros`, `mith`, `µ`, `ab`, `x`}
+
 // literal builds a typed constant of type t, drawn from a range representable
 // in every integer kind.
 func (g *Generator) literal(t Type) value {
-	if t.Shape == ShapeBool {
+	switch t.Shape {
+	case ShapeBool:
 		if g.c.chance(2) {
 			return value{text: "true", constant: true}
 		}
 		return value{text: "false", constant: true}
+	case ShapeString:
+		return value{text: fmt.Sprintf("%q", pick(g.c, stringWords)), constant: true}
 	}
 	low, high := t.literalRange()
 	return g.intLiteral(t, low+g.c.draw(high-low+1))
@@ -68,8 +79,11 @@ func (g *Generator) expr(t Type, fuel int) value {
 		}
 		return g.variable(t)
 	}
-	if t.Shape == ShapeBool {
+	switch t.Shape {
+	case ShapeBool:
 		return g.boolExpr(fuel)
+	case ShapeString:
+		return g.stringExpr(fuel)
 	}
 	return g.intExpr(t, fuel)
 }
@@ -150,6 +164,13 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			inner := g.nonConstExpr(from, fuel-1)
 			out = value{text: fmt.Sprintf("%s(%s)", t.GoName(), inner.text)}
 		}},
+		{name: "len", weight: 1,
+			// len returns exactly `int`, and len of a string VARIABLE is
+			// non-constant (len of a literal would be a typed constant).
+			ok: t.Equal(Int(0, false)) && g.enabled("len", "strings"), emit: func() {
+				g.mark("len", "strings")
+				out = value{text: fmt.Sprintf("len(%s)", g.variable(Str()).text)}
+			}},
 		{name: "minmax", weight: 1, ok: g.enabled("min") || g.enabled("max"), emit: func() {
 			name := "min"
 			if !g.enabled("min") || (g.enabled("max") && g.c.chance(2)) {
@@ -197,6 +218,47 @@ func (g *Generator) divModExpr(t Type, fuel int, op, tag string) value {
 	return value{text: fmt.Sprintf("(%s "+op+" %s)", left.text, divisor.text)}
 }
 
+// stringExpr builds a string expression under the LINEAR GROWTH rule: a
+// concat chain contains AT MOST ONE variable occurrence; every other operand
+// is a literal. Any assignment then grows the longest string by at most a
+// constant, so total string memory is linear in executed statements — the
+// halts-by-construction property extended to space. (`s = s + s` in a loop
+// doubles per iteration; the one-variable rule makes that inexpressible.)
+func (g *Generator) stringExpr(fuel int) value {
+	if fuel <= 0 || !g.enabled("concat") {
+		if g.c.chance(3) {
+			return g.literal(Str())
+		}
+		return g.variable(Str())
+	}
+	var out value
+	g.c.choose("string-expr", []arm{
+		{name: "leaf", weight: 2, ok: true, emit: func() {
+			out = g.expr(Str(), 0)
+		}},
+		{name: "concat", weight: 3, ok: g.enabled("strings", "concat"), emit: func() {
+			operands := 2 + g.c.draw(2)
+			// varPos == operands means an all-literal (constant) chain —
+			// constant string concatenation cannot overflow, so it is safe.
+			varPos := g.c.draw(operands + 1)
+			parts := make([]string, operands)
+			for i := range parts {
+				if i == varPos {
+					parts[i] = g.variable(Str()).text
+				} else {
+					parts[i] = g.literal(Str()).text
+				}
+			}
+			g.mark("strings", "concat")
+			out = value{
+				text:     "(" + strings.Join(parts, " + ") + ")",
+				constant: varPos == operands,
+			}
+		}},
+	}).emit()
+	return out
+}
+
 func (g *Generator) boolExpr(fuel int) value {
 	if fuel <= 0 {
 		return g.variable(Bool())
@@ -223,6 +285,23 @@ func (g *Generator) boolExpr(fuel int) value {
 			g.mark("equality")
 			out = value{text: fmt.Sprintf("(%s %s %s)",
 				g.expr(t, fuel-1).text, op, g.expr(t, fuel-1).text)}
+		}},
+		{name: "str-compare", weight: 1, ok: g.enabled("strings", "comparisons"), emit: func() {
+			// Strings order lexically by bytes — a comparison edge clones
+			// get wrong around multi-byte runes.
+			op := pick(g.c, []string{"<", "<=", ">", ">="})
+			g.mark("strings", "comparisons")
+			out = value{text: fmt.Sprintf("(%s %s %s)",
+				g.stringExpr(fuel-1).text, op, g.stringExpr(fuel-1).text)}
+		}},
+		{name: "str-equal", weight: 1, ok: g.enabled("strings", "equality"), emit: func() {
+			op := "=="
+			if g.c.chance(2) {
+				op = "!="
+			}
+			g.mark("strings", "equality")
+			out = value{text: fmt.Sprintf("(%s %s %s)",
+				g.stringExpr(fuel-1).text, op, g.stringExpr(fuel-1).text)}
 		}},
 		{name: "logic", weight: 2, ok: true, emit: func() {
 			op := "&&"

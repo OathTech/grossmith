@@ -263,6 +263,95 @@ func TestConstructGatingRespected(t *testing.T) {
 	}
 }
 
+// TestStringGrowthIsLinearByConstruction witnesses the space half of the
+// halts invariant: every string-typed concat chain contains at most ONE
+// variable occurrence, and string `+=` right sides contain none — so string
+// memory grows at most linearly in executed statements. `s = s + s` in a
+// loop would double per iteration; this test pins that it is inexpressible.
+func TestStringGrowthIsLinearByConstruction(t *testing.T) {
+	chains := 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		fset, file := parseCase(t, c.Source, seed)
+		info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
+		if _, err := (&types.Config{}).Check("main", fset, []*ast.File{file}, info); err != nil {
+			t.Fatalf("seed %d: typecheck: %v", seed, err)
+		}
+		isString := func(e ast.Expr) bool {
+			tv, ok := info.Types[e]
+			if !ok {
+				return false
+			}
+			b, ok := tv.Type.Underlying().(*types.Basic)
+			return ok && b.Kind() == types.String
+		}
+		countIdents := func(e ast.Expr) int {
+			n := 0
+			ast.Inspect(e, func(node ast.Node) bool {
+				if _, ok := node.(*ast.Ident); ok {
+					n++
+				}
+				return true
+			})
+			return n
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.BinaryExpr:
+				if node.Op == token.ADD && isString(node) {
+					chains++
+					if idents := countIdents(node); idents > 1 {
+						t.Fatalf("seed %d: string concat chain with %d variables — growth is no longer linear\n%s",
+							seed, idents, c.Source)
+					}
+				}
+			case *ast.AssignStmt:
+				if node.Tok == token.ADD_ASSIGN && isString(node.Rhs[0]) {
+					chains++
+					if idents := countIdents(node.Rhs[0]); idents > 0 {
+						t.Fatalf("seed %d: string += with a variable operand — self-amplifying growth\n%s",
+							seed, c.Source)
+					}
+				}
+			}
+			return true
+		})
+	}
+	if chains == 0 {
+		t.Fatal("no string concatenation in 300 seeds — the invariant was never exercised")
+	}
+	t.Logf("checked %d string concat sites", chains)
+}
+
+// TestStringsAreGated: with strings disabled no string is declared; with the
+// default swarm the population exercises them.
+func TestStringsAreGated(t *testing.T) {
+	off := map[string]bool{}
+	for seed := int64(1); seed <= 30; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Constructs = off
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
+		if strings.Contains(string(c.Source), `:= "`) {
+			t.Fatalf("seed %d declares a string with strings disabled\n%s", seed, c.Source)
+		}
+	}
+	withStrings := 0
+	for seed := int64(1); seed <= 100; seed++ {
+		for _, f := range generate(t, seed).Features {
+			if f == "strings" {
+				withStrings++
+			}
+		}
+	}
+	if withStrings == 0 {
+		t.Fatal("no program in 100 swarm seeds exercised strings")
+	}
+	t.Logf("strings in %d/100 programs", withStrings)
+}
+
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
 func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	bad := []Config{

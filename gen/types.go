@@ -25,6 +25,8 @@ const (
 	ShapeInt Shape = iota
 	// ShapeBool is bool.
 	ShapeBool
+	// ShapeString is string.
+	ShapeString
 )
 
 // Type is one generated Go type. A single concrete struct rather than an
@@ -40,6 +42,9 @@ type Type struct {
 
 // Bool is the bool type.
 func Bool() Type { return Type{Shape: ShapeBool} }
+
+// Str is the string type.
+func Str() Type { return Type{Shape: ShapeString} }
 
 // Int builds an integer type. bits 0 means platform width.
 func Int(bits int, unsigned bool) Type {
@@ -64,6 +69,9 @@ func (t Type) GoName() string {
 	if t.Shape == ShapeBool {
 		return "bool"
 	}
+	if t.Shape == ShapeString {
+		return "string"
+	}
 	stem := "int"
 	if t.Unsigned {
 		stem = "uint"
@@ -78,6 +86,9 @@ func (t Type) GoName() string {
 func (t Type) Tags() []string {
 	if t.Shape == ShapeBool {
 		return []string{"bools"}
+	}
+	if t.Shape == ShapeString {
+		return []string{"strings"}
 	}
 	if t.Bits == 0 && !t.Unsigned {
 		return []string{"ints"}

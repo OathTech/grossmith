@@ -1,6 +1,9 @@
 package gen
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // stmt emits one statement. depth is the remaining control-flow nesting
 // allowance; inLoop gates break/continue (continue outside a loop is a
@@ -65,6 +68,22 @@ func (g *Generator) compoundAssign(out *emitter) {
 	target := &g.vars[g.c.draw(len(g.vars))]
 	if target.typ.Shape == ShapeBool {
 		g.assign(out)
+		return
+	}
+	if target.typ.Shape == ShapeString {
+		if !g.enabled("concat") {
+			g.assign(out)
+			return
+		}
+		// String += takes LITERALS ONLY: `s += t` in a loop adds t's full
+		// length every iteration while t may itself grow — the one
+		// self-amplifying form the linear-growth rule must exclude.
+		parts := make([]string, 1+g.c.draw(2))
+		for i := range parts {
+			parts[i] = g.literal(Str()).text
+		}
+		g.mark("assignment", "strings", "concat")
+		out.line("%s += %s", target.name, strings.Join(parts, " + "))
 		return
 	}
 	ops := []string{"+=", "-=", "*="}

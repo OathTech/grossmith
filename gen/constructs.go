@@ -26,6 +26,7 @@ func Optional() []string {
 		"if", "loops", "switch", "break", "continue",
 		"division", "modulo", "bitwise", "shifts", "conversions",
 		"comparisons", "equality", "min", "max",
+		"strings", "concat", "len",
 	}
 }
 
