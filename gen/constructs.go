@@ -39,6 +39,7 @@ func Optional() []string {
 //	feeder_value     — a variable is read but not observed
 //	dead_value       — a variable is discharged with _ = v, eliminable
 const (
+	tagBoundary        = "boundary"
 	tagDeadCode        = "dead_code"
 	tagUnreachableCase = "unreachable_case"
 	tagPanicRisk       = "panic_risk"

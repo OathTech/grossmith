@@ -35,13 +35,43 @@ func (g *Generator) literal(t Type) value {
 	case ShapeString:
 		return value{text: fmt.Sprintf("%q", pick(g.c, stringWords)), constant: true}
 	}
+	if g.boundaryLiteralDrawn() {
+		return g.typedText(t, pick(g.c, t.boundaryLiterals()))
+	}
 	low, high := t.literalRange()
 	return g.intLiteral(t, low+g.c.draw(high-low+1))
 }
 
+// boundaryLiteralDrawn is the boundary-vs-normal draw shared by the three
+// boundary sites (literals, divisors, shift counts). The weight is the
+// corner mechanism: 1 everywhere (a measured minority), cornerBoundaryBias
+// on boundary-corner seeds, 0 under Corner "none".
+func (g *Generator) boundaryLiteralDrawn() bool {
+	return g.c.choose("literal", []arm{
+		{name: "normal", weight: 6, ok: true},
+		{name: "boundary", weight: g.boundaryBias, ok: g.boundaryBias > 0},
+	}).name == "boundary"
+}
+
+// typedText wraps a pre-formatted literal text in the type's conversion and
+// notes the boundary tag (knowledge-as-data).
+func (g *Generator) typedText(t Type, text string) value {
+	g.note(tagBoundary)
+	if t.Bits == 0 && !t.Unsigned {
+		return value{text: text, constant: true}
+	}
+	return value{text: fmt.Sprintf("%s(%s)", t.GoName(), text), constant: true}
+}
+
 // nonZeroLiteral is a divisor literal that cannot trap: the zero is excluded
-// from the draw itself, not rejected after (no rejection loops).
+// from the draw itself, not rejected after (no rejection loops). The
+// boundary divisor set includes -1 for signed types: Go DEFINES
+// MinInt / -1 = MinInt (wrap, no panic) where C has UB — a corner clones
+// get wrong.
 func (g *Generator) nonZeroLiteral(t Type) value {
+	if g.boundaryLiteralDrawn() {
+		return g.typedText(t, pick(g.c, t.boundaryDivisors()))
+	}
 	low, high := t.literalRange()
 	n := low + g.c.draw(high-low)
 	if n >= 0 {
@@ -149,7 +179,20 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				// Left shift wraps at the width; right shift only shrinks.
 				g.markWidthDep(t)
 			}
-			out = value{text: fmt.Sprintf("(%s %s %d)", left.text, op, g.c.draw(8))}
+			count := g.c.draw(8)
+			if g.boundaryLiteralDrawn() {
+				// Shift AT and PAST the width: legal for a non-constant left
+				// operand (the result is 0 / sign-fill), and a classic clone
+				// divergence. Platform width uses 32: legal-and-edge on both
+				// conformance targets.
+				w := t.Bits
+				if w == 0 {
+					w = 32
+				}
+				count = w - 1 + g.c.draw(3)
+				g.note(tagBoundary)
+			}
+			out = value{text: fmt.Sprintf("(%s %s %d)", left.text, op, count)}
 		}},
 		{name: "conversion", weight: 2, ok: g.enabled("conversions"), emit: func() {
 			// The operand must be non-constant, and more sharply than for

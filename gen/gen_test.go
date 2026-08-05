@@ -352,6 +352,85 @@ func TestStringsAreGated(t *testing.T) {
 	t.Logf("strings in %d/100 programs", withStrings)
 }
 
+// TestBoundaryCornerIsSafeAndReaches: boundary-corner programs typecheck
+// (every boundary literal is representable in its type by construction) and
+// actually reach boundaries — the corner exists to make MIN/MAX/width edges
+// reachable on purpose, so a corner batch that rarely emits them is a bug.
+func TestBoundaryCornerIsSafeAndReaches(t *testing.T) {
+	reached := 0
+	for seed := int64(1); seed <= 200; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Corner = "boundary"
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
+		fset, file := parseCase(t, c.Source, seed)
+		if _, err := (&types.Config{}).Check("main", fset, []*ast.File{file}, nil); err != nil {
+			t.Fatalf("seed %d (boundary corner) does not typecheck: %v\n%s", seed, err, c.Source)
+		}
+		for _, f := range c.Features {
+			if f == tagBoundary {
+				reached++
+			}
+		}
+	}
+	if reached < 150 {
+		t.Fatalf("boundary corner reached a boundary in only %d/200 programs", reached)
+	}
+	t.Logf("boundary reached in %d/200 corner programs", reached)
+}
+
+// TestCornerDrawAndBaseMinority: under the default swarm, corner seeds are a
+// drawn minority AND boundaries still occur as a base minority outside the
+// corner — both populations must exist for the tag to carry information.
+func TestCornerDrawAndBaseMinority(t *testing.T) {
+	cornerSeeds, baseBoundary := 0, 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		isCorner, hasBoundary := false, false
+		for _, f := range c.Features {
+			switch f {
+			case "corner_boundary":
+				isCorner = true
+			case tagBoundary:
+				hasBoundary = true
+			}
+		}
+		if isCorner {
+			cornerSeeds++
+		} else if hasBoundary {
+			baseBoundary++
+		}
+	}
+	if cornerSeeds == 0 {
+		t.Fatal("no boundary-corner seeds drawn in 300")
+	}
+	if baseBoundary == 0 {
+		t.Fatal("no boundary literals outside corner seeds — the base minority is missing")
+	}
+	t.Logf("corner seeds %d/300, non-corner programs with boundaries %d", cornerSeeds, baseBoundary)
+}
+
+// TestBoundaryLiteralsAreRepresentable checks the alphabet directly: every
+// boundary text compiles as a constant of its type, for every type — the
+// witness that platform-width uses the 32-bit-safe set.
+func TestBoundaryLiteralsAreRepresentable(t *testing.T) {
+	for _, typ := range intTypes() {
+		for _, lit := range typ.boundaryLiterals() {
+			src := "package main\nvar _ = " + typ.GoName() + "(" + lit + ")\n"
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "b.go", src, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatalf("%s(%s): parse: %v", typ.GoName(), lit, err)
+			}
+			if _, err := (&types.Config{}).Check("main", fset, []*ast.File{file}, nil); err != nil {
+				t.Fatalf("%s(%s) is not representable: %v", typ.GoName(), lit, err)
+			}
+		}
+	}
+}
+
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
 func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	bad := []Config{
@@ -360,6 +439,7 @@ func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 		{Seed: 1, Vars: 4, Stmts: 0, Depth: 2, ExprFuel: 3, LoopCap: 6},
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: -1, ExprFuel: 3, LoopCap: 6},
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 0, LoopCap: 6},
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6, Corner: "bogus"},
 	}
 	for i, cfg := range bad {
 		func() {

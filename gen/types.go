@@ -113,6 +113,64 @@ func (t Type) literalRange() (low, high int) {
 	return -60, 60
 }
 
+// boundaryLiterals is the type's boundary-value alphabet as decimal literal
+// texts: MIN/MAX, their ±1 neighbours, the sign-bit value, and an alternating
+// bit pattern — where width defects live. Every value is representable in
+// the type (an unrepresentable constant is a compile error).
+//
+// Platform-width int/uint uses the 32-BIT set: the same literal must compile
+// at every GOARCH the conformance run targets (int(1<<63-1) is a compile
+// error on 386), and 32-bit boundaries remain genuine boundaries on the
+// narrower target while being ordinary large values on the wider one — the
+// cross-width divergence surface itself.
+func (t Type) boundaryLiterals() []string {
+	if t.Shape != ShapeInt {
+		return nil
+	}
+	bits := t.Bits
+	if bits == 0 {
+		bits = 32
+	}
+	if t.Unsigned {
+		max := ^uint64(0) >> (64 - bits)
+		return []string{
+			fmt.Sprintf("%d", max),
+			fmt.Sprintf("%d", max-1),
+			fmt.Sprintf("%d", uint64(1)<<(bits-1)),           // sign bit alone
+			fmt.Sprintf("%d", (alternating(bits)<<1)&max),    // 0xAA…
+		}
+	}
+	max := int64(^uint64(0) >> (65 - bits))
+	min := -max - 1
+	return []string{
+		fmt.Sprintf("%d", min),
+		fmt.Sprintf("%d", min+1),
+		"-1",
+		fmt.Sprintf("%d", max-1),
+		fmt.Sprintf("%d", max),
+		fmt.Sprintf("%d", int64(alternating(bits))), // 0x55…: sign bit clear
+	}
+}
+
+// alternating is the 0101… pattern filling the low bits (0x55, 0x5555, …).
+func alternating(bits int) uint64 {
+	return 0x5555555555555555 >> (64 - bits)
+}
+
+// boundaryDivisors are boundary values legal as divisors (nonzero). The
+// signed set includes -1: Go DEFINES MinInt / -1 as MinInt (two's-complement
+// wrap, no panic) where C has UB — exactly the corner a clone gets wrong.
+func (t Type) boundaryDivisors() []string {
+	if t.Shape != ShapeInt {
+		return nil
+	}
+	b := t.boundaryLiterals()
+	if t.Unsigned {
+		return b[:2] // max, max-1
+	}
+	return []string{"-1", b[0], b[4]} // -1, min, max
+}
+
 // Equal reports type identity.
 func (t Type) Equal(other Type) bool {
 	return t.Shape == other.Shape && t.Bits == other.Bits && t.Unsigned == other.Unsigned

@@ -33,6 +33,11 @@ type Config struct {
 	// Constructs, when non-nil, is the exact optional-construct gate: a tag
 	// absent or false is disabled. Nil with Swarm=false enables everything.
 	Constructs map[string]bool
+	// Corner selects a named-corner sub-config (BRIEF: edge cases are
+	// hunted, not hoped for). "" draws one per seed when Swarm is on;
+	// "none" disables corners; "boundary" biases literals, divisors, and
+	// shift counts toward type boundaries.
+	Corner string
 }
 
 // DefaultConfig is the MVP shape: small programs, shallow nesting, swarm on.
@@ -54,6 +59,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: ExprFuel %d must be >= 1", c.ExprFuel)
 	case c.LoopCap < 1:
 		return fmt.Errorf("config: LoopCap %d must be >= 1 — every loop draws a trip count in [1,LoopCap]", c.LoopCap)
+	case c.Corner != "" && c.Corner != "none" && c.Corner != "boundary":
+		return fmt.Errorf("config: unknown corner %q", c.Corner)
 	}
 	return nil
 }
@@ -89,7 +96,14 @@ type Generator struct {
 	vars    []binding
 	used    map[string]bool
 	loopSeq int
+	// corner is the resolved named corner; boundaryBias is the weight of the
+	// boundary arm at literal/divisor/shift-count sites (0 disables, 1 is
+	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
+	corner       string
+	boundaryBias int
 }
+
+const cornerBoundaryBias = 5
 
 // New builds a Generator. With cfg.Swarm and no explicit Constructs, the
 // per-seed mix is drawn first — through the chooser, so it is on the tape.
@@ -105,6 +119,24 @@ func New(cfg Config) *Generator {
 	case cfg.Swarm:
 		g.constructs = swarmMix(g.c)
 	}
+	g.boundaryBias = 1
+	switch cfg.Corner {
+	case "boundary":
+		g.corner = "boundary"
+		g.boundaryBias = cornerBoundaryBias
+	case "none":
+		g.boundaryBias = 0
+	case "":
+		if cfg.Swarm {
+			if g.c.choose("corner", []arm{
+				{name: "plain", weight: 7, ok: true},
+				{name: "boundary", weight: 1, ok: true},
+			}).name == "boundary" {
+				g.corner = "boundary"
+				g.boundaryBias = cornerBoundaryBias
+			}
+		}
+	}
 	return g
 }
 
@@ -115,6 +147,9 @@ func (g *Generator) Generate() (Case, error) {
 	}
 	body := &emitter{indent: 1}
 
+	if g.corner != "" {
+		g.note("corner_" + g.corner)
+	}
 	g.declare(body)
 	g.mark("functions", "short_decl", "literals", "return")
 
