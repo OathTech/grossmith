@@ -121,8 +121,9 @@ type Case struct {
 	// of programs while a 19% minority per draw); counts keep the tag
 	// informative for stratification.
 	FeatureCounts map[string]int
-	// Tape is the recorded choice sequence: the program re-derives from it
-	// byte-identically. The seam for shrinking and search.
+	// Tape is the recorded DRAW TRACE — a log of every draw, in order. No
+	// replay source exists yet (no exhaustion or out-of-range policy), so
+	// this is provenance and a future seam, not a decoder input (audit H1).
 	Tape []int
 	// Stats is the per-site realized choice distribution.
 	Stats map[string]*SiteStats

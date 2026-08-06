@@ -24,8 +24,10 @@ type SiteStats struct {
 // chooser is the single choice primitive: weights × legality mask →
 // renormalize → one draw. Never a rejection loop, never a silent fallback.
 // Every random draw in the generator flows through here and is appended to
-// the tape, making the generator a decoder from choice sequence to program —
-// the seam for shrinking-by-regeneration and coverage-guided search.
+// the draw trace. The INTENDED end state is a decoder from choice sequence
+// to program (shrinking-by-regeneration, coverage-guided search); until a
+// replay source with exhaustion/out-of-range semantics exists, the trace is
+// a log, not an input.
 type chooser struct {
 	rng   *rand.Rand
 	tape  []int

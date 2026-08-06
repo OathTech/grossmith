@@ -18,27 +18,45 @@
 We are building software, not bureaucracy. Tests are the gate; work happens on
 a branch; the maintainer reviews before merge. That is the entire process.
 
+**Current status (2026-08-06):** the outside audit
+(`docs/2026-08-06_project-charter-and-engineering-audit.md`) ruled the
+generator foundation healthy and the conformance PRODUCT incomplete: what
+exists today is an advanced deterministic Go program generator with a
+gc-only batch harness. Grammar expansion is paused; work follows the
+audit's phases (honesty pass -> product MVP with real runtime adapters and
+a portable observation protocol -> observation sensitivity -> replay ->
+resume the ladder from a spec-surface ledger). Statements below marked
+PLANNED describe that product, not the current code.
+
 ## What this tool is for: clone conformance
 
 The use pattern is validating a *reimplementation* of Go (an interpreter, a
 formal semantics, an alternative backend) against the reference
 implementation. That shapes everything:
 
-- **The oracle is asymmetric.** A pinned `gc` toolchain is truth by
-  definition; the clone must match. Any divergence is a clone bug, a declared
-  quotient, or our generator bug — no voting, no trusted-reference problem.
-  The runtime abstraction stays symmetric (two implementations in, verdict
-  out) so the roles can flip later.
+- **The oracle is asymmetric.** A `gc` toolchain is the reference; the
+  clone must match. Any divergence is a clone bug, a declared quotient, or
+  our generator bug — no voting, no trusted-reference problem. PLANNED: a
+  symmetric runtime-adapter seam (two implementations in, verdict out).
+  TODAY: `conform.Runtime` hard-codes the host `go` toolchain (identity
+  RECORDED per run, not pinned) and varies only GOARCH — a gc
+  cross-architecture experiment, not a clone harness.
 - **The conformance equivalence is byte equality of observations.** Programs
   are outcome-deterministic by construction, so no fuzzy matching is ever
   needed. Only two declared quotients exist: platform width (pin `GOARCH` or
-  declare the dependency) and panic identity (policy knob: match panic *kind*
-  or full `gc` message text — the prose is implementation detail a legitimate
-  clone may not reproduce).
-- **"Cover the interesting behaviors" is a measured claim.** The Go spec
-  surface is enumerated as tags; every program carries the tags it exercised;
-  the batch report shows the histogram. The uncovered remainder *is* the
-  roadmap.
+  declare the dependency) and panic identity (PLANNED policy knob: match
+  panic *kind* or full `gc` message text — the prose is implementation
+  detail a legitimate clone may not reproduce; TODAY only full byte
+  equality is implemented). TODAY the observation channel itself is
+  `println`, which the Go spec leaves implementation-specific — a
+  gc-compatible debug channel, not a conformance protocol; the portable
+  versioned protocol is the product MVP's first deliverable.
+- **"Cover the interesting behaviors" is a measured claim.** PLANNED: the
+  Go spec surface enumerated as a ledger (supported / partial /
+  deferred-with-reason / out-of-scope) so the uncovered remainder is the
+  roadmap. TODAY: tags are emission-gate names, not a spec inventory;
+  programs carry the tags they exercised and the batch report shows the
+  histogram.
 - **The conformance statement is the product**: reference version, `GOARCH`,
   equivalence policy, N programs, compile/run rate, coverage histogram.
 
@@ -73,6 +91,10 @@ Departures from csmith, each clearly dominating:
    cancel, and triage reads values directly. Which variables are observed is
    itself a weighted, recorded draw (see "Liveness" below). (Csmith's CRC-32
    exists because printing C state is painful; Go has no such excuse.)
+   Injectivity domain, precisely: scalars, strings, arrays, structs, maps
+   (len + alphabet probes), and slices (len + elements) are injective;
+   INTERFACES are not — only dynamic-type identity is observed, payload is
+   dropped (audit C4; the fix is a Phase 2 deliverable).
 4. **Panic paths are test content.** Division by zero, bounds, nil deref are
    *defined, deterministic* outcomes in Go — a class csmith structurally
    cannot generate. Panic/no-panic is decided on purpose at each site,
@@ -141,11 +163,14 @@ a constant. Future levers on the same axis: multiple return sites
 intermediate state, create mid-function liveness ranges, localize *where*
 implementations diverge).
 
-## The choice tape
+## The draw trace (a recorded log; replay is PLANNED, not built)
 
 All randomness flows through the choice primitive, and the primitive records
-its draws. The generator is then a decoder: choice sequence → valid program.
-This buys, in order of adoption:
+its draws — a DRAW TRACE. The intended end state is a decoder (choice
+sequence → valid program), but no replay source, exhaustion policy, or
+out-of-range policy exists yet, and the CLI does not persist the trace: the
+seam is an intention with its preconditions audited, not a capability. The
+trace buys, in order of adoption:
 
 1. **Reproducibility**: seed ⇒ byte-identical program (ordered containers
    everywhere; no map-range dependence).
@@ -158,7 +183,10 @@ This buys, in order of adoption:
    mutate bytes, decode to valid programs — libFuzzer-style feedback without
    sacrificing any by-construction guarantee.
 
-Only (1) ships in the MVP; (2) and (3) are named seams, not scheduled work.
+Only (1) ships today; (2) and (3) require the replay source first (audit
+Phase 3: persist trace + generator version + config, define
+consumption/exhaustion semantics, prove byte-identical replay) — no
+shrinker before replay is proven.
 
 ## Population design: swarm mixes and named corners
 
@@ -228,10 +256,20 @@ break / continue; panic paths (division, modulo). Then:
    discipline is dissolved; revisit trigger: pointer params, closures
    over subject state, or package-level variables). Observation levers
    delivered: multiple return sites, interleaved observation points.
-7. Remaining: methods and defined types, interfaces (observability via
-   named dynamic types), recursion with fuel, pointer params (brings the
-   effect discipline), the multi_panic any-panic corner, corner-list
-   expansion (division-signs, dead-rich, conversion-truncation).
+7. DELIVERED: defined integer types (named identity, conversion-wrapped
+   literals), pure value-receiver methods, interfaces (derived +
+   interface{}; satisfaction by construction; assertions restricted to
+   legal implementers; NEVER-nil values), map-range fold.
+8. Remaining — RESUMES ONLY AFTER the audit's product phases: recursion
+   with fuel, pointer params/package vars/capturing closures (brings the
+   effect discipline), shared method sets (non-trivial satisfaction),
+   type switches, nil-interface dispatch, the multi_panic any-panic
+   corner, corner-list expansion (division-signs, dead-rich,
+   conversion-truncation, shift boundaries), floats/complex (equivalence
+   policy first), concurrency (deterministic schedule construction or
+   declared quotient only), generics (validity-by-construction design
+   first). Prioritized from the spec-surface ledger once it exists
+   (audit Phase 4).
 
 Each rung: emission code gated on new tags + witness test + the conformance
 rate watched (expect a dip, fix by construction).

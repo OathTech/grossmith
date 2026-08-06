@@ -38,10 +38,11 @@ const (
 	ShapeStruct
 	// ShapeMap is a map from a small scalar/string key type to a
 	// scalar/string element. Everything about our maps is deterministic
-	// EXCEPT iteration order — so range over a map is never generated (the
-	// commutative-fold quotient is a future option, recorded in BRIEF).
-	// Maps are never nil (born from literals), so writes cannot panic;
-	// reads of missing keys yield zero values, deterministically.
+	// EXCEPT iteration order — so map range is generated ONLY as the
+	// commutative fold (mapRangeFold: `for _, e := range m { acc += e }`,
+	// order-invariant by commutative wrap-add). Maps are never nil (born
+	// from literals), so writes cannot panic; reads of missing keys yield
+	// zero values, deterministically.
 	ShapeMap
 	// ShapeInterface is a NAMED interface type declared in the preamble,
 	// its method set a subset of one defined type's methods — satisfaction
