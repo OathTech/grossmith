@@ -353,7 +353,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0"} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0", "defer ", "func()"} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}
@@ -966,9 +966,27 @@ func TestMapsAreDeterministicByConstruction(t *testing.T) {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch e := n.(type) {
 			case *ast.RangeStmt:
-				if id, ok := e.X.(*ast.Ident); ok && mapVars[id.Name] {
-					t.Fatalf("seed %d: range over map %s — iteration order is the one nondeterminism\n%s",
-						seed, id.Name, c.Source)
+				id, ok := e.X.(*ast.Ident)
+				if !ok || !mapVars[id.Name] {
+					return true
+				}
+				// Map iteration is allowed ONLY as the commutative fold:
+				// key blank, one body statement `acc += value` — the
+				// observation is invariant under any iteration order.
+				if key, ok := e.Key.(*ast.Ident); !ok || key.Name != "_" {
+					t.Fatalf("seed %d: map range observes keys\n%s", seed, c.Source)
+				}
+				if len(e.Body.List) != 1 {
+					t.Fatalf("seed %d: map range body has %d statements — only the fold is order-invariant\n%s",
+						seed, len(e.Body.List), c.Source)
+				}
+				fold, ok := e.Body.List[0].(*ast.AssignStmt)
+				if !ok || fold.Tok != token.ADD_ASSIGN {
+					t.Fatalf("seed %d: map range body is not a += fold\n%s", seed, c.Source)
+				}
+				rhs, ok := fold.Rhs[0].(*ast.Ident)
+				if !ok || rhs.Name != e.Value.(*ast.Ident).Name {
+					t.Fatalf("seed %d: map fold RHS is not the range value\n%s", seed, c.Source)
 				}
 			case *ast.BinaryExpr:
 				if e.Op == token.EQL || e.Op == token.NEQ {
@@ -990,6 +1008,43 @@ func TestMapsAreDeterministicByConstruction(t *testing.T) {
 		t.Fatal("no observed maps — the alphabet-probe observation never fires")
 	}
 	t.Logf("maps in %d/400 programs, alphabet-probed observation in %d", withMaps, observed)
+}
+
+// TestDeferAndRecoverArePresent: exit observations and guarded statements
+// occur; closures contain no branch/return statements (they would target
+// the wrong frame — the typecheck witness backs this up).
+func TestDeferAndRecoverArePresent(t *testing.T) {
+	defers, guards := 0, 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		src := string(c.Source)
+		if i := strings.Index(src, "func main"); i >= 0 {
+			src = src[:i]
+		}
+		defers += strings.Count(src, "defer println(")
+		guards += strings.Count(src, "recovered:")
+		_, file := parseCase(t, c.Source, seed)
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.FuncLit)
+			if !ok {
+				return true
+			}
+			ast.Inspect(lit.Body, func(inner ast.Node) bool {
+				switch inner.(type) {
+				case *ast.ReturnStmt:
+					t.Fatalf("seed %d: return inside a generated closure\n%s", seed, c.Source)
+				case *ast.BranchStmt:
+					t.Fatalf("seed %d: break/continue inside a generated closure\n%s", seed, c.Source)
+				}
+				return true
+			})
+			return false
+		})
+	}
+	if defers == 0 || guards == 0 {
+		t.Fatalf("defers=%d guarded=%d over 300 seeds — population missing", defers, guards)
+	}
+	t.Logf("%d defer observations, %d guarded statements", defers, guards)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.

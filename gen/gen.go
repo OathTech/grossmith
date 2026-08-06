@@ -141,6 +141,7 @@ type Generator struct {
 	used     map[string]int
 	loopSeq  int
 	innerSeq int
+	tmpSeq   int
 	// structs are the per-seed named struct types, declared in the preamble.
 	structs []Type
 	// corner is the resolved named corner; boundaryBias is the weight of the

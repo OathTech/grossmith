@@ -45,6 +45,11 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.mapDelete(out) }},
 		{name: "comma-ok", weight: 1, ok: g.enabled("maps", "comma_ok") && len(g.mapVars(nil)) > 0,
 			emit: func() { g.commaOk(out) }},
+		{name: "defer", weight: 1, ok: g.enabled("defer"),
+			emit: func() { g.deferPrint(out) }},
+		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0,
+			emit: func() { g.guardedStmt(out) }},
+
 		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
 			emit: func() { g.fieldAssign(out) }},
 		{name: "if", weight: 3, ok: g.enabled("if") && depth > 0,
@@ -334,6 +339,53 @@ func (g *Generator) commaOk(out *emitter) {
 	oki, _ := g.pickVar(Bool())
 	g.mark("maps", "comma_ok", "assignment")
 	out.line("%s, %s = %s[%s]", g.vars[xi].name, g.vars[oki].name, m.name, pick(g.c, m.keys))
+}
+
+// deferPrint schedules an exit observation: the argument is evaluated AT
+// DEFER TIME (a corner clones get wrong — evaluating at call time), the
+// prints run LIFO at function exit (ordering is observable), and they run
+// during panic unwinding too — guaranteed exit observations even on panic
+// paths.
+func (g *Generator) deferPrint(out *emitter) {
+	var cands []int
+	for i, v := range g.vars {
+		switch v.typ.Shape {
+		case ShapeInt, ShapeBool, ShapeString:
+			cands = append(cands, i)
+		}
+	}
+	v := &g.vars[pick(g.c, cands)]
+	v.reads++
+	g.mark("defer")
+	out.line("defer println(%s)", v.name)
+}
+
+// guardedStmt wraps ONE statement in an immediately-invoked function literal
+// with defer/recover — the statement-level catch (BRIEF panic-identity
+// disposition): a panic becomes an inline "recovered: <msg>" observation and
+// EXECUTION CONTINUES, so the rest of the program still observes. The inner
+// statement is drawn at depth 0 with inLoop=false and last=true, which masks
+// everything illegal inside a closure (break/continue targeting an outer
+// loop, the early return whose tuple the closure cannot return) — the
+// typecheck witness would catch any leak.
+func (g *Generator) guardedStmt(out *emitter) {
+	g.mark("recover")
+	out.open("func() {")
+	out.open("defer func() {")
+	out.open("if r := recover(); r != nil {")
+	out.open("if err, ok := r.(error); ok {")
+	out.line("println(%q, err.Error())", "recovered:")
+	out.dedent()
+	out.line("} else {")
+	out.indent++
+	out.line("println(%q)", "recovered")
+	out.close()
+	out.close()
+	out.dedent()
+	out.line("}()")
+	g.stmtIn(out, 0, false, true)
+	out.dedent()
+	out.line("}()")
 }
 
 // fieldAssign writes one struct field. Like element writes, a field write

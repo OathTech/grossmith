@@ -32,6 +32,7 @@ func Optional() []string {
 		"block_decl", "observe_point", "early_return",
 		"slices", "append",
 		"maps", "delete", "comma_ok",
+		"defer", "recover",
 	}
 }
 
