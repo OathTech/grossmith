@@ -220,11 +220,18 @@ break / continue; panic paths (division, modulo). Then:
    trigger: demand-driven retroactive declaration, or out-of-order
    function bodies when helpers arrive (gosmith's pending-block-tree and
    Xsmith's scope graphs remain the reference designs).
-6. Onward per the trap catalogue: slices, maps (determinism via
-   construction or declared quotient — decided then, knowledge never
-   punted), defer/recover, methods, interfaces. Observation levers ride
-   along when wanted: multiple return sites, interleaved observation
-   points.
+6. DELIVERED per the trap catalogue: slices (owned backing, cap never
+   observed), maps (everything except range; range returned as the
+   commutative fold), defer/recover (exit observations, statement-level
+   catch), linearized multi-trap, helpers (PURE by construction — no
+   globals/pointers/closures/output and panic-free, so the effect
+   discipline is dissolved; revisit trigger: pointer params, closures
+   over subject state, or package-level variables). Observation levers
+   delivered: multiple return sites, interleaved observation points.
+7. Remaining: methods and defined types, interfaces (observability via
+   named dynamic types), recursion with fuel, pointer params (brings the
+   effect discipline), the multi_panic any-panic corner, corner-list
+   expansion (division-signs, dead-rich, conversion-truncation).
 
 Each rung: emission code gated on new tags + witness test + the conformance
 rate watched (expect a dip, fix by construction).
