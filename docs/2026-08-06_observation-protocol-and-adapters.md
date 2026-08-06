@@ -162,18 +162,40 @@ Two concrete adapters, no plugin framework (audit's advice):
   interface payload witness beyond the schema itself (Phase 2 adds the
   positive controls and planted defects).
 
-## 8. Open questions (for discussion before implementation)
+## 8. Open questions — RESOLVED against the GoLean checkout (2026-08-06)
 
-1. **GoLean integration shape**: is (b)-then-(a) right, and is GoLean's
-   `scripts/diff-coverage` + corpus-format interface still current? Where
-   does the GoLean checkout live for the adapter (config path)?
-2. **GoLean observable set**: the old brief said its harness reflects over
-   bool/sized ints/string/array/named struct/named interface and fails
-   closed on slices, maps, pointers. If still true, the adapter must
-   restrict generation (a Constructs profile per adapter?) or GoLean's
-   harness must grow — which?
-3. **Panic-kind taxonomy**: is the six-kind closed set right for GoLean's
-   current panic vocabulary?
-4. **Canonical JSON**: acceptable as the wire format for GoLean to
-   eventually emit (shape (a)), or would a line-oriented format be easier
-   on the Lean side?
+Verified at `deps/golean` HEAD `a38e086`:
+
+1. **Integration shape**: `scripts/diff-coverage <manifest>` is current and
+   unchanged in shape: results `result\tid\tfeatures\tstage\tdetail`, a
+   meta TSV carrying manifest sha256 and git commit+dirty, per-case
+   go-run-vs-Lean comparison INSIDE their harness, expected_status
+   vocabulary `ok|panic` with an expected_reason. Shape (b) is live today;
+   checkout path becomes adapter config (default `deps/golean`).
+2. **Observable set (confirmed from `tools/coverageharness/main.go`)**:
+   bool, all int/uint kinds, float32/64 (bit-pattern, NaN-canonicalized),
+   string (as BYTE ARRAY — encoding-proof), array, struct
+   (typeName+fields), interface as `{dynamic: <named type>, value: ...}` —
+   dynamic type AND payload, i.e. GoLean already observes interfaces the
+   way our C4 fix requires. Fails closed on slices, maps, pointers, funcs,
+   unnamed dynamic types. CONSEQUENCE: the generator gains a per-adapter
+   **observation profile** — when targeting GoLean, slice/map variables
+   are masked out of the OBSERVED liveness tier (feeder/dead stay legal),
+   nothing else changes. Their harness also supports floats we do not yet
+   generate — future rung alignment, not a blocker.
+3. **Width note**: their value encoding erases width (`{"tag":"int"}` for
+   every kind — signed via Int(), unsigned via Uint()). Their frontend
+   type-checks the subject, so width semantics are enforced by evaluation
+   and wrap DIFFERENCES remain visible as value differences; our v2 keeps
+   `goType` for our own gc-vs-gc comparisons and the adapter's projection
+   drops it.
+4. **Wire format**: GoLean already has a tag-discriminated JSON observation
+   schema of its own. v2 therefore stays OUR width-carrying superset, with
+   a defined deterministic PROJECTION v2 -> golean-observation in the
+   adapter (strings to byte arrays, goType dropped, floats to bit
+   patterns when they exist). Shape (a) later means GoLean emitting its
+   OWN schema and the projection becoming the comparison plane — no Lean
+   -side changes needed for shape (b) at all.
+5. **Panic taxonomy**: their manifest speaks `ok|panic` + reason text; the
+   six-kind taxonomy lives entirely on our side (driver maps message ->
+   kind; raw message rides along), so no GoLean coupling.
