@@ -51,7 +51,28 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: terminal("break")},
 		{name: "continue", weight: terminalWeight, ok: g.enabled("continue") && inLoop,
 			emit: terminal("continue")},
+		{name: "observe", weight: 2, ok: g.enabled("observe_point"),
+			emit: func() { g.observePoint(out) }},
 	}).emit()
+}
+
+// observePoint prints one scalar/string variable mid-execution — an
+// interleaved observation. It pins intermediate state (localizing WHERE two
+// implementations diverge), gives unobserved variables observational reach,
+// and its output survives a later panic: the review found panic masking was
+// total because observation happened only at exit.
+func (g *Generator) observePoint(out *emitter) {
+	var cands []int
+	for i, v := range g.vars {
+		switch v.typ.Shape {
+		case ShapeInt, ShapeBool, ShapeString:
+			cands = append(cands, i)
+		}
+	}
+	v := &g.vars[pick(g.c, cands)]
+	v.reads++
+	g.mark("observe_point")
+	out.line("println(%s)", v.name)
 }
 
 // block emits a nested body, optionally opening a BLOCK-SCOPED declaration.

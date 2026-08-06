@@ -29,7 +29,7 @@ func Optional() []string {
 		"strings", "concat", "len",
 		"arrays", "index", "range",
 		"structs", "field",
-		"block_decl",
+		"block_decl", "observe_point",
 	}
 }
 

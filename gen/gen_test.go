@@ -348,7 +348,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "w0"} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0"} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}
@@ -795,6 +795,24 @@ func TestInnerDeclsAreScopedAndProjected(t *testing.T) {
 		t.Fatal("no block-scoped declarations in 400 seeds")
 	}
 	t.Logf("checked %d inner declarations, all projected or read", decls)
+}
+
+// TestObservationPointsArePresent: interleaved println statements occur in
+// the subject (they are what survives a later panic) and print variables.
+func TestObservationPointsArePresent(t *testing.T) {
+	points := 0
+	for seed := int64(1); seed <= 200; seed++ {
+		c := generate(t, seed)
+		src := string(c.Source)
+		if i := strings.Index(src, "func main"); i >= 0 {
+			src = src[:i]
+		}
+		points += strings.Count(src, "println(")
+	}
+	if points == 0 {
+		t.Fatal("no observation points in 200 seeds")
+	}
+	t.Logf("%d observation points", points)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
