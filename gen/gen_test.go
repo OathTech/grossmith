@@ -2,6 +2,7 @@ package gen
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -861,6 +862,78 @@ func TestReturnSitesAreUniform(t *testing.T) {
 		t.Fatal("no multi-return programs in 300 seeds")
 	}
 	t.Logf("%d programs with multiple return sites, all uniform and tagged", multi)
+}
+
+// TestSlicesOwnTheirBacking witnesses the slice determinism constraints:
+// no whole-slice assignment or slice-typed expression aliasing (alias +
+// append has spec-unspecified write visibility), cap is never observed, and
+// every constant index is under the variable's initial composite length
+// (appends only grow, so len >= that bound forever).
+func TestSlicesOwnTheirBacking(t *testing.T) {
+	slices, indexed := 0, 0
+	for seed := int64(1); seed <= 400; seed++ {
+		c := generate(t, seed)
+		src := string(c.Source)
+		if strings.Contains(src, "cap(") {
+			t.Fatalf("seed %d: cap observed — unspecified after append\n%s", seed, src)
+		}
+		_, file := parseCase(t, c.Source, seed)
+		// Map slice var name -> initial composite length.
+		initLen := map[string]int{}
+		ast.Inspect(file, func(n ast.Node) bool {
+			a, ok := n.(*ast.AssignStmt)
+			if !ok || a.Tok != token.DEFINE || len(a.Rhs) != 1 {
+				return true
+			}
+			if comp, ok := a.Rhs[0].(*ast.CompositeLit); ok {
+				if _, isSlice := comp.Type.(*ast.ArrayType); isSlice && comp.Type.(*ast.ArrayType).Len == nil {
+					initLen[a.Lhs[0].(*ast.Ident).Name] = len(comp.Elts)
+					slices++
+				}
+			}
+			return true
+		})
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch e := n.(type) {
+			case *ast.AssignStmt:
+				// A slice may only be assigned its own append.
+				if e.Tok != token.ASSIGN || len(e.Lhs) != 1 {
+					return true
+				}
+				lhs, ok := e.Lhs[0].(*ast.Ident)
+				if !ok || initLen[lhs.Name] == 0 {
+					return true
+				}
+				call, ok := e.Rhs[0].(*ast.CallExpr)
+				if !ok || call.Fun.(*ast.Ident).Name != "append" {
+					t.Fatalf("seed %d: slice %s reassigned to non-append — aliasing risk\n%s", seed, lhs.Name, c.Source)
+				}
+			case *ast.IndexExpr:
+				id, ok := e.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				bound, isSlice := initLen[id.Name]
+				if !isSlice {
+					return true
+				}
+				if lit, ok := e.Index.(*ast.BasicLit); ok {
+					indexed++
+					var n int
+					fmt.Sscanf(lit.Value, "%d", &n)
+					if n >= bound {
+						t.Fatalf("seed %d: constant index %d on slice %s with initial length %d\n%s",
+							seed, n, id.Name, bound, c.Source)
+					}
+				}
+			}
+			return true
+		})
+	}
+	if slices == 0 || indexed == 0 {
+		t.Fatalf("slices=%d constant-indexed=%d over 400 seeds — invariant unexercised", slices, indexed)
+	}
+	t.Logf("%d slice declarations, %d constant slice indices, all safe", slices, indexed)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.

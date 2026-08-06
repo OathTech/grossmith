@@ -119,6 +119,11 @@ type binding struct {
 	typ      Type
 	observed bool
 	reads    int
+	// minLen is a slice's guaranteed length lower bound: the initial
+	// composite length. Appends only grow and whole-slice assignment is
+	// never generated, so len >= minLen holds forever — which is what makes
+	// constant indices < minLen safe by construction.
+	minLen int
 }
 
 // Generator builds one program. Not safe for concurrent use; make one per case.
@@ -304,6 +309,15 @@ func (g *Generator) typePool() []Type {
 			pool = append(pool, Array(pick(g.c, elems), 2+g.c.draw(3)))
 		}
 	}
+	if g.enabled("slices") {
+		elems := scalarTypes()
+		if g.enabled("strings") {
+			elems = append(elems, Str())
+		}
+		for i := 0; i < 2; i++ {
+			pool = append(pool, Slice(pick(g.c, elems)))
+		}
+	}
 	if g.enabled("structs") {
 		fieldPool := scalarTypes()
 		if g.enabled("strings") {
@@ -356,8 +370,19 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		{name: "observed", weight: 4, ok: true},
 		{name: "unobserved", weight: 1, ok: true},
 	}).name == "observed"
-	out.line("%s := %s", name, g.literal(typ).text)
-	g.vars = append(g.vars, binding{name: name, typ: typ, observed: observed})
+	b := binding{name: name, typ: typ, observed: observed}
+	if typ.Shape == ShapeSlice {
+		// Slices are born from a composite literal: never nil, length known.
+		b.minLen = 2 + g.c.draw(3)
+		elems := make([]string, b.minLen)
+		for i := range elems {
+			elems[i] = g.literal(*typ.Elem).text
+		}
+		out.line("%s := %s{%s}", name, typ.GoName(), strings.Join(elems, ", "))
+	} else {
+		out.line("%s := %s", name, g.literal(typ).text)
+	}
+	g.vars = append(g.vars, b)
 	g.mark(typ.Tags()...)
 }
 
@@ -420,6 +445,13 @@ func (g *Generator) driver(out *strings.Builder, observed []binding) {
 				fmt.Fprintf(out, "\tprintln(%s.%s)\n", r, f.Name)
 			}
 			continue
+		case ShapeSlice:
+			// Dynamic length: print it, then every element in order — the
+			// whole value stays injectively visible. cap is NEVER observed
+			// (unspecified after append).
+			fmt.Fprintf(out, "\tprintln(len(%s))\n", r)
+			fmt.Fprintf(out, "\tfor _, e := range %s {\n\t\tprintln(e)\n\t}\n", r)
+			continue
 		}
 		fmt.Fprintf(out, "\tprintln(%s)\n", r)
 	}
@@ -443,10 +475,15 @@ func (g *Generator) pickVar(t Type) (int, bool) {
 
 // arrayVars returns the indices of array-typed variables, optionally
 // restricted to a given element type. Pure scan: no draws.
-func (g *Generator) arrayVars(elem *Type) []int {
+func (g *Generator) arrayVars(elem *Type) []int { return g.varsOfShape(ShapeArray, elem) }
+
+// sliceVars is arrayVars for slices.
+func (g *Generator) sliceVars(elem *Type) []int { return g.varsOfShape(ShapeSlice, elem) }
+
+func (g *Generator) varsOfShape(shape Shape, elem *Type) []int {
 	var found []int
 	for i, v := range g.vars {
-		if v.typ.Shape != ShapeArray {
+		if v.typ.Shape != shape {
 			continue
 		}
 		if elem != nil && !v.typ.Elem.Equal(*elem) {
@@ -455,6 +492,28 @@ func (g *Generator) arrayVars(elem *Type) []int {
 		found = append(found, i)
 	}
 	return found
+}
+
+// indexableVars are array and slice variables together (for element writes
+// and range loops), honoring each family's construct gate.
+func (g *Generator) indexableVars() []int {
+	var found []int
+	if g.enabled("arrays") {
+		found = append(found, g.arrayVars(nil)...)
+	}
+	if g.enabled("slices") {
+		found = append(found, g.sliceVars(nil)...)
+	}
+	return found
+}
+
+// indexBound is the guaranteed length lower bound for one indexable binding:
+// the type's Len for arrays, minLen for slices.
+func (b binding) indexBound() int {
+	if b.typ.Shape == ShapeSlice {
+		return b.minLen
+	}
+	return b.typ.Len
 }
 
 func (g *Generator) hasArrayOfElem(t Type) bool { return len(g.arrayVars(&t)) > 0 }

@@ -30,6 +30,7 @@ func Optional() []string {
 		"arrays", "index", "range",
 		"structs", "field",
 		"block_decl", "observe_point", "early_return",
+		"slices", "append",
 	}
 }
 

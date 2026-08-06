@@ -177,23 +177,24 @@ func (g *Generator) arrayExpr(t Type) value {
 	return out
 }
 
-// indexExpr draws the index policy for one access into an array of length
-// t.Len — the panic decision made ON PURPOSE (trap catalogue: a constant
-// index out of range is a COMPILE error, so the constant arm is bounded by
-// construction; a variable index panics at runtime, drawn as a recorded
-// minority).
-func (g *Generator) indexExpr(t Type) string {
+// indexExpr draws the index policy for one access into an array or slice
+// whose length is guaranteed >= bound — the panic decision made ON PURPOSE
+// (trap catalogue: a constant index out of range of a fixed length is a
+// COMPILE error for arrays and a certain runtime panic for slices, so the
+// constant arm stays under the bound; a variable index panics at runtime,
+// drawn as a recorded minority).
+func (g *Generator) indexExpr(bound int) string {
 	var out string
 	g.c.choose("index", []arm{
 		{name: "const", weight: 4, ok: true, emit: func() {
-			out = fmt.Sprintf("%d", g.c.draw(t.Len))
+			out = fmt.Sprintf("%d", g.c.draw(bound))
 		}},
 		{name: "mod", weight: 3, ok: g.enabled("conversions", "modulo"), emit: func() {
-			// Unsigned % length is always in range — a safe NON-CONSTANT
+			// Unsigned % bound is always in range — a safe NON-CONSTANT
 			// index (signed % can be negative and would panic).
 			u := g.variable(Int(8, true))
 			g.mark("conversions", "modulo")
-			out = fmt.Sprintf("int(%s%%%d)", u.text, t.Len)
+			out = fmt.Sprintf("int(%s%%%d)", u.text, bound)
 		}},
 		{name: "panicky", weight: 1, ok: !g.riskSpent, emit: func() {
 			// A raw int variable: usually out of range, so usually a
@@ -302,8 +303,21 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			arr := &g.vars[i]
 			arr.reads++
 			g.mark("arrays", "index")
-			out = value{text: fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.typ))}
+			out = value{text: fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.typ.Len))}
 		}},
+		{name: "slice-index", weight: 2, ok: g.enabled("slices", "index") && len(g.sliceVars(&t)) > 0, emit: func() {
+			s := &g.vars[pick(g.c, g.sliceVars(&t))]
+			s.reads++
+			g.mark("slices", "index")
+			out = value{text: fmt.Sprintf("%s[%s]", s.name, g.indexExpr(s.minLen))}
+		}},
+		{name: "slice-len", weight: 1,
+			ok: t.Equal(Int(0, false)) && g.enabled("len", "slices") && len(g.sliceVars(nil)) > 0, emit: func() {
+				s := &g.vars[pick(g.c, g.sliceVars(nil))]
+				s.reads++
+				g.mark("len", "slices")
+				out = value{text: fmt.Sprintf("len(%s)", s.name)}
+			}},
 		{name: "field", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(&t)) > 0, emit: func() {
 			out = g.fieldRead(t)
 		}},

@@ -35,15 +35,17 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 		{name: "assign", weight: 4, ok: true, emit: func() { g.assign(out) }},
 		{name: "compound", weight: 2, ok: true, emit: func() { g.compoundAssign(out) }},
 		{name: "incdec", weight: 2, ok: true, emit: func() { g.incDec(out) }},
-		{name: "elem-assign", weight: 2, ok: g.enabled("arrays", "index") && len(g.arrayVars(nil)) > 0,
+		{name: "elem-assign", weight: 2, ok: g.enabled("index") && len(g.indexableVars()) > 0,
 			emit: func() { g.elemAssign(out) }},
+		{name: "append", weight: 2, ok: g.enabled("slices", "append") && len(g.sliceVars(nil)) > 0,
+			emit: func() { g.appendStmt(out) }},
 		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
 			emit: func() { g.fieldAssign(out) }},
 		{name: "if", weight: 3, ok: g.enabled("if") && depth > 0,
 			emit: func() { g.ifStmt(out, depth, inLoop) }},
 		{name: "for", weight: 3, ok: g.enabled("loops") && depth > 0,
 			emit: func() { g.forStmt(out, depth) }},
-		{name: "range", weight: 2, ok: g.enabled("arrays", "range") && depth > 0 && len(g.arrayVars(nil)) > 0,
+		{name: "range", weight: 2, ok: g.enabled("range") && depth > 0 && len(g.indexableVars()) > 0,
 			emit: func() { g.rangeStmt(out, depth) }},
 		{name: "switch", weight: 2, ok: g.enabled("switch") && depth > 0,
 			emit: func() { g.switchStmt(out, depth, inLoop) }},
@@ -171,9 +173,14 @@ func (g *Generator) projectInner(out *emitter, w binding) {
 
 func (g *Generator) assign(out *emitter) {
 	g.resetRisk()
-	all := make([]int, len(g.vars))
-	for i := range all {
-		all[i] = i
+	// Slices are excluded: whole-slice assignment aliases backing arrays,
+	// and alias + append has spec-UNSPECIFIED write visibility. Every slice
+	// owns its backing; mutation happens via append and element writes.
+	var all []int
+	for i, v := range g.vars {
+		if v.typ.Shape != ShapeSlice {
+			all = append(all, i)
+		}
 	}
 	target := &g.vars[g.pickTarget(all)]
 	g.mark("assignment")
@@ -192,9 +199,11 @@ func (g *Generator) assign(out *emitter) {
 
 func (g *Generator) compoundAssign(out *emitter) {
 	g.resetRisk()
-	all := make([]int, len(g.vars))
-	for i := range all {
-		all[i] = i
+	var all []int
+	for i, v := range g.vars {
+		if v.typ.Shape != ShapeSlice {
+			all = append(all, i)
+		}
 	}
 	target := &g.vars[g.pickTarget(all)]
 	if target.typ.Shape == ShapeBool {
@@ -262,15 +271,31 @@ func (g *Generator) incDec(out *emitter) {
 	out.line("%s%s", target.name, op)
 }
 
-// elemAssign writes one array element under the drawn index policy. The
-// write alone does not discharge Go's unused-variable rule, so observe()'s
-// reads==0 fallback still covers a write-only array.
+// elemAssign writes one array or slice element under the drawn index
+// policy. The write alone does not discharge Go's unused-variable rule, so
+// observe()'s reads==0 fallback still covers a write-only container.
 func (g *Generator) elemAssign(out *emitter) {
 	g.resetRisk()
-	i := pick(g.c, g.arrayVars(nil))
+	i := pick(g.c, g.indexableVars())
 	arr := &g.vars[i]
-	g.mark("arrays", "index", "assignment")
-	out.line("%s[%s] = %s", arr.name, g.indexExpr(arr.typ), g.expr(*arr.typ.Elem, g.cfg.ExprFuel).text)
+	if arr.typ.Shape == ShapeSlice {
+		g.mark("slices", "index", "assignment")
+	} else {
+		g.mark("arrays", "index", "assignment")
+	}
+	out.line("%s[%s] = %s", arr.name, g.indexExpr(arr.indexBound()), g.expr(*arr.typ.Elem, g.cfg.ExprFuel).text)
+}
+
+// appendStmt grows a slice: s = append(s, elem). Growth per execution is one
+// element, so total slice memory stays linear in executed statements; len
+// only ever grows, preserving the minLen index bound.
+func (g *Generator) appendStmt(out *emitter) {
+	g.resetRisk()
+	i := pick(g.c, g.sliceVars(nil))
+	s := &g.vars[i]
+	s.reads++ // append reads its first operand
+	g.mark("slices", "append", "assignment")
+	out.line("%s = append(%s, %s)", s.name, s.name, g.expr(*s.typ.Elem, g.cfg.ExprFuel).text)
 }
 
 // fieldAssign writes one struct field. Like element writes, a field write
@@ -293,12 +318,19 @@ func (g *Generator) fieldAssign(out *emitter) {
 // data (the Xsmith loop-over-container observation), no literal bound
 // needed. The index is folded into an accumulator first, like forStmt.
 func (g *Generator) rangeStmt(out *emitter, depth int) {
-	i := pick(g.c, g.arrayVars(nil))
+	i := pick(g.c, g.indexableVars())
 	arr := &g.vars[i]
+	if arr.typ.Shape == ShapeSlice {
+		// The range expression is evaluated ONCE, so an append inside the
+		// body cannot extend this loop: termination still rides the data.
+		g.mark("slices", "range")
+	} else {
+		g.mark("arrays", "range")
+	}
 	arr.reads++
 	index := fmt.Sprintf("i%d", g.loopSeq)
 	g.loopSeq++
-	g.mark("arrays", "range", "control_flow", "short_decl")
+	g.mark("control_flow", "short_decl")
 	out.open("for %s := range %s {", index, arr.name)
 	g.consumeIndex(out, index)
 	g.block(out, depth, 1+g.c.draw(2), true)

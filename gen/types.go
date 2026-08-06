@@ -36,6 +36,13 @@ const (
 	// in the program preamble. Identity is the name, per Go's named-type
 	// rules.
 	ShapeStruct
+	// ShapeSlice is a slice of a scalar or string element. Slices carry two
+	// spec-nondeterminism traps handled by construction: cap after append is
+	// unspecified (cap is NEVER observed) and whether append reallocates is
+	// unspecified, so an aliased-then-appended slice has unspecified write
+	// visibility (whole-slice assignment is NEVER generated — every slice
+	// owns its backing).
+	ShapeSlice
 )
 
 // StructField is one field of a generated struct type.
@@ -75,6 +82,12 @@ func Array(elem Type, n int) Type {
 	return Type{Shape: ShapeArray, Elem: &e, Len: n}
 }
 
+// Slice builds a slice type over elem.
+func Slice(elem Type) Type {
+	e := elem
+	return Type{Shape: ShapeSlice, Elem: &e}
+}
+
 // Int builds an integer type. bits 0 means platform width.
 func Int(bits int, unsigned bool) Type {
 	return Type{Shape: ShapeInt, Bits: bits, Unsigned: unsigned}
@@ -107,6 +120,9 @@ func (t Type) GoName() string {
 	if t.Shape == ShapeStruct {
 		return t.Name
 	}
+	if t.Shape == ShapeSlice {
+		return "[]" + t.Elem.GoName()
+	}
 	stem := "int"
 	if t.Unsigned {
 		stem = "uint"
@@ -134,6 +150,9 @@ func (t Type) Tags() []string {
 			tags = append(tags, f.Typ.Tags()...)
 		}
 		return tags
+	}
+	if t.Shape == ShapeSlice {
+		return append([]string{"slices"}, t.Elem.Tags()...)
 	}
 	if t.Bits == 0 && !t.Unsigned {
 		return []string{"ints"}
@@ -224,6 +243,9 @@ func (t Type) Equal(other Type) bool {
 	}
 	if t.Shape == ShapeArray {
 		return t.Len == other.Len && t.Elem.Equal(*other.Elem)
+	}
+	if t.Shape == ShapeSlice {
+		return t.Elem.Equal(*other.Elem)
 	}
 	if t.Shape == ShapeStruct {
 		// Named types: the name IS the identity (fields cannot differ under
