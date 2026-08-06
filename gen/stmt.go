@@ -37,6 +37,8 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 		{name: "incdec", weight: 2, ok: true, emit: func() { g.incDec(out) }},
 		{name: "elem-assign", weight: 2, ok: g.enabled("arrays", "index") && len(g.arrayVars(nil)) > 0,
 			emit: func() { g.elemAssign(out) }},
+		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
+			emit: func() { g.fieldAssign(out) }},
 		{name: "if", weight: 3, ok: g.enabled("if") && depth > 0,
 			emit: func() { g.ifStmt(out, depth, inLoop) }},
 		{name: "for", weight: 3, ok: g.enabled("loops") && depth > 0,
@@ -74,7 +76,7 @@ func (g *Generator) compoundAssign(out *emitter) {
 		g.assign(out)
 		return
 	}
-	if target.typ.Shape == ShapeArray {
+	if target.typ.Shape == ShapeArray || target.typ.Shape == ShapeStruct {
 		g.assign(out)
 		return
 	}
@@ -135,6 +137,21 @@ func (g *Generator) elemAssign(out *emitter) {
 	arr := &g.vars[i]
 	g.mark("arrays", "index", "assignment")
 	out.line("%s[%s] = %s", arr.name, g.indexExpr(arr.typ), g.expr(*arr.typ.Elem, g.cfg.ExprFuel).text)
+}
+
+// fieldAssign writes one struct field. Like element writes, a field write
+// alone does not discharge the unused-variable rule; observe() covers it.
+func (g *Generator) fieldAssign(out *emitter) {
+	src := pick(g.c, g.fieldSources(nil))
+	sv := &g.vars[src.varIdx]
+	var fieldType Type
+	for _, f := range sv.typ.Fields {
+		if f.Name == src.field {
+			fieldType = f.Typ
+		}
+	}
+	g.mark("structs", "field", "assignment")
+	out.line("%s.%s = %s", sv.name, src.field, g.expr(fieldType, g.cfg.ExprFuel).text)
 }
 
 // rangeStmt loops over a fixed-length array: termination comes free with the

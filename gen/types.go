@@ -15,7 +15,10 @@
 //     statement position only, panic sites decided on purpose.
 package gen
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Shape is the top-level classification of a generated type.
 type Shape uint8
@@ -29,7 +32,17 @@ const (
 	ShapeString
 	// ShapeArray is a fixed-length array of a scalar or string element.
 	ShapeArray
+	// ShapeStruct is a NAMED struct type with scalar/string fields, declared
+	// in the program preamble. Identity is the name, per Go's named-type
+	// rules.
+	ShapeStruct
 )
+
+// StructField is one field of a generated struct type.
+type StructField struct {
+	Name string
+	Typ  Type
+}
 
 // Type is one generated Go type. A single concrete struct rather than an
 // interface per kind: the type space is small and closed, and a closed enum
@@ -45,6 +58,9 @@ type Type struct {
 	// it being a literal known at generation.
 	Elem *Type
 	Len  int
+	// Name and Fields describe ShapeStruct.
+	Name   string
+	Fields []StructField
 }
 
 // Bool is the bool type.
@@ -88,6 +104,9 @@ func (t Type) GoName() string {
 	if t.Shape == ShapeArray {
 		return fmt.Sprintf("[%d]%s", t.Len, t.Elem.GoName())
 	}
+	if t.Shape == ShapeStruct {
+		return t.Name
+	}
 	stem := "int"
 	if t.Unsigned {
 		stem = "uint"
@@ -108,6 +127,13 @@ func (t Type) Tags() []string {
 	}
 	if t.Shape == ShapeArray {
 		return append([]string{"arrays"}, t.Elem.Tags()...)
+	}
+	if t.Shape == ShapeStruct {
+		tags := []string{"structs"}
+		for _, f := range t.Fields {
+			tags = append(tags, f.Typ.Tags()...)
+		}
+		return tags
 	}
 	if t.Bits == 0 && !t.Unsigned {
 		return []string{"ints"}
@@ -199,5 +225,21 @@ func (t Type) Equal(other Type) bool {
 	if t.Shape == ShapeArray {
 		return t.Len == other.Len && t.Elem.Equal(*other.Elem)
 	}
+	if t.Shape == ShapeStruct {
+		// Named types: the name IS the identity (fields cannot differ under
+		// one name — decl() is the single source).
+		return t.Name == other.Name
+	}
 	return true
+}
+
+// decl is the preamble type declaration for a named struct type.
+func (t Type) decl() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "type %s struct {\n", t.Name)
+	for _, f := range t.Fields {
+		fmt.Fprintf(&b, "\t%s %s\n", f.Name, f.Typ.GoName())
+	}
+	b.WriteString("}\n\n")
+	return b.String()
 }

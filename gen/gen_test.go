@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -177,6 +178,39 @@ func TestArraysArePresentAndObserved(t *testing.T) {
 	t.Logf("arrays in %d/200 programs, %d observed array results", withArrays, observedArrays)
 }
 
+// TestStructsArePresentAndObserved: structs occur, reach the observation
+// (field-wise printing), and struct equality is exercised somewhere.
+func TestStructsArePresentAndObserved(t *testing.T) {
+	withStructs, observedStructs, equality := 0, 0, 0
+	for seed := int64(1); seed <= 200; seed++ {
+		c := generate(t, seed)
+		has := false
+		for _, f := range c.Features {
+			if f == "structs" {
+				has = true
+			}
+		}
+		if !has {
+			continue
+		}
+		withStructs++
+		src := string(c.Source)
+		if regexp.MustCompile(`println\(r\d+\.f\d+\)`).MatchString(src) {
+			observedStructs++
+		}
+		if strings.Contains(src, "== S") || strings.Contains(src, "!= S") {
+			equality++
+		}
+	}
+	if withStructs == 0 {
+		t.Fatal("no structs in 200 swarm seeds")
+	}
+	if observedStructs == 0 {
+		t.Fatal("no struct reaches the observation in 200 seeds")
+	}
+	t.Logf("structs in %d/200, field observation in %d, composite-equality in %d", withStructs, observedStructs, equality)
+}
+
 // TestObservedFloor: every program returns at least one value — a program
 // observing nothing tests nothing.
 func TestObservedFloor(t *testing.T) {
@@ -314,7 +348,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "["} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", "."} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}

@@ -96,6 +96,8 @@ type Generator struct {
 	vars    []binding
 	used    map[string]bool
 	loopSeq int
+	// structs are the per-seed named struct types, declared in the preamble.
+	structs []Type
 	// corner is the resolved named corner; boundaryBias is the weight of the
 	// boundary arm at literal/divisor/shift-count sites (0 disables, 1 is
 	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
@@ -164,6 +166,9 @@ func (g *Generator) Generate() (Case, error) {
 
 	var out strings.Builder
 	out.WriteString("package main\n\n")
+	for _, st := range g.structs {
+		out.WriteString(st.decl())
+	}
 	fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
 	out.WriteString(body.buf.String())
 	out.WriteString("}\n\n")
@@ -193,6 +198,21 @@ func (g *Generator) typePool() []Type {
 		elems := pool
 		for i := 0; i < 2; i++ {
 			pool = append(pool, Array(pick(g.c, elems), 2+g.c.draw(3)))
+		}
+	}
+	if g.enabled("structs") {
+		fieldPool := scalarTypes()
+		if g.enabled("strings") {
+			fieldPool = append(fieldPool, Str())
+		}
+		for s := 0; s < 1+g.c.draw(2); s++ {
+			fields := make([]StructField, 2+g.c.draw(2))
+			for f := range fields {
+				fields[f] = StructField{Name: fmt.Sprintf("f%d", f), Typ: pick(g.c, fieldPool)}
+			}
+			st := Type{Shape: ShapeStruct, Name: fmt.Sprintf("S%d", s), Fields: fields}
+			g.structs = append(g.structs, st)
+			pool = append(pool, st)
 		}
 	}
 	return pool
@@ -281,9 +301,15 @@ func (g *Generator) driver(out *strings.Builder, observed []binding) {
 	for i, r := range rs {
 		// println takes scalars only; an observed array is printed
 		// element-wise, so the whole value stays injectively visible.
-		if observed[i].typ.Shape == ShapeArray {
+		switch observed[i].typ.Shape {
+		case ShapeArray:
 			for j := 0; j < observed[i].typ.Len; j++ {
 				fmt.Fprintf(out, "\tprintln(%s[%d])\n", r, j)
+			}
+			continue
+		case ShapeStruct:
+			for _, f := range observed[i].typ.Fields {
+				fmt.Fprintf(out, "\tprintln(%s.%s)\n", r, f.Name)
 			}
 			continue
 		}
@@ -326,6 +352,40 @@ func (g *Generator) arrayVars(elem *Type) []int {
 func (g *Generator) hasArrayOfElem(t Type) bool { return len(g.arrayVars(&t)) > 0 }
 
 func (g *Generator) pickArrayOfElem(t Type) int { return pick(g.c, g.arrayVars(&t)) }
+
+// fieldSource is one reachable struct field of a wanted type.
+type fieldSource struct {
+	varIdx int
+	field  string
+}
+
+// fieldSources scans struct variables for fields of exactly type t (nil t:
+// any field). Pure scan: no draws.
+func (g *Generator) fieldSources(t *Type) []fieldSource {
+	var found []fieldSource
+	for i, v := range g.vars {
+		if v.typ.Shape != ShapeStruct {
+			continue
+		}
+		for _, f := range v.typ.Fields {
+			if t == nil || f.Typ.Equal(*t) {
+				found = append(found, fieldSource{varIdx: i, field: f.Name})
+			}
+		}
+	}
+	return found
+}
+
+// structVars returns the indices of struct-typed variables.
+func (g *Generator) structVars() []int {
+	var found []int
+	for i, v := range g.vars {
+		if v.typ.Shape == ShapeStruct {
+			found = append(found, i)
+		}
+	}
+	return found
+}
 
 // ---- emitter ---------------------------------------------------------
 

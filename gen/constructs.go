@@ -28,6 +28,7 @@ func Optional() []string {
 		"comparisons", "equality", "min", "max",
 		"strings", "concat", "len",
 		"arrays", "index", "range",
+		"structs", "field",
 	}
 }
 

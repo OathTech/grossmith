@@ -42,6 +42,13 @@ func (g *Generator) literal(t Type) value {
 			elems[i] = g.literal(*t.Elem).text
 		}
 		return value{text: fmt.Sprintf("%s{%s}", t.GoName(), strings.Join(elems, ", "))}
+	case ShapeStruct:
+		// Field-keyed composite; never a constant.
+		parts := make([]string, len(t.Fields))
+		for i, f := range t.Fields {
+			parts[i] = f.Name + ": " + g.literal(f.Typ).text
+		}
+		return value{text: fmt.Sprintf("%s{%s}", t.Name, strings.Join(parts, ", "))}
 	}
 	if g.boundaryLiteralDrawn() {
 		return g.typedText(t, pick(g.c, t.boundaryLiterals()))
@@ -124,8 +131,34 @@ func (g *Generator) expr(t Type, fuel int) value {
 		return g.stringExpr(fuel)
 	case ShapeArray:
 		return g.arrayExpr(t)
+	case ShapeStruct:
+		return g.structExpr(t)
 	}
 	return g.intExpr(t, fuel)
+}
+
+// structExpr is a whole-struct value: variable (copy semantics) or composite.
+func (g *Generator) structExpr(t Type) value {
+	var out value
+	g.c.choose("struct-expr", []arm{
+		{name: "var", weight: 3, ok: true, emit: func() {
+			out = g.variable(t)
+		}},
+		{name: "composite", weight: 1, ok: true, emit: func() {
+			g.mark("structs")
+			out = g.literal(t)
+		}},
+	}).emit()
+	return out
+}
+
+// fieldRead emits sv.fN for a struct variable carrying a field of type t.
+func (g *Generator) fieldRead(t Type) value {
+	src := pick(g.c, g.fieldSources(&t))
+	sv := &g.vars[src.varIdx]
+	sv.reads++
+	g.mark("structs", "field")
+	return value{text: sv.name + "." + src.field}
 }
 
 // arrayExpr is a whole-array value: a variable (assignment then COPIES — Go
@@ -269,6 +302,9 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			g.mark("arrays", "index")
 			out = value{text: fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.typ))}
 		}},
+		{name: "field", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(&t)) > 0, emit: func() {
+			out = g.fieldRead(t)
+		}},
 		{name: "len", weight: 1,
 			// len returns exactly `int`, and len of a string VARIABLE is
 			// non-constant (len of a literal would be a typed constant).
@@ -390,6 +426,23 @@ func (g *Generator) boolExpr(fuel int) value {
 			g.mark("equality")
 			out = value{text: fmt.Sprintf("(%s %s %s)",
 				g.expr(t, fuel-1).text, op, g.expr(t, fuel-1).text)}
+		}},
+		{name: "field", weight: 1, ok: g.enabled("structs", "field") && len(g.fieldSources(&Type{Shape: ShapeBool})) > 0, emit: func() {
+			out = g.fieldRead(Bool())
+		}},
+		{name: "struct-equal", weight: 1, ok: g.enabled("structs", "equality") && len(g.structVars()) > 0, emit: func() {
+			// Whole-struct comparison: our structs' fields are all
+			// comparable types, so == is legal — Go's comparability rules
+			// are themselves clone-divergence territory.
+			i := pick(g.c, g.structVars())
+			sv := &g.vars[i]
+			sv.reads++
+			op := "=="
+			if g.c.chance(2) {
+				op = "!="
+			}
+			g.mark("structs", "equality")
+			out = value{text: fmt.Sprintf("(%s %s %s)", sv.name, op, g.structExpr(sv.typ).text)}
 		}},
 		{name: "str-compare", weight: 1, ok: g.enabled("strings", "comparisons"), emit: func() {
 			// Strings order lexically by bytes — a comparison edge clones
