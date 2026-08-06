@@ -53,7 +53,18 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: terminal("continue")},
 		{name: "observe", weight: 2, ok: g.enabled("observe_point"),
 			emit: func() { g.observePoint(out) }},
+		{name: "early-return", weight: 1, ok: g.enabled("early_return") && !last,
+			emit: func() { g.earlyReturn(out) }},
 	}).emit()
+}
+
+// earlyReturn is a second return site: the observed tuple at THIS point,
+// path-dependent liveness for everything after. Only drawn mid-block, so
+// the code behind it is the ordinary tagged dead_code minority.
+func (g *Generator) earlyReturn(out *emitter) {
+	g.mark("early_return", "return")
+	g.note(tagDeadCode)
+	out.line("return %s", strings.Join(g.observedNames(), ", "))
 }
 
 // observePoint prints one scalar/string variable mid-execution — an

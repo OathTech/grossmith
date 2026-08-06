@@ -240,7 +240,11 @@ func TestDeadCodeIsTagged(t *testing.T) {
 		deadCode := false
 		check := func(list []ast.Stmt) {
 			for i, stmt := range list {
-				if _, ok := stmt.(*ast.BranchStmt); ok && i != len(list)-1 {
+				if i == len(list)-1 {
+					continue
+				}
+				switch stmt.(type) {
+				case *ast.BranchStmt, *ast.ReturnStmt:
 					deadCode = true
 				}
 			}
@@ -813,6 +817,50 @@ func TestObservationPointsArePresent(t *testing.T) {
 		t.Fatal("no observation points in 200 seeds")
 	}
 	t.Logf("%d observation points", points)
+}
+
+// TestReturnSitesAreUniform: every return site returns the same tuple (the
+// observed names), and every non-final return is tagged early_return plus
+// dead_code (it is only drawn mid-block).
+func TestReturnSitesAreUniform(t *testing.T) {
+	multi := 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		var returns []*ast.ReturnStmt
+		ast.Inspect(file, func(n ast.Node) bool {
+			if r, ok := n.(*ast.ReturnStmt); ok {
+				returns = append(returns, r)
+			}
+			return true
+		})
+		if len(returns) < 2 {
+			continue
+		}
+		multi++
+		want := len(returns[len(returns)-1].Results)
+		for _, r := range returns {
+			if len(r.Results) != want {
+				t.Fatalf("seed %d: return sites with differing arity\n%s", seed, c.Source)
+			}
+		}
+		hasEarly, hasDead := false, false
+		for _, f := range c.Features {
+			switch f {
+			case "early_return":
+				hasEarly = true
+			case tagDeadCode:
+				hasDead = true
+			}
+		}
+		if !hasEarly || !hasDead {
+			t.Fatalf("seed %d: multiple return sites but early_return=%v dead_code=%v", seed, hasEarly, hasDead)
+		}
+	}
+	if multi == 0 {
+		t.Fatal("no multi-return programs in 300 seeds")
+	}
+	t.Logf("%d programs with multiple return sites, all uniform and tagged", multi)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.

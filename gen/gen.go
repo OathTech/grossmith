@@ -497,6 +497,18 @@ func (g *Generator) pickOuter(t Type) int {
 	return pick(g.c, found)
 }
 
+// observedNames lists the observed tuple in declaration order — the same
+// order observe() returns, so every return site is signature-identical.
+func (g *Generator) observedNames() []string {
+	var names []string
+	for _, v := range g.vars {
+		if v.observed {
+			names = append(names, v.name)
+		}
+	}
+	return names
+}
+
 // structVars returns the indices of struct-typed variables.
 func (g *Generator) structVars() []int {
 	var found []int
