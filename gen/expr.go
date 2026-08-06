@@ -18,6 +18,13 @@ type value struct {
 	constant bool
 }
 
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // stringWords is the string-literal alphabet. Deliberately includes the empty
 // string and a multi-byte rune: len counts BYTES (len("µ") == 2), a classic
 // clone divergence, and concatenation with "" is an identity edge.
@@ -49,6 +56,17 @@ func (g *Generator) literal(t Type) value {
 			parts[i] = f.Name + ": " + g.literal(f.Typ).text
 		}
 		return value{text: fmt.Sprintf("%s{%s}", t.Name, strings.Join(parts, ", "))}
+	case ShapeSlice:
+		// Totality (second review: literal() fell through to the int path
+		// for these shapes — a latent panic one refactor away). A fresh
+		// two-element composite owns its backing.
+		return value{text: fmt.Sprintf("%s{%s, %s}", t.GoName(),
+			g.literal(*t.Elem).text, g.literal(*t.Elem).text)}
+	case ShapeMap:
+		return value{text: t.GoName() + "{}"}
+	case ShapeInterface:
+		info := g.ifaceByName(t.Name)
+		return value{text: fmt.Sprintf("%s(%s)", t.Name, g.literal(g.defined[info.source].typ).text)}
 	}
 	if g.boundaryLiteralDrawn() {
 		return g.typedText(t, pick(g.c, t.boundaryLiterals()))
@@ -135,6 +153,10 @@ func (g *Generator) expr(t Type, fuel int) value {
 		return g.structExpr(t)
 	case ShapeInterface:
 		return g.ifaceExpr(t)
+	case ShapeSlice, ShapeMap:
+		// No expression arms by design (owned backing / dedicated mutation
+		// arms); the leaf is total.
+		return g.variable(t)
 	}
 	return g.intExpr(t, fuel)
 }
@@ -220,7 +242,7 @@ func (g *Generator) indexExpr(bound int) string {
 			g.mark("conversions", "modulo")
 			out = fmt.Sprintf("int(%s%%%d)", u.text, bound)
 		}},
-		{name: "panicky", weight: 1, ok: g.riskOK(), emit: func() {
+		{name: "panicky", weight: 1 + 3*boolToInt(g.guardBias), ok: g.riskOK(), emit: func() {
 			// A raw int variable: usually out of range, so usually a
 			// deterministic index panic. Deliberate, tagged content —
 			// and it spends the statement's one panic-risk slot.
@@ -471,7 +493,11 @@ func (g *Generator) divModExpr(t Type, fuel int, op, tag string) value {
 	left := g.nonConstExpr(t, fuel-1)
 	divisor := g.nonZeroLiteral(t)
 	variableDivisor := false
-	if g.riskOK() && g.c.chance(8) && g.spendRisk() {
+	hotChance := 8
+	if g.guardBias {
+		hotChance = 2
+	}
+	if g.riskOK() && g.c.chance(hotChance) && g.spendRisk() {
 		divisor = g.variable(t)
 		variableDivisor = true
 		g.note(tagPanicRisk)
@@ -529,6 +555,23 @@ func (g *Generator) stringExpr(fuel int) value {
 	return out
 }
 
+// unSelf replaces an identical-to-left right operand with a literal — a
+// self-compare is constant-in-effect (second review: 56 in 1300 programs).
+// A discarded bare-variable read is un-counted; identical COMPLEX operands
+// keep their reads, which remain real via the left copy.
+func (g *Generator) unSelf(left, right value, t Type) value {
+	if left.text != right.text {
+		return right
+	}
+	for i := range g.vars {
+		if g.vars[i].name == right.text {
+			g.vars[i].reads--
+			break
+		}
+	}
+	return g.literal(t)
+}
+
 func (g *Generator) boolExpr(fuel int) value {
 	if fuel <= 0 {
 		return g.variable(Bool())
@@ -543,8 +586,9 @@ func (g *Generator) boolExpr(fuel int) value {
 			t := pick(g.c, intTypes())
 			op := pick(g.c, []string{"<", "<=", ">", ">="})
 			g.mark("comparisons")
-			out = value{text: fmt.Sprintf("(%s %s %s)",
-				g.expr(t, fuel-1).text, op, g.expr(t, fuel-1).text)}
+			left := g.expr(t, fuel-1)
+			right := g.unSelf(left, g.expr(t, fuel-1), t)
+			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
 		}},
 		{name: "equality", weight: 2, ok: g.enabled("equality"), emit: func() {
 			t := pick(g.c, intTypes())
@@ -553,8 +597,9 @@ func (g *Generator) boolExpr(fuel int) value {
 				op = "!="
 			}
 			g.mark("equality")
-			out = value{text: fmt.Sprintf("(%s %s %s)",
-				g.expr(t, fuel-1).text, op, g.expr(t, fuel-1).text)}
+			left := g.expr(t, fuel-1)
+			right := g.unSelf(left, g.expr(t, fuel-1), t)
+			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
 		}},
 		{name: "field", weight: 1, ok: g.enabled("structs", "field") && len(g.fieldSources(&Type{Shape: ShapeBool})) > 0, emit: func() {
 			out = g.fieldRead(Bool())
@@ -580,12 +625,16 @@ func (g *Generator) boolExpr(fuel int) value {
 				op = "!="
 			}
 			rhs := "nil"
-			if others := g.varsOfShape(ShapeInterface, nil); len(others) > 0 && g.c.chance(2) {
-				ov := &g.vars[pick(g.c, others)]
-				if ov.typ.Equal(iv.typ) {
-					ov.reads++
-					rhs = ov.name
+			var others []int
+			for _, vi := range g.varsOfShape(ShapeInterface, nil) {
+				if g.vars[vi].name != iv.name && g.vars[vi].typ.Equal(iv.typ) {
+					others = append(others, vi)
 				}
+			}
+			if len(others) > 0 && g.c.chance(2) {
+				ov := &g.vars[pick(g.c, others)]
+				ov.reads++
+				rhs = ov.name
 			}
 			g.mark("interfaces", "equality")
 			out = value{text: fmt.Sprintf("(%s %s %s)", iv.name, op, rhs)}
@@ -617,8 +666,9 @@ func (g *Generator) boolExpr(fuel int) value {
 			// get wrong around multi-byte runes.
 			op := pick(g.c, []string{"<", "<=", ">", ">="})
 			g.mark("strings", "comparisons")
-			out = value{text: fmt.Sprintf("(%s %s %s)",
-				g.stringExpr(fuel-1).text, op, g.stringExpr(fuel-1).text)}
+			left := g.stringExpr(fuel - 1)
+			right := g.unSelf(left, g.stringExpr(fuel-1), Str())
+			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
 		}},
 		{name: "str-equal", weight: 1, ok: g.enabled("strings", "equality"), emit: func() {
 			op := "=="
@@ -626,8 +676,9 @@ func (g *Generator) boolExpr(fuel int) value {
 				op = "!="
 			}
 			g.mark("strings", "equality")
-			out = value{text: fmt.Sprintf("(%s %s %s)",
-				g.stringExpr(fuel-1).text, op, g.stringExpr(fuel-1).text)}
+			left := g.stringExpr(fuel - 1)
+			right := g.unSelf(left, g.stringExpr(fuel-1), Str())
+			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
 		}},
 		{name: "logic", weight: 2, ok: true, emit: func() {
 			op := "&&"

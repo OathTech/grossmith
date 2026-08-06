@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"regexp"
@@ -1295,6 +1296,141 @@ func TestInterfacesAreSatisfiedAndAssertionsLegal(t *testing.T) {
 	t.Logf("interfaces in %d/400 programs, %d assertions, empty forms %d", withIfaces, asserts, empty)
 }
 
+// TestNoAppendToEnclosingRangedSlice witnesses the second review's charter
+// fix: `for range s { for range s { s = append(s, x) } }` executes
+// len*2^len statements (the inner range re-evaluates len). Appends to any
+// slice an enclosing range iterates are banned by mask.
+func TestNoAppendToEnclosingRangedSlice(t *testing.T) {
+	ranges := 0
+	for seed := int64(1); seed <= 500; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		var walk func(n ast.Node, ranged map[string]bool)
+		walk = func(n ast.Node, ranged map[string]bool) {
+			switch e := n.(type) {
+			case *ast.RangeStmt:
+				inner := map[string]bool{}
+				for k := range ranged {
+					inner[k] = true
+				}
+				if id, ok := e.X.(*ast.Ident); ok {
+					inner[id.Name] = true
+					ranges++
+				}
+				for _, st := range e.Body.List {
+					walk(st, inner)
+				}
+				return
+			case *ast.AssignStmt:
+				if len(e.Rhs) == 1 {
+					if call, ok := e.Rhs[0].(*ast.CallExpr); ok {
+						if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == "append" {
+							target := call.Args[0].(*ast.Ident).Name
+							if ranged[target] {
+								t.Fatalf("seed %d: append to %s inside a range over it — the length bomb\n%s",
+									seed, target, c.Source)
+							}
+						}
+					}
+				}
+			}
+			for _, child := range childStmts(n) {
+				walk(child, ranged)
+			}
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if fn, ok := n.(*ast.FuncDecl); ok {
+				for _, st := range fn.Body.List {
+					walk(st, map[string]bool{})
+				}
+				return false
+			}
+			return true
+		})
+	}
+	if ranges == 0 {
+		t.Fatal("no ranges checked")
+	}
+	t.Logf("checked %d range loops for enclosing-append", ranges)
+}
+
+// childStmts returns nested statement lists for the walk above.
+func childStmts(n ast.Node) []ast.Stmt {
+	switch e := n.(type) {
+	case *ast.BlockStmt:
+		return e.List
+	case *ast.IfStmt:
+		out := append([]ast.Stmt{}, e.Body.List...)
+		if b, ok := e.Else.(*ast.BlockStmt); ok {
+			out = append(out, b.List...)
+		}
+		return out
+	case *ast.ForStmt:
+		return e.Body.List
+	case *ast.SwitchStmt:
+		var out []ast.Stmt
+		for _, cc := range e.Body.List {
+			out = append(out, cc.(*ast.CaseClause).Body...)
+		}
+		return out
+	}
+	return nil
+}
+
+// TestGeneratedProgramsTypecheck386 closes the second review's coverage gap:
+// every in-repo typecheck used amd64 sizes, so a 386-only constant-
+// representability regression (the class the 32-bit platform-int boundary
+// set exists to prevent) was invisible to the suite.
+func TestGeneratedProgramsTypecheck386(t *testing.T) {
+	sizes := types.SizesFor("gc", "386")
+	for seed := int64(1); seed <= 150; seed++ {
+		for _, corner := range []string{"", "boundary"} {
+			cfg := DefaultConfig(seed)
+			cfg.Corner = corner
+			c, err := New(cfg).Generate()
+			if err != nil {
+				t.Fatalf("seed %d corner %q: %v", seed, corner, err)
+			}
+			fset, file := parseCase(t, c.Source, seed)
+			conf := types.Config{Sizes: sizes}
+			if _, err := conf.Check("main", fset, []*ast.File{file}, nil); err != nil {
+				t.Fatalf("seed %d corner %q does not typecheck at 386 sizes: %v\n%s", seed, corner, err, c.Source)
+			}
+		}
+	}
+}
+
+// TestNoIdentityCompares: self-compares (v == v) are constant-in-effect; the
+// second review counted 56. Both operands rendering identically is banned.
+func TestNoIdentityCompares(t *testing.T) {
+	compares := 0
+	for seed := int64(1); seed <= 400; seed++ {
+		c := generate(t, seed)
+		fset, file := parseCase(t, c.Source, seed)
+		ast.Inspect(file, func(n ast.Node) bool {
+			e, ok := n.(*ast.BinaryExpr)
+			if !ok {
+				return true
+			}
+			switch e.Op {
+			case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+				compares++
+				var lb, rb strings.Builder
+				printer.Fprint(&lb, fset, e.X)
+				printer.Fprint(&rb, fset, e.Y)
+				if lb.String() == rb.String() {
+					t.Fatalf("seed %d: identity compare %s\n%s", seed, lb.String(), c.Source)
+				}
+			}
+			return true
+		})
+	}
+	if compares == 0 {
+		t.Fatal("no comparisons checked")
+	}
+	t.Logf("checked %d comparisons, none identity", compares)
+}
+
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
 func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	bad := []Config{
@@ -1310,6 +1446,9 @@ func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 		// Misspelled construct key: silent population degradation.
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6,
 			Constructs: map[string]bool{"array": true}},
+		// Core keys are no-ops in enabled() and therefore rejected.
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6,
+			Constructs: map[string]bool{"assignment": false}},
 	}
 	for i, cfg := range bad {
 		func() {

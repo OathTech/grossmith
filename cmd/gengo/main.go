@@ -144,8 +144,8 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 	fmt.Printf("\nconformance statement:\n")
 	fmt.Printf("  reference: %s GOARCH=%s\n", rep.GoVersion, runtime.GOARCH)
 	fmt.Printf("  equivalence: byte equality of observations\n")
-	fmt.Printf("  cases: %d  built: %d  ran: %d  timeouts: %d  panic-paths: %d\n",
-		rep.Total, rep.Built, rep.Ran, rep.TimedOut, rep.PanicPaths)
+	fmt.Printf("  cases: %d  built: %d  ran: %d  timeouts: %d  panic-paths: %d  recovered: %d\n",
+		rep.Total, rep.Built, rep.Ran, rep.TimedOut, rep.PanicPaths, rep.Recovered)
 	fmt.Printf("  conformance rate: %.2f%%\n", 100*rep.Rate())
 	for i, f := range rep.Failures {
 		if i == 5 {

@@ -23,7 +23,8 @@ type CaseResult struct {
 	Built     bool
 	Ran       bool // exit status 0 within the timeout
 	TimedOut  bool
-	PanicPath bool // the observation is a recovered panic
+	PanicPath bool // the observation includes an unrecovered panic
+	Recovered bool // a guarded statement caught a panic and execution continued
 	Output    string
 	Detail    string // compiler or runtime error text when something failed
 }
@@ -77,8 +78,10 @@ func Check(dir string, rt Runtime, timeout time.Duration) CaseResult {
 		res.Ran = true
 		// Not HasPrefix: interleaved observation points print BEFORE a later
 		// panic, which is the point — the panic line can sit anywhere. The
-		// generated string alphabet cannot produce the word "panic".
+		// generated string alphabet cannot produce the words "panic" or
+		// "recovered".
 		res.PanicPath = strings.Contains(res.Output, "panic")
+		res.Recovered = strings.Contains(res.Output, "recovered")
 	}
 	return res
 }
@@ -92,6 +95,7 @@ type Report struct {
 	Ran        int
 	TimedOut   int
 	PanicPaths int
+	Recovered  int
 	Failures   []CaseResult
 	Results    []CaseResult // per case, in directory order
 }
@@ -163,6 +167,9 @@ func Run(root string, rt Runtime, timeout time.Duration, workers int) (Report, e
 		if res.PanicPath {
 			rep.PanicPaths++
 		}
+		if res.Recovered {
+			rep.Recovered++
+		}
 		if !res.Conformant() {
 			rep.Failures = append(rep.Failures, res)
 		}
@@ -185,6 +192,11 @@ type Divergence struct {
 // their details, fail-closed.
 func Diff(a, b Report) []Divergence {
 	var out []Divergence
+	if len(a.Results) != len(b.Results) {
+		return []Divergence{{Dir: "<report mismatch>",
+			DetailA: fmt.Sprintf("%d results", len(a.Results)),
+			DetailB: fmt.Sprintf("%d results", len(b.Results))}}
+	}
 	for i := range a.Results {
 		ra, rb := a.Results[i], b.Results[i]
 		if ra.Conformant() && rb.Conformant() && bytes.Equal([]byte(ra.Output), []byte(rb.Output)) {

@@ -40,9 +40,12 @@ type Config struct {
 	Corner string
 }
 
-// DefaultConfig is the MVP shape: small programs, shallow nesting, swarm on.
+// DefaultConfig: small programs, shallow nesting, swarm on. Stmts tracks
+// the grown pool floor (~20 declarations): at Stmts 8 the second review
+// measured a 76% initializer-echo rate in observed output — eight writes
+// cannot touch sixteen observed variables.
 func DefaultConfig(seed int64) Config {
-	return Config{Seed: seed, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6, Swarm: true}
+	return Config{Seed: seed, Vars: 4, Stmts: 14, Depth: 2, ExprFuel: 3, LoopCap: 6, Swarm: true}
 }
 
 // Validate rejects a Config the generator cannot honour — an error, never a
@@ -66,29 +69,42 @@ func (c Config) Validate() error {
 	case c.ExprFuel > 12:
 		return fmt.Errorf("config: ExprFuel %d exceeds 12", c.ExprFuel)
 	}
-	// "Halts" must include "halts before the heat death": bound the
-	// worst-case executed statement count, not just each knob (review
-	// finding: LoopCap 1<<40 passed Validate and generated a years-long
-	// loop). Worst case is ~Stmts * (2*LoopCap)^Depth.
+	// "Halts" must include "halts before the heat death" AND "halts before
+	// the OOM killer": bound worst-case executed statements. The cap is
+	// memory-aware (second review): a defer record or slice append can
+	// retain ~56B per executed statement, so 4e6 statements bounds retained
+	// memory to ~224MB. Time was capped at 1e9 before; memory is the
+	// binding constraint.
 	worst := float64(c.Stmts)
 	for i := 0; i < c.Depth; i++ {
 		worst *= 2 * float64(c.LoopCap)
 	}
-	if worst > 1e9 {
-		return fmt.Errorf("config: worst-case executed statements ~%.0g exceeds 1e9 (Stmts=%d, LoopCap=%d, Depth=%d)",
+	if worst > 4e6 {
+		return fmt.Errorf("config: worst-case executed statements ~%.0g exceeds 4e6 (Stmts=%d, LoopCap=%d, Depth=%d)",
 			worst, c.Stmts, c.LoopCap, c.Depth)
 	}
 	// Unknown construct keys are misconfigurations, not empty gates: a typo
-	// like "array" would silently degrade the population to core-only.
+	// like "array" would silently degrade the population to core-only. Core
+	// keys are rejected too — enabled() short-circuits them, so a caller
+	// writing {"assignment": false} would be silently ignored otherwise.
+	// Keys are sorted so the diagnosis is deterministic (map order reached
+	// an artifact — review finding).
 	if c.Constructs != nil {
 		known := map[string]bool{}
 		for _, tag := range Optional() {
 			known[tag] = true
 		}
+		var bad []string
 		for tag := range c.Constructs {
-			if !known[tag] && !coreConstructs[tag] {
-				return fmt.Errorf("config: unknown construct %q", tag)
+			if coreConstructs[tag] {
+				bad = append(bad, tag+" (core, not configurable)")
+			} else if !known[tag] {
+				bad = append(bad, tag)
 			}
+		}
+		if len(bad) > 0 {
+			sort.Strings(bad)
+			return fmt.Errorf("config: unknown constructs: %s", strings.Join(bad, ", "))
 		}
 	}
 	return nil
@@ -167,6 +183,15 @@ type Generator struct {
 	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
 	corner       string
 	boundaryBias int
+	// rangedSlices are variable indices of slices an ENCLOSING range is
+	// currently iterating. Appending to one is banned by mask: an inner
+	// range over the same slice re-evaluates len, so range+append composes
+	// into len*2^len executed statements — the second review's charter
+	// violation, found live in the corpus (case_00934: len 3->6->12->24).
+	rangedSlices []int
+	// guardBias raises the hot-arm odds inside a guarded IIFE, so the
+	// recover path is actually exercised.
+	guardBias bool
 	// riskSpent is the per-statement panic-risk budget (review finding: two
 	// hot panic sites in one statement have SPEC-UNSPECIFIED panic identity
 	// — a conformant clone may report either panic). Each statement context
@@ -242,7 +267,13 @@ func New(cfg Config) *Generator {
 	}
 	switch {
 	case cfg.Constructs != nil:
-		g.constructs = cfg.Constructs
+		// Copied, not aliased: the caller's map was the one non-tape input
+		// into generation (review finding — a mutation between New and
+		// Generate changed program bytes for the same seed).
+		g.constructs = make(map[string]bool, len(cfg.Constructs))
+		for k, v := range cfg.Constructs {
+			g.constructs[k] = v
+		}
 	case cfg.Swarm:
 		g.constructs = swarmMix(g.c)
 	}
@@ -273,10 +304,12 @@ func (g *Generator) Generate() (Case, error) {
 	if g.done {
 		return Case{}, fmt.Errorf("gen: Generator is single-use — make one per case")
 	}
-	g.done = true
 	if err := g.cfg.Validate(); err != nil {
+		// Not marked done: a config error should repeat, not turn into a
+		// misleading single-use diagnosis (review finding).
 		return Case{}, err
 	}
+	g.done = true
 	body := &emitter{indent: 1}
 
 	if g.corner != "" {
@@ -453,7 +486,8 @@ func (g *Generator) createDefinedTypes() {
 	if !g.enabled("defined_types") {
 		return
 	}
-	for i := 0; i < 1+g.c.draw(2); i++ {
+	definedCount := 1 + g.c.draw(2) // hoisted: never draw in a loop condition
+	for i := 0; i < definedCount; i++ {
 		t := pick(g.c, intTypes())
 		t.Named = fmt.Sprintf("T%d", i)
 		g.defined = append(g.defined, definedType{typ: t})
@@ -476,10 +510,11 @@ func (g *Generator) createInterfaces() {
 			sources = append(sources, di)
 		}
 	}
-	for i := 0; i < 1+g.c.draw(2); i++ {
+	ifaceCount := 1 + g.c.draw(2) // hoisted: never draw in a loop condition
+	for i := 0; i < ifaceCount; i++ {
 		it := ifaceType{typ: Type{Shape: ShapeInterface, Name: fmt.Sprintf("I%d", i)}}
 		derived := g.c.choose("iface-kind", []arm{
-			{name: "derived", weight: 3, ok: len(sources) > 0},
+			{name: "derived", weight: 5, ok: len(sources) > 0},
 			{name: "empty", weight: 2, ok: true},
 		}).name == "derived"
 		if derived {
@@ -581,7 +616,9 @@ func (g *Generator) generateMethods() {
 		return
 	}
 	for di := range g.defined {
-		for j := g.c.draw(3); j > 0; j-- {
+		// 1-2 per type (was 0-2): 22% of methodful mixes drew zero methods,
+		// starving derived interfaces (second review).
+		for j := 1 + g.c.draw(2); j > 0; j-- {
 			m := g.generateMethod(di)
 			g.defined[di].methods = append(g.defined[di].methods, m)
 		}
@@ -911,6 +948,23 @@ func (g *Generator) arrayVars(elem *Type) []int { return g.varsOfShape(ShapeArra
 
 // sliceVars is arrayVars for slices.
 func (g *Generator) sliceVars(elem *Type) []int { return g.varsOfShape(ShapeSlice, elem) }
+
+// appendableSlices are slice variables no enclosing range is iterating.
+func (g *Generator) appendableSlices() []int {
+	var found []int
+	for _, i := range g.sliceVars(nil) {
+		ranged := false
+		for _, ri := range g.rangedSlices {
+			if ri == i {
+				ranged = true
+			}
+		}
+		if !ranged {
+			found = append(found, i)
+		}
+	}
+	return found
+}
 
 // mapVars returns map-typed variable indices, optionally by element type.
 func (g *Generator) mapVars(elem *Type) []int { return g.varsOfShape(ShapeMap, elem) }

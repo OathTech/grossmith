@@ -35,19 +35,21 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 		{name: "assign", weight: 4, ok: true, emit: func() { g.assign(out) }},
 		{name: "compound", weight: 2, ok: true, emit: func() { g.compoundAssign(out) }},
 		{name: "incdec", weight: 2, ok: true, emit: func() { g.incDec(out) }},
-		{name: "elem-assign", weight: 2, ok: g.enabled("index") && len(g.indexableVars()) > 0,
+		{name: "elem-assign", weight: 3, ok: g.enabled("index") && len(g.indexableVars()) > 0,
 			emit: func() { g.elemAssign(out) }},
-		{name: "append", weight: 2, ok: g.enabled("slices", "append") && len(g.sliceVars(nil)) > 0,
+		{name: "append", weight: 3, ok: g.enabled("slices", "append") && len(g.appendableSlices()) > 0,
 			emit: func() { g.appendStmt(out) }},
-		{name: "map-write", weight: 2, ok: g.enabled("maps") && len(g.mapVars(nil)) > 0,
+		{name: "map-write", weight: 3, ok: g.enabled("maps") && len(g.mapVars(nil)) > 0,
 			emit: func() { g.mapWrite(out) }},
-		{name: "map-delete", weight: 1, ok: g.enabled("maps", "delete") && len(g.mapVars(nil)) > 0,
+		{name: "map-delete", weight: 2, ok: g.enabled("maps", "delete") && len(g.mapVars(nil)) > 0,
 			emit: func() { g.mapDelete(out) }},
 		{name: "comma-ok", weight: 1, ok: g.enabled("maps", "comma_ok") && len(g.mapVars(nil)) > 0,
 			emit: func() { g.commaOk(out) }},
 		{name: "assert-ok", weight: 1, ok: g.enabled("interfaces", "assertion") && len(g.ifaceVars()) > 0 && len(g.defined) > 0,
 			emit: func() { g.assertOk(out) }},
-		{name: "defer", weight: 1, ok: g.enabled("defer") && !g.pureMode,
+		{name: "iface-assign", weight: 2, ok: g.enabled("interfaces") && len(g.ifaceVars()) > 0,
+			emit: func() { g.ifaceAssign(out) }},
+		{name: "defer", weight: 2, ok: g.enabled("defer") && !g.pureMode,
 			emit: func() { g.deferPrint(out) }},
 		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0 && !g.pureMode,
 			emit: func() { g.guardedStmt(out) }},
@@ -320,11 +322,22 @@ func (g *Generator) elemAssign(out *emitter) {
 // only ever grows, preserving the minLen index bound.
 func (g *Generator) appendStmt(out *emitter) {
 	g.resetRisk()
-	i := pick(g.c, g.sliceVars(nil))
+	i := pick(g.c, g.appendableSlices())
 	s := &g.vars[i]
 	s.reads++ // append reads its first operand
 	g.mark("slices", "append", "assignment")
-	out.line("%s = append(%s, %s)", s.name, s.name, g.expr(*s.typ.Elem, g.cfg.ExprFuel).text)
+	var elem value
+	if s.typ.Elem.Shape == ShapeString {
+		// Literal elements only, decided BEFORE any draw (a discarded
+		// expression would leave phantom reads): appending a
+		// variable-derived string retains a full copy per executed
+		// statement — quadratic retention the linear-growth rule cannot
+		// see (second review).
+		elem = g.literal(Str())
+	} else {
+		elem = g.expr(*s.typ.Elem, g.cfg.ExprFuel)
+	}
+	out.line("%s = append(%s, %s)", s.name, s.name, elem.text)
 }
 
 // mapWrite sets one alphabet key. Maps are never nil, so writes cannot
@@ -377,6 +390,22 @@ func (g *Generator) callStmt(out *emitter) {
 	out.line("%s = %s(%s)", strings.Join(targets, ", "), h.name, g.callArgs(h, g.cfg.ExprFuel-1))
 }
 
+// ifaceAssign reassigns an interface variable — dynamic-type churn, which
+// is what makes assertion outcomes and probes vary (second review: 98.6% of
+// interface probes matched the declaration because reassignment was rare).
+func (g *Generator) ifaceAssign(out *emitter) {
+	g.resetRisk()
+	iv := &g.vars[pick(g.c, g.ifaceVars())]
+	rhs := g.ifaceExpr(iv.typ)
+	if rhs.text == iv.name {
+		iv.reads--
+		info := g.ifaceByName(iv.typ.Name)
+		rhs = g.variable(g.defined[pick(g.c, g.implementers(info))].typ)
+	}
+	g.mark("interfaces", "assignment")
+	out.line("%s = %s", iv.name, rhs.text)
+}
+
 // assertOk is the two-result type assertion: x, ok = iv.(T) — never panics,
 // and with one satisfier per interface both results are static knowledge.
 func (g *Generator) assertOk(out *emitter) {
@@ -426,6 +455,12 @@ func (g *Generator) deferPrint(out *emitter) {
 // typecheck witness would catch any leak.
 func (g *Generator) guardedStmt(out *emitter) {
 	g.mark("recover")
+	// The guard exists to CATCH panics, but at ordinary risk minorities the
+	// inner statement panicked in 0.7% of guards (second review) — the
+	// statement-level-catch semantics were effectively untested. Bias the
+	// hot arms up inside the guard.
+	g.guardBias = true
+	defer func() { g.guardBias = false }()
 	out.open("func() {")
 	out.open("defer func() {")
 	out.open("if r := recover(); r != nil {")
@@ -535,8 +570,14 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 	i := pick(g.c, g.indexableVars())
 	arr := &g.vars[i]
 	if arr.typ.Shape == ShapeSlice {
-		// The range expression is evaluated ONCE, so an append inside the
-		// body cannot extend this loop: termination still rides the data.
+		// One range's own trip count is fixed (the range expression is
+		// evaluated once) — but an INNER range over the same slice
+		// re-evaluates len, so append-under-enclosing-range composes into
+		// len*2^len executed statements (second review, live in corpus).
+		// The mask, not a weight: appends to this slice are banned for the
+		// duration of the body.
+		g.rangedSlices = append(g.rangedSlices, i)
+		defer func() { g.rangedSlices = g.rangedSlices[:len(g.rangedSlices)-1] }()
 		g.mark("slices", "range")
 	} else {
 		g.mark("arrays", "range")

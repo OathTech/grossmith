@@ -98,6 +98,13 @@ func (g *Generator) note(tags ...string) {
 func swarmMix(c *chooser) map[string]bool {
 	mix := make(map[string]bool, len(Optional()))
 	for _, tag := range Optional() {
+		if tag == "observe_point" || tag == "defer" {
+			// The observation levers ride at p=3/4: the second review found
+			// panic paths whose mix lacked BOTH were 100% masked — the
+			// levers convert (56%) wherever they exist.
+			mix[tag] = c.draw(4) != 0
+			continue
+		}
 		mix[tag] = c.draw(2) == 0
 	}
 	return mix
