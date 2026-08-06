@@ -27,6 +27,8 @@ const (
 	ShapeBool
 	// ShapeString is string.
 	ShapeString
+	// ShapeArray is a fixed-length array of a scalar or string element.
+	ShapeArray
 )
 
 // Type is one generated Go type. A single concrete struct rather than an
@@ -38,6 +40,11 @@ type Type struct {
 	Bits int
 	// Unsigned distinguishes uintN from intN.
 	Unsigned bool
+	// Elem and Len describe ShapeArray. Len is small and fixed: termination
+	// of range loops and the size of element-wise observation both ride on
+	// it being a literal known at generation.
+	Elem *Type
+	Len  int
 }
 
 // Bool is the bool type.
@@ -45,6 +52,12 @@ func Bool() Type { return Type{Shape: ShapeBool} }
 
 // Str is the string type.
 func Str() Type { return Type{Shape: ShapeString} }
+
+// Array builds a fixed-length array type over elem.
+func Array(elem Type, n int) Type {
+	e := elem
+	return Type{Shape: ShapeArray, Elem: &e, Len: n}
+}
 
 // Int builds an integer type. bits 0 means platform width.
 func Int(bits int, unsigned bool) Type {
@@ -72,6 +85,9 @@ func (t Type) GoName() string {
 	if t.Shape == ShapeString {
 		return "string"
 	}
+	if t.Shape == ShapeArray {
+		return fmt.Sprintf("[%d]%s", t.Len, t.Elem.GoName())
+	}
 	stem := "int"
 	if t.Unsigned {
 		stem = "uint"
@@ -89,6 +105,9 @@ func (t Type) Tags() []string {
 	}
 	if t.Shape == ShapeString {
 		return []string{"strings"}
+	}
+	if t.Shape == ShapeArray {
+		return append([]string{"arrays"}, t.Elem.Tags()...)
 	}
 	if t.Bits == 0 && !t.Unsigned {
 		return []string{"ints"}
@@ -171,7 +190,14 @@ func (t Type) boundaryDivisors() []string {
 	return []string{"-1", b[0], b[4]} // -1, min, max
 }
 
-// Equal reports type identity.
+// Equal reports type identity — STRUCTURAL, never pointer identity (the
+// gosmith lesson: pointer-identity types foreclose assignability).
 func (t Type) Equal(other Type) bool {
-	return t.Shape == other.Shape && t.Bits == other.Bits && t.Unsigned == other.Unsigned
+	if t.Shape != other.Shape || t.Bits != other.Bits || t.Unsigned != other.Unsigned {
+		return false
+	}
+	if t.Shape == ShapeArray {
+		return t.Len == other.Len && t.Elem.Equal(*other.Elem)
+	}
+	return true
 }

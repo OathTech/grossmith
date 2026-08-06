@@ -114,6 +114,69 @@ func TestLoopsAreBoundedByConstruction(t *testing.T) {
 	t.Logf("checked %d loops", loops)
 }
 
+// TestRangeLoopsAreOverVariables: a range loop terminates because its
+// operand is a fixed-length array VARIABLE — anything more exotic in range
+// position would need its own termination argument.
+func TestRangeLoopsAreOverVariables(t *testing.T) {
+	ranges := 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		ast.Inspect(file, func(n ast.Node) bool {
+			r, ok := n.(*ast.RangeStmt)
+			if !ok {
+				return true
+			}
+			ranges++
+			if _, ok := r.X.(*ast.Ident); !ok {
+				t.Fatalf("seed %d: range over %T, not a variable", seed, r.X)
+			}
+			return true
+		})
+	}
+	if ranges == 0 {
+		t.Fatal("no range loops in 300 seeds")
+	}
+	t.Logf("checked %d range loops", ranges)
+}
+
+// TestArraysArePresentAndObserved: arrays occur in the population, and at
+// least some are observed results (the driver prints them element-wise —
+// alphabet reconciliation: every generatable type reaches the observation).
+func TestArraysArePresentAndObserved(t *testing.T) {
+	withArrays, observedArrays := 0, 0
+	for seed := int64(1); seed <= 200; seed++ {
+		c := generate(t, seed)
+		for _, f := range c.Features {
+			if f == "arrays" {
+				withArrays++
+				break
+			}
+		}
+		if strings.Contains(string(c.Source), "]") && strings.Contains(string(c.Source), "println(r") {
+			_, file := parseCase(t, c.Source, seed)
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Name.Name != Subject || fn.Type.Results == nil {
+					continue
+				}
+				for _, res := range fn.Type.Results.List {
+					if _, ok := res.Type.(*ast.ArrayType); ok {
+						observedArrays++
+					}
+				}
+			}
+		}
+	}
+	if withArrays == 0 {
+		t.Fatal("no arrays in 200 swarm seeds")
+	}
+	if observedArrays == 0 {
+		t.Fatal("no observed array results in 200 seeds — arrays never reach the observation")
+	}
+	t.Logf("arrays in %d/200 programs, %d observed array results", withArrays, observedArrays)
+}
+
 // TestObservedFloor: every program returns at least one value — a program
 // observing nothing tests nothing.
 func TestObservedFloor(t *testing.T) {
@@ -251,7 +314,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max("} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "["} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}

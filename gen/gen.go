@@ -156,14 +156,18 @@ func (g *Generator) Generate() (Case, error) {
 	for i := 0; i < g.cfg.Stmts; i++ {
 		g.stmt(body, g.cfg.Depth)
 	}
-	resultTypes, resultNames := g.observe(body)
+	observed := g.observe(body)
+	resultTypes := make([]string, len(observed))
+	for i, b := range observed {
+		resultTypes[i] = b.typ.GoName()
+	}
 
 	var out strings.Builder
 	out.WriteString("package main\n\n")
 	fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
 	out.WriteString(body.buf.String())
 	out.WriteString("}\n\n")
-	g.driver(&out, resultNames)
+	g.driver(&out, observed)
 
 	source, err := format.Source([]byte(out.String()))
 	if err != nil {
@@ -178,11 +182,18 @@ func (g *Generator) Generate() (Case, error) {
 	return Case{Source: source, Features: features, Tape: g.c.tape, Stats: g.c.stats}, nil
 }
 
-// typePool is the declarable type set: scalars always, string when enabled.
+// typePool is the declarable type set: scalars always, string when enabled,
+// plus two per-seed array types (element and length drawn through the tape).
 func (g *Generator) typePool() []Type {
 	pool := scalarTypes()
 	if g.enabled("strings") {
 		pool = append(pool, Str())
+	}
+	if g.enabled("arrays") {
+		elems := pool
+		for i := 0; i < 2; i++ {
+			pool = append(pool, Array(pick(g.c, elems), 2+g.c.draw(3)))
+		}
 	}
 	return pool
 }
@@ -226,12 +237,14 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 // every unobserved, never-read variable with `_ = v` (legal deadness — the
 // eliminable case, recorded as dead_value). An unobserved variable that WAS
 // read is a feeder: visible through what it feeds.
-func (g *Generator) observe(out *emitter) (types, names []string) {
+func (g *Generator) observe(out *emitter) []binding {
+	var observed []binding
+	var names []string
 	for i := range g.vars {
 		v := &g.vars[i]
 		switch {
 		case v.observed:
-			types = append(types, v.typ.GoName())
+			observed = append(observed, *v)
 			names = append(names, v.name)
 		case v.reads == 0:
 			out.line("_ = %s", v.name)
@@ -242,16 +255,16 @@ func (g *Generator) observe(out *emitter) (types, names []string) {
 	}
 	g.mark("return")
 	out.line("return %s", strings.Join(names, ", "))
-	return types, names
+	return observed
 }
 
 // driver emits func main: call the subject, print every observed value on its
 // own line, and turn any panic into an ordinary observation ("panic: <msg>")
 // with exit status 0 — panic paths are comparable outcomes, not failures.
 // println needs no imports and prints ints, uints, and bools deterministically.
-func (g *Generator) driver(out *strings.Builder, resultNames []string) {
-	rs := make([]string, len(resultNames))
-	for i := range resultNames {
+func (g *Generator) driver(out *strings.Builder, observed []binding) {
+	rs := make([]string, len(observed))
+	for i := range observed {
 		rs[i] = fmt.Sprintf("r%d", i)
 	}
 	out.WriteString("func main() {\n")
@@ -265,7 +278,15 @@ func (g *Generator) driver(out *strings.Builder, resultNames []string) {
 	out.WriteString("\t\t}\n")
 	out.WriteString("\t}()\n")
 	fmt.Fprintf(out, "\t%s := %s()\n", strings.Join(rs, ", "), Subject)
-	for _, r := range rs {
+	for i, r := range rs {
+		// println takes scalars only; an observed array is printed
+		// element-wise, so the whole value stays injectively visible.
+		if observed[i].typ.Shape == ShapeArray {
+			for j := 0; j < observed[i].typ.Len; j++ {
+				fmt.Fprintf(out, "\tprintln(%s[%d])\n", r, j)
+			}
+			continue
+		}
 		fmt.Fprintf(out, "\tprintln(%s)\n", r)
 	}
 	out.WriteString("}\n")
@@ -285,6 +306,26 @@ func (g *Generator) pickVar(t Type) (int, bool) {
 	}
 	return pick(g.c, found), true
 }
+
+// arrayVars returns the indices of array-typed variables, optionally
+// restricted to a given element type. Pure scan: no draws.
+func (g *Generator) arrayVars(elem *Type) []int {
+	var found []int
+	for i, v := range g.vars {
+		if v.typ.Shape != ShapeArray {
+			continue
+		}
+		if elem != nil && !v.typ.Elem.Equal(*elem) {
+			continue
+		}
+		found = append(found, i)
+	}
+	return found
+}
+
+func (g *Generator) hasArrayOfElem(t Type) bool { return len(g.arrayVars(&t)) > 0 }
+
+func (g *Generator) pickArrayOfElem(t Type) int { return pick(g.c, g.arrayVars(&t)) }
 
 // ---- emitter ---------------------------------------------------------
 

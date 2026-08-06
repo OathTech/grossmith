@@ -34,6 +34,14 @@ func (g *Generator) literal(t Type) value {
 		return value{text: "false", constant: true}
 	case ShapeString:
 		return value{text: fmt.Sprintf("%q", pick(g.c, stringWords)), constant: true}
+	case ShapeArray:
+		// A composite literal is never a Go constant, so boundary elements
+		// are safe: no compile-time folding can reject them.
+		elems := make([]string, t.Len)
+		for i := range elems {
+			elems[i] = g.literal(*t.Elem).text
+		}
+		return value{text: fmt.Sprintf("%s{%s}", t.GoName(), strings.Join(elems, ", "))}
 	}
 	if g.boundaryLiteralDrawn() {
 		return g.typedText(t, pick(g.c, t.boundaryLiterals()))
@@ -114,8 +122,55 @@ func (g *Generator) expr(t Type, fuel int) value {
 		return g.boolExpr(fuel)
 	case ShapeString:
 		return g.stringExpr(fuel)
+	case ShapeArray:
+		return g.arrayExpr(t)
 	}
 	return g.intExpr(t, fuel)
+}
+
+// arrayExpr is a whole-array value: a variable (assignment then COPIES — Go
+// arrays are values, a semantics clones get wrong) or a composite literal.
+func (g *Generator) arrayExpr(t Type) value {
+	var out value
+	g.c.choose("array-expr", []arm{
+		{name: "var", weight: 3, ok: true, emit: func() {
+			out = g.variable(t)
+		}},
+		{name: "composite", weight: 1, ok: true, emit: func() {
+			g.mark("arrays")
+			out = g.literal(t)
+		}},
+	}).emit()
+	return out
+}
+
+// indexExpr draws the index policy for one access into an array of length
+// t.Len — the panic decision made ON PURPOSE (trap catalogue: a constant
+// index out of range is a COMPILE error, so the constant arm is bounded by
+// construction; a variable index panics at runtime, drawn as a recorded
+// minority).
+func (g *Generator) indexExpr(t Type) string {
+	var out string
+	g.c.choose("index", []arm{
+		{name: "const", weight: 4, ok: true, emit: func() {
+			out = fmt.Sprintf("%d", g.c.draw(t.Len))
+		}},
+		{name: "mod", weight: 3, ok: g.enabled("conversions", "modulo"), emit: func() {
+			// Unsigned % length is always in range — a safe NON-CONSTANT
+			// index (signed % can be negative and would panic).
+			u := g.variable(Int(8, true))
+			g.mark("conversions", "modulo")
+			out = fmt.Sprintf("int(%s%%%d)", u.text, t.Len)
+		}},
+		{name: "panicky", weight: 1, ok: true, emit: func() {
+			// A raw int variable: usually out of range, so usually a
+			// deterministic index panic. Deliberate, tagged content.
+			v := g.variable(Int(0, false))
+			g.note(tagPanicRisk)
+			out = v.text
+		}},
+	}).emit()
+	return out
 }
 
 // nonConstExpr builds an expression of type t that is guaranteed
@@ -206,6 +261,13 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			g.markWidthDep(t)
 			inner := g.nonConstExpr(from, fuel-1)
 			out = value{text: fmt.Sprintf("%s(%s)", t.GoName(), inner.text)}
+		}},
+		{name: "index", weight: 2, ok: g.enabled("arrays", "index") && g.hasArrayOfElem(t), emit: func() {
+			i := g.pickArrayOfElem(t)
+			arr := &g.vars[i]
+			arr.reads++
+			g.mark("arrays", "index")
+			out = value{text: fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.typ))}
 		}},
 		{name: "len", weight: 1,
 			// len returns exactly `int`, and len of a string VARIABLE is
