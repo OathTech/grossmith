@@ -97,7 +97,15 @@ Exactly three properties are enforced by construction (the legality mask):
 3. **Outcome-deterministic** — no unordered iteration reaching output, side
    effects in statement position until an effect discipline exists, panics
    deliberate (charter 2; gosmith admitted nondeterminism on day one and was
-   crash-only forever — this cannot be retrofitted).
+   crash-only forever — this cannot be retrofitted). Panic IDENTITY is part
+   of the outcome: two hot panic sites in one statement have
+   spec-unspecified order, so each statement carries at most ONE (the
+   panic-risk budget, 2026-08 review). Deliberate multi-risk statements
+   return later as a corner compared under an any-panic quotient; the
+   strong levers — statement-level recover via IIFE (also un-masks
+   post-panic observation) and operand linearization via temporaries
+   (panic order pinned by statement sequencing) — ride the defer/recover
+   rung.
 
 Everything else legal is *generated*, controlled by weight and recorded by
 tag: dead code after a terminal statement, unreachable switch arms,
