@@ -43,6 +43,14 @@ const (
 	// Maps are never nil (born from literals), so writes cannot panic;
 	// reads of missing keys yield zero values, deterministically.
 	ShapeMap
+	// ShapeInterface is a NAMED interface type declared in the preamble,
+	// its method set a subset of one defined type's methods — satisfaction
+	// by construction. Method names are globally unique, so exactly ONE
+	// defined type satisfies each interface: every type assertion's outcome
+	// is statically known at generation (knowledge-as-data), and interface
+	// values are never nil (always initialized from a satisfying concrete
+	// value), so dynamic dispatch cannot panic.
+	ShapeInterface
 	// ShapeSlice is a slice of a scalar or string element. Slices carry two
 	// spec-nondeterminism traps handled by construction: cap after append is
 	// unspecified (cap is NEVER observed) and whether append reallocates is
@@ -140,7 +148,7 @@ func (t Type) GoName() string {
 	if t.Shape == ShapeArray {
 		return fmt.Sprintf("[%d]%s", t.Len, t.Elem.GoName())
 	}
-	if t.Shape == ShapeStruct {
+	if t.Shape == ShapeStruct || t.Shape == ShapeInterface {
 		return t.Name
 	}
 	if t.Shape == ShapeSlice {
@@ -176,6 +184,9 @@ func (t Type) Tags() []string {
 			tags = append(tags, f.Typ.Tags()...)
 		}
 		return tags
+	}
+	if t.Shape == ShapeInterface {
+		return []string{"interfaces"}
 	}
 	if t.Shape == ShapeSlice {
 		return append([]string{"slices"}, t.Elem.Tags()...)
@@ -291,7 +302,7 @@ func (t Type) Equal(other Type) bool {
 	if t.Shape == ShapeMap {
 		return t.Key.Equal(*other.Key) && t.Elem.Equal(*other.Elem)
 	}
-	if t.Shape == ShapeStruct {
+	if t.Shape == ShapeStruct || t.Shape == ShapeInterface {
 		// Named types: the name IS the identity (fields cannot differ under
 		// one name — decl() is the single source).
 		return t.Name == other.Name

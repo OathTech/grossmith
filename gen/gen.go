@@ -155,6 +155,8 @@ type Generator struct {
 	// defined are the per-seed defined types and their methods.
 	defined   []definedType
 	methodSeq int
+	// ifaces are the per-seed interface types.
+	ifaces []ifaceType
 	// pureMode is set while generating a helper or method body; pureBase
 	// names the environment's guaranteed non-constant int-ish variable (a
 	// helper's p0, a method's receiver r) for the nonConstExpr fallback.
@@ -201,6 +203,15 @@ type method struct {
 
 // methodRef locates one method: defined-type index, method index.
 type methodRef struct{ di, mi int }
+
+// ifaceType is one generated interface: a subset of one defined type's
+// method set, so satisfaction holds by construction. source is that defined
+// type's index; with globally-unique method names it is the ONLY satisfier.
+type ifaceType struct {
+	typ     Type
+	source  int
+	methods []int // indices into g.defined[source].methods
+}
 
 // riskOK reports whether the current statement may still draw a hot panic
 // site: never inside a helper (helpers are panic-free so their calls compose
@@ -272,8 +283,10 @@ func (g *Generator) Generate() (Case, error) {
 		g.note("corner_" + g.corner)
 	}
 	g.generateHelpers()
-	g.declare(body)
+	g.createDefinedTypes()
 	g.generateMethods()
+	g.createInterfaces()
+	g.declare(body)
 	g.mark("functions", "short_decl", "literals", "return")
 
 	for i := 0; i < g.cfg.Stmts; i++ {
@@ -298,6 +311,18 @@ func (g *Generator) Generate() (Case, error) {
 		for _, m := range dt.methods {
 			out.WriteString(m.src)
 		}
+	}
+	for _, it := range g.ifaces {
+		fmt.Fprintf(&out, "type %s interface {\n", it.typ.Name)
+		for _, mi := range it.methods {
+			m := g.defined[it.source].methods[mi]
+			sig := make([]string, len(m.params))
+			for pi, pt := range m.params {
+				sig[pi] = pt.GoName()
+			}
+			fmt.Fprintf(&out, "\t%s(%s) %s\n", m.name, strings.Join(sig, ", "), m.result.GoName())
+		}
+		out.WriteString("}\n\n")
 	}
 	fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
 	out.WriteString(body.buf.String())
@@ -422,6 +447,130 @@ func (g *Generator) generateHelper(idx int) helper {
 	return helper{name: name, params: params, results: results, src: src}
 }
 
+// createDefinedTypes draws the per-seed defined types (before methods, which
+// need them, and before declare, whose pool includes them).
+func (g *Generator) createDefinedTypes() {
+	if !g.enabled("defined_types") {
+		return
+	}
+	for i := 0; i < 1+g.c.draw(2); i++ {
+		t := pick(g.c, intTypes())
+		t.Named = fmt.Sprintf("T%d", i)
+		g.defined = append(g.defined, definedType{typ: t})
+	}
+}
+
+// createInterfaces builds 1-2 interfaces. Two forms: DERIVED (a 1-2 method
+// subset of one source type's set — with globally-unique method names, the
+// source is provably the only implementer, so assertions to any other type
+// are COMPILE errors and only source-type assertions are emitted) and EMPTY
+// (interface{} — every type implements it, which is the one compile-legal
+// route to failing assertions and mixed dynamic types).
+func (g *Generator) createInterfaces() {
+	if !g.enabled("interfaces", "defined_types") || len(g.defined) == 0 {
+		return
+	}
+	var sources []int
+	for di, dt := range g.defined {
+		if len(dt.methods) > 0 {
+			sources = append(sources, di)
+		}
+	}
+	for i := 0; i < 1+g.c.draw(2); i++ {
+		it := ifaceType{typ: Type{Shape: ShapeInterface, Name: fmt.Sprintf("I%d", i)}}
+		derived := g.c.choose("iface-kind", []arm{
+			{name: "derived", weight: 3, ok: len(sources) > 0},
+			{name: "empty", weight: 2, ok: true},
+		}).name == "derived"
+		if derived {
+			src := pick(g.c, sources)
+			count := 1 + g.c.draw(2)
+			if count > len(g.defined[src].methods) {
+				count = len(g.defined[src].methods)
+			}
+			start := g.c.draw(len(g.defined[src].methods) - count + 1)
+			it.source = src
+			for m := start; m < start+count; m++ {
+				it.methods = append(it.methods, m)
+			}
+		} else {
+			// Empty: initializer source drawn from all defined types.
+			it.source = g.c.draw(len(g.defined))
+		}
+		g.ifaces = append(g.ifaces, it)
+	}
+}
+
+// implementers lists the defined types an assertion against this interface
+// may legally name: everything for an empty interface, only the source for a
+// derived one (anything else is an "impossible type assertion" COMPILE
+// error — the trap this arc paid for).
+func (g *Generator) implementers(it *ifaceType) []int {
+	if len(it.methods) == 0 {
+		all := make([]int, len(g.defined))
+		for i := range all {
+			all[i] = i
+		}
+		return all
+	}
+	return []int{it.source}
+}
+
+// ifaceByName resolves an interface Type back to its record.
+func (g *Generator) ifaceByName(name string) *ifaceType {
+	for i := range g.ifaces {
+		if g.ifaces[i].typ.Name == name {
+			return &g.ifaces[i]
+		}
+	}
+	return nil
+}
+
+// ifaceVars returns interface-typed variable indices.
+func (g *Generator) ifaceVars() []int { return g.varsOfShape(ShapeInterface, nil) }
+
+// dispatchSite is one (interface variable, method) pair.
+type dispatchSite struct {
+	varIdx int
+	di, mi int
+}
+
+// dispatchSites lists interface-variable method calls whose result type is t.
+func (g *Generator) dispatchSites(t Type) []dispatchSite {
+	var found []dispatchSite
+	for _, vi := range g.ifaceVars() {
+		info := g.ifaceByName(g.vars[vi].typ.Name)
+		if info == nil {
+			continue
+		}
+		for _, mi := range info.methods {
+			if g.defined[info.source].methods[mi].result.Equal(t) {
+				found = append(found, dispatchSite{varIdx: vi, di: info.source, mi: mi})
+			}
+		}
+	}
+	return found
+}
+
+// assertSources lists interface variables that type t may legally be
+// asserted from.
+func (g *Generator) assertSources(t Type) []int {
+	var found []int
+	for _, vi := range g.ifaceVars() {
+		info := g.ifaceByName(g.vars[vi].typ.Name)
+		if info == nil {
+			continue
+		}
+		for _, di := range g.implementers(info) {
+			if g.defined[di].typ.Equal(t) {
+				found = append(found, vi)
+				break
+			}
+		}
+	}
+	return found
+}
+
 // generateMethods builds 0-2 pure value-receiver methods per defined type.
 // Same purity story as helpers (no globals, output, or hot panic sites) with
 // one difference: the guaranteed non-constant source is the RECEIVER, so no
@@ -541,13 +690,11 @@ func (g *Generator) typePool() []Type {
 		}
 		pool = append(pool, Map(pick(g.c, kinds), pick(g.c, elems)))
 	}
-	if g.enabled("defined_types") {
-		for i := 0; i < 1+g.c.draw(2); i++ {
-			t := pick(g.c, intTypes())
-			t.Named = fmt.Sprintf("T%d", i)
-			g.defined = append(g.defined, definedType{typ: t})
-			pool = append(pool, t)
-		}
+	for _, dt := range g.defined {
+		pool = append(pool, dt.typ)
+	}
+	for _, it := range g.ifaces {
+		pool = append(pool, it.typ)
 	}
 	if g.enabled("structs") {
 		fieldPool := scalarTypes()
@@ -602,6 +749,20 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		{name: "unobserved", weight: 1, ok: true},
 	}).name == "observed"
 	b := binding{name: name, typ: typ, observed: observed}
+	if typ.Shape == ShapeInterface {
+		// Never nil: initialized by implicit conversion from a satisfying
+		// concrete value — THE satisfaction corner — so dispatch cannot
+		// panic. The source type's floor variable always precedes interface
+		// declarations in pool order.
+		info := g.ifaceByName(typ.Name)
+		ci, _ := g.pickVar(g.defined[info.source].typ)
+		cv := &g.vars[ci]
+		cv.reads++
+		out.line("%s := %s(%s)", name, typ.Name, cv.name)
+		g.vars = append(g.vars, b)
+		g.mark(typ.Tags()...)
+		return
+	}
 	if typ.Shape == ShapeMap {
 		// 4 keys drawn without replacement; the literal initializes 2 of
 		// them, so hits AND misses are both reachable at every op site.
@@ -704,6 +865,17 @@ func (g *Generator) driver(out *strings.Builder, observed []binding) {
 			// (unspecified after append).
 			fmt.Fprintf(out, "\tprintln(len(%s))\n", r)
 			fmt.Fprintf(out, "\tfor _, e := range %s {\n\t\tprintln(e)\n\t}\n", r)
+			continue
+		}
+		if observed[i].typ.Shape == ShapeInterface {
+			// Dynamic-type identity probes over the LEGAL assertion targets
+			// (comma-ok never panics; asserting a provable non-implementer
+			// would not even compile).
+			info := g.ifaceByName(observed[i].typ.Name)
+			for _, di := range g.implementers(info) {
+				fmt.Fprintf(out, "\t_, o%d_%d := %s.(%s)\n", i, di, r, g.defined[di].typ.Named)
+				fmt.Fprintf(out, "\tprintln(o%d_%d)\n", i, di)
+			}
 			continue
 		}
 		if observed[i].typ.Named != "" {

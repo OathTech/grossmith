@@ -35,6 +35,7 @@ func Optional() []string {
 		"defer", "recover", "linearize",
 		"helpers",
 		"defined_types", "methods",
+		"interfaces", "assertion",
 	}
 }
 

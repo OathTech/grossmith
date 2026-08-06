@@ -353,7 +353,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0", "defer ", "func()", "h0(", "type T0", ".m0("} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0", "defer ", "func()", "h0(", "type T0", ".m0(", "interface", ".(T"} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}
@@ -1241,6 +1241,58 @@ func TestDefinedTypesAreDistinctAndObserved(t *testing.T) {
 	}
 	t.Logf("defined types in %d/300, %d method-call sites, %d underlying-converted observations",
 		withTypes, calls, observedNamed)
+}
+
+// TestInterfacesAreSatisfiedAndAssertionsLegal: interface values are never
+// nil by construction (every declaration and RHS converts a concrete
+// implementer), one-result assertions name only legal implementers (an
+// impossible assertion is a COMPILE error — backed by the typecheck
+// witness), and both derived and empty interfaces occur, with failing
+// (ok=false) probes reachable only through empty ones.
+func TestInterfacesAreSatisfiedAndAssertionsLegal(t *testing.T) {
+	withIfaces, derived, empty, asserts := 0, 0, 0, 0
+	for seed := int64(1); seed <= 400; seed++ {
+		c := generate(t, seed)
+		src := string(c.Source)
+		if !strings.Contains(src, "interface") {
+			continue
+		}
+		withIfaces++
+		derived += len(regexp.MustCompile(`interface \{\n\tm`).FindAllString(src, -1))
+		empty += len(regexp.MustCompile(`interface \{\n\}`).FindAllString(src, -1))
+		asserts += strings.Count(src, ".(T")
+		_, file := parseCase(t, c.Source, seed)
+		// No interface-typed var is ever declared without an initializer
+		// (nil interface) — dispatch safety rides on this.
+		ast.Inspect(file, func(n ast.Node) bool {
+			d, ok := n.(*ast.DeclStmt)
+			if !ok {
+				return true
+			}
+			gd := d.Decl.(*ast.GenDecl)
+			if gd.Tok == token.VAR {
+				for _, spec := range gd.Specs {
+					vs := spec.(*ast.ValueSpec)
+					if len(vs.Values) == 0 {
+						if id, isIdent := vs.Type.(*ast.Ident); isIdent && strings.HasPrefix(id.Name, "I") {
+							t.Fatalf("seed %d: nil interface declaration\n%s", seed, c.Source)
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	if withIfaces == 0 {
+		t.Fatal("no interfaces in 400 seeds")
+	}
+	if empty == 0 || derived == 0 {
+		t.Fatalf("interface population one-sided: derived-ish=%d empty=%d", derived, empty)
+	}
+	if asserts == 0 {
+		t.Fatal("no type assertions generated")
+	}
+	t.Logf("interfaces in %d/400 programs, %d assertions, empty forms %d", withIfaces, asserts, empty)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.

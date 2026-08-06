@@ -45,6 +45,8 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.mapDelete(out) }},
 		{name: "comma-ok", weight: 1, ok: g.enabled("maps", "comma_ok") && len(g.mapVars(nil)) > 0,
 			emit: func() { g.commaOk(out) }},
+		{name: "assert-ok", weight: 1, ok: g.enabled("interfaces", "assertion") && len(g.ifaceVars()) > 0 && len(g.defined) > 0,
+			emit: func() { g.assertOk(out) }},
 		{name: "defer", weight: 1, ok: g.enabled("defer") && !g.pureMode,
 			emit: func() { g.deferPrint(out) }},
 		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0 && !g.pureMode,
@@ -212,7 +214,14 @@ func (g *Generator) assign(out *emitter) {
 	// suppress the `_ = v` discharge and break the compile bar.
 	if rhs.text == target.name {
 		target.reads--
-		rhs = g.literal(target.typ)
+		if target.typ.Shape == ShapeInterface {
+			// No interface literal exists; a fresh RHS is a concrete
+			// implementer instead (implicit conversion — still content).
+			info := g.ifaceByName(target.typ.Name)
+			rhs = g.variable(g.defined[pick(g.c, g.implementers(info))].typ)
+		} else {
+			rhs = g.literal(target.typ)
+		}
 	}
 	out.line("%s = %s", target.name, rhs.text)
 }
@@ -230,7 +239,7 @@ func (g *Generator) compoundAssign(out *emitter) {
 		g.assign(out)
 		return
 	}
-	if target.typ.Shape == ShapeArray || target.typ.Shape == ShapeStruct {
+	if target.typ.Shape == ShapeArray || target.typ.Shape == ShapeStruct || target.typ.Shape == ShapeInterface {
 		g.assign(out)
 		return
 	}
@@ -366,6 +375,26 @@ func (g *Generator) callStmt(out *emitter) {
 	}
 	g.mark("helpers", "assignment")
 	out.line("%s = %s(%s)", strings.Join(targets, ", "), h.name, g.callArgs(h, g.cfg.ExprFuel-1))
+}
+
+// assertOk is the two-result type assertion: x, ok = iv.(T) — never panics,
+// and with one satisfier per interface both results are static knowledge.
+func (g *Generator) assertOk(out *emitter) {
+	g.resetRisk()
+	iv := &g.vars[pick(g.c, g.ifaceVars())]
+	iv.reads++
+	info := g.ifaceByName(iv.typ.Name)
+	dt := g.defined[pick(g.c, g.implementers(info))].typ
+	target := "_"
+	if ti, ok := g.pickVar(dt); ok {
+		target = g.vars[ti].name
+	}
+	okTarget := "_"
+	if oi, ok := g.pickVar(Bool()); ok {
+		okTarget = g.vars[oi].name
+	}
+	g.mark("interfaces", "assertion", "assignment")
+	out.line("%s, %s = %s.(%s)", target, okTarget, iv.name, dt.Named)
 }
 
 // deferPrint schedules an exit observation: the argument is evaluated AT

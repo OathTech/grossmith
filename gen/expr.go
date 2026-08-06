@@ -133,8 +133,32 @@ func (g *Generator) expr(t Type, fuel int) value {
 		return g.arrayExpr(t)
 	case ShapeStruct:
 		return g.structExpr(t)
+	case ShapeInterface:
+		return g.ifaceExpr(t)
 	}
 	return g.intExpr(t, fuel)
+}
+
+// ifaceExpr is an interface value: another variable of the same interface
+// type, or an implicit conversion from the satisfying concrete type — never
+// nil, so any dispatch on the result is panic-free.
+func (g *Generator) ifaceExpr(t Type) value {
+	var out value
+	g.c.choose("iface-expr", []arm{
+		{name: "var", weight: 2, ok: true, emit: func() {
+			out = g.variable(t)
+		}},
+		{name: "concrete", weight: 3, ok: true, emit: func() {
+			// Any implementer: for an empty interface that means any defined
+			// type — mixed dynamic types across program paths, which is what
+			// makes assertions and equality discriminating.
+			info := g.ifaceByName(t.Name)
+			di := pick(g.c, g.implementers(info))
+			out = g.variable(g.defined[di].typ)
+			g.mark("interfaces")
+		}},
+	}).emit()
+	return out
 }
 
 // structExpr is a whole-struct value: variable (copy semantics) or composite.
@@ -356,6 +380,39 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			g.mark("helpers")
 			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1))}
 		}},
+		{name: "dispatch", weight: 2, ok: g.enabled("interfaces", "methods") && len(g.dispatchSites(t)) > 0, emit: func() {
+			// Dynamic dispatch through a never-nil interface over a pure
+			// method: effect-free, panic-free, deterministic.
+			site := pick(g.c, g.dispatchSites(t))
+			iv := &g.vars[site.varIdx]
+			iv.reads++
+			m := g.defined[site.di].methods[site.mi]
+			g.mark("interfaces", "methods")
+			out = value{text: fmt.Sprintf("%s.%s(%s)", iv.name, m.name, g.argList(m.params, fuel-1))}
+		}},
+		{name: "assert", weight: 1,
+			// One-result assertion to type t, from an interface var that t
+			// legally implements (a derived interface admits only its
+			// source; an empty one admits every defined type). Derived-
+			// source assertions always succeed; empty-interface assertions
+			// may panic ("interface conversion") depending on the dynamic
+			// type, so they spend the risk budget.
+			ok: t.Named != "" && g.enabled("interfaces", "assertion") && len(g.assertSources(t)) > 0, emit: func() {
+				cands := g.assertSources(t)
+				iv := &g.vars[pick(g.c, cands)]
+				info := g.ifaceByName(iv.typ.Name)
+				if len(info.methods) == 0 {
+					if !g.riskOK() {
+						out = g.expr(t, 0)
+						return
+					}
+					g.spendRisk()
+					g.note(tagPanicRisk)
+				}
+				iv.reads++
+				g.mark("interfaces", "assertion")
+				out = value{text: fmt.Sprintf("%s.(%s)", iv.name, t.Named)}
+			}},
 		{name: "method", weight: 2, ok: g.enabled("methods") && len(g.methodsWithResult(t)) > 0, emit: func() {
 			// Same purity story as helpers; the receiver is a variable of
 			// the defined type, or its literal when the environment lacks
@@ -512,6 +569,26 @@ func (g *Generator) boolExpr(fuel int) value {
 			h := g.helpers[pick(g.c, g.singleResultHelpers(Bool()))]
 			g.mark("helpers")
 			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1))}
+		}},
+		{name: "iface-equal", weight: 1, ok: g.enabled("interfaces", "equality") && len(g.ifaceVars()) > 0, emit: func() {
+			// Interface equality: dynamic types are comparable ints, so no
+			// comparison panic; a nil comparand is legal and static.
+			iv := &g.vars[pick(g.c, g.ifaceVars())]
+			iv.reads++
+			op := "=="
+			if g.c.chance(2) {
+				op = "!="
+			}
+			rhs := "nil"
+			if others := g.varsOfShape(ShapeInterface, nil); len(others) > 0 && g.c.chance(2) {
+				ov := &g.vars[pick(g.c, others)]
+				if ov.typ.Equal(iv.typ) {
+					ov.reads++
+					rhs = ov.name
+				}
+			}
+			g.mark("interfaces", "equality")
+			out = value{text: fmt.Sprintf("(%s %s %s)", iv.name, op, rhs)}
 		}},
 		{name: "struct-equal", weight: 1, ok: g.enabled("structs", "equality") && len(g.structVars()) > 0, emit: func() {
 			// Whole-struct comparison: our structs' fields are all
