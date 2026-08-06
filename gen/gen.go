@@ -124,6 +124,11 @@ type binding struct {
 	// never generated, so len >= minLen holds forever — which is what makes
 	// constant indices < minLen safe by construction.
 	minLen int
+	// keys is a map variable's key alphabet: every key this map is ever
+	// written, read, deleted, or observed with comes from here. Drawn
+	// without replacement (duplicate constant keys in a literal are a
+	// compile error), and it bounds the map's size by construction.
+	keys []string
 }
 
 // Generator builds one program. Not safe for concurrent use; make one per case.
@@ -318,6 +323,15 @@ func (g *Generator) typePool() []Type {
 			pool = append(pool, Slice(pick(g.c, elems)))
 		}
 	}
+	if g.enabled("maps") {
+		kinds := []Type{Int(0, false), Int(8, false), Int(8, true)}
+		elems := scalarTypes()
+		if g.enabled("strings") {
+			kinds = append(kinds, Str())
+			elems = append(elems, Str())
+		}
+		pool = append(pool, Map(pick(g.c, kinds), pick(g.c, elems)))
+	}
 	if g.enabled("structs") {
 		fieldPool := scalarTypes()
 		if g.enabled("strings") {
@@ -371,6 +385,19 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		{name: "unobserved", weight: 1, ok: true},
 	}).name == "observed"
 	b := binding{name: name, typ: typ, observed: observed}
+	if typ.Shape == ShapeMap {
+		// 4 keys drawn without replacement; the literal initializes 2 of
+		// them, so hits AND misses are both reachable at every op site.
+		b.keys = g.keyAlphabet(*typ.Key)
+		entries := make([]string, 2)
+		for i := range entries {
+			entries[i] = b.keys[i] + ": " + g.literal(*typ.Elem).text
+		}
+		out.line("%s := %s{%s}", name, typ.GoName(), strings.Join(entries, ", "))
+		g.vars = append(g.vars, b)
+		g.mark(typ.Tags()...)
+		return
+	}
 	if typ.Shape == ShapeSlice {
 		// Slices are born from a composite literal: never nil, length known.
 		b.minLen = 2 + g.c.draw(3)
@@ -445,6 +472,15 @@ func (g *Generator) driver(out *strings.Builder, observed []binding) {
 				fmt.Fprintf(out, "\tprintln(%s.%s)\n", r, f.Name)
 			}
 			continue
+		case ShapeMap:
+			// len plus the value at every alphabet key (missing keys print
+			// their zero value) — deterministic and injective over the only
+			// keys the program can ever have touched. Never a map range.
+			fmt.Fprintf(out, "\tprintln(len(%s))\n", r)
+			for _, k := range observed[i].keys {
+				fmt.Fprintf(out, "\tprintln(%s[%s])\n", r, k)
+			}
+			continue
 		case ShapeSlice:
 			// Dynamic length: print it, then every element in order — the
 			// whole value stays injectively visible. cap is NEVER observed
@@ -479,6 +515,32 @@ func (g *Generator) arrayVars(elem *Type) []int { return g.varsOfShape(ShapeArra
 
 // sliceVars is arrayVars for slices.
 func (g *Generator) sliceVars(elem *Type) []int { return g.varsOfShape(ShapeSlice, elem) }
+
+// mapVars returns map-typed variable indices, optionally by element type.
+func (g *Generator) mapVars(elem *Type) []int { return g.varsOfShape(ShapeMap, elem) }
+
+// keyAlphabet draws 4 distinct key literals for one map variable — distinct
+// by remove-and-redraw over a candidate slice, never a rejection loop.
+func (g *Generator) keyAlphabet(key Type) []string {
+	var candidates []string
+	if key.Shape == ShapeString {
+		candidates = append([]string(nil), stringWords...)
+		for i, w := range candidates {
+			candidates[i] = fmt.Sprintf("%q", w)
+		}
+	} else {
+		for n := 0; n < 8; n++ {
+			candidates = append(candidates, g.intLiteral(key, n).text)
+		}
+	}
+	keys := make([]string, 4)
+	for i := range keys {
+		j := g.c.draw(len(candidates))
+		keys[i] = candidates[j]
+		candidates = append(candidates[:j], candidates[j+1:]...)
+	}
+	return keys
+}
 
 func (g *Generator) varsOfShape(shape Shape, elem *Type) []int {
 	var found []int

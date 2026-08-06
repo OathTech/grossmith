@@ -936,6 +936,62 @@ func TestSlicesOwnTheirBacking(t *testing.T) {
 	t.Logf("%d slice declarations, %d constant slice indices, all safe", slices, indexed)
 }
 
+// TestMapsAreDeterministicByConstruction: maps exist and are exercised, but
+// the one nondeterministic operation — range over a map — is never
+// generated, maps are never compared, and every map key at every site comes
+// from the variable's drawn alphabet (typecheck covers duplicate literal
+// keys, which are compile errors).
+func TestMapsAreDeterministicByConstruction(t *testing.T) {
+	withMaps, observed := 0, 0
+	for seed := int64(1); seed <= 400; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		mapVars := map[string]bool{}
+		ast.Inspect(file, func(n ast.Node) bool {
+			a, ok := n.(*ast.AssignStmt)
+			if !ok || a.Tok != token.DEFINE || len(a.Rhs) != 1 {
+				return true
+			}
+			if comp, ok := a.Rhs[0].(*ast.CompositeLit); ok {
+				if _, isMap := comp.Type.(*ast.MapType); isMap {
+					mapVars[a.Lhs[0].(*ast.Ident).Name] = true
+				}
+			}
+			return true
+		})
+		if len(mapVars) == 0 {
+			continue
+		}
+		withMaps++
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch e := n.(type) {
+			case *ast.RangeStmt:
+				if id, ok := e.X.(*ast.Ident); ok && mapVars[id.Name] {
+					t.Fatalf("seed %d: range over map %s — iteration order is the one nondeterminism\n%s",
+						seed, id.Name, c.Source)
+				}
+			case *ast.BinaryExpr:
+				if e.Op == token.EQL || e.Op == token.NEQ {
+					if id, ok := e.X.(*ast.Ident); ok && mapVars[id.Name] {
+						t.Fatalf("seed %d: map compared — maps are not comparable\n%s", seed, c.Source)
+					}
+				}
+			}
+			return true
+		})
+		if regexp.MustCompile(`println\(r\d+\[`).MatchString(string(c.Source)) {
+			observed++
+		}
+	}
+	if withMaps == 0 {
+		t.Fatal("no maps in 400 swarm seeds")
+	}
+	if observed == 0 {
+		t.Fatal("no observed maps — the alphabet-probe observation never fires")
+	}
+	t.Logf("maps in %d/400 programs, alphabet-probed observation in %d", withMaps, observed)
+}
+
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
 func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	bad := []Config{

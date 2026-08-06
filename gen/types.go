@@ -36,6 +36,13 @@ const (
 	// in the program preamble. Identity is the name, per Go's named-type
 	// rules.
 	ShapeStruct
+	// ShapeMap is a map from a small scalar/string key type to a
+	// scalar/string element. Everything about our maps is deterministic
+	// EXCEPT iteration order — so range over a map is never generated (the
+	// commutative-fold quotient is a future option, recorded in BRIEF).
+	// Maps are never nil (born from literals), so writes cannot panic;
+	// reads of missing keys yield zero values, deterministically.
+	ShapeMap
 	// ShapeSlice is a slice of a scalar or string element. Slices carry two
 	// spec-nondeterminism traps handled by construction: cap after append is
 	// unspecified (cap is NEVER observed) and whether append reallocates is
@@ -68,6 +75,8 @@ type Type struct {
 	// Name and Fields describe ShapeStruct.
 	Name   string
 	Fields []StructField
+	// Key describes ShapeMap (Elem is shared with arrays/slices).
+	Key *Type
 }
 
 // Bool is the bool type.
@@ -86,6 +95,12 @@ func Array(elem Type, n int) Type {
 func Slice(elem Type) Type {
 	e := elem
 	return Type{Shape: ShapeSlice, Elem: &e}
+}
+
+// Map builds a map type from key to elem.
+func Map(key, elem Type) Type {
+	k, e := key, elem
+	return Type{Shape: ShapeMap, Key: &k, Elem: &e}
 }
 
 // Int builds an integer type. bits 0 means platform width.
@@ -123,6 +138,9 @@ func (t Type) GoName() string {
 	if t.Shape == ShapeSlice {
 		return "[]" + t.Elem.GoName()
 	}
+	if t.Shape == ShapeMap {
+		return fmt.Sprintf("map[%s]%s", t.Key.GoName(), t.Elem.GoName())
+	}
 	stem := "int"
 	if t.Unsigned {
 		stem = "uint"
@@ -153,6 +171,9 @@ func (t Type) Tags() []string {
 	}
 	if t.Shape == ShapeSlice {
 		return append([]string{"slices"}, t.Elem.Tags()...)
+	}
+	if t.Shape == ShapeMap {
+		return append(append([]string{"maps"}, t.Key.Tags()...), t.Elem.Tags()...)
 	}
 	if t.Bits == 0 && !t.Unsigned {
 		return []string{"ints"}
@@ -246,6 +267,9 @@ func (t Type) Equal(other Type) bool {
 	}
 	if t.Shape == ShapeSlice {
 		return t.Elem.Equal(*other.Elem)
+	}
+	if t.Shape == ShapeMap {
+		return t.Key.Equal(*other.Key) && t.Elem.Equal(*other.Elem)
 	}
 	if t.Shape == ShapeStruct {
 		// Named types: the name IS the identity (fields cannot differ under

@@ -318,6 +318,20 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				g.mark("len", "slices")
 				out = value{text: fmt.Sprintf("len(%s)", s.name)}
 			}},
+		{name: "map-read", weight: 2, ok: g.enabled("maps") && len(g.mapVars(&t)) > 0, emit: func() {
+			m := &g.vars[pick(g.c, g.mapVars(&t))]
+			m.reads++
+			g.mark("maps")
+			// A missing key yields the zero value — deterministic, no panic.
+			out = value{text: fmt.Sprintf("%s[%s]", m.name, pick(g.c, m.keys))}
+		}},
+		{name: "map-len", weight: 1,
+			ok: t.Equal(Int(0, false)) && g.enabled("len", "maps") && len(g.mapVars(nil)) > 0, emit: func() {
+				m := &g.vars[pick(g.c, g.mapVars(nil))]
+				m.reads++
+				g.mark("len", "maps")
+				out = value{text: fmt.Sprintf("len(%s)", m.name)}
+			}},
 		{name: "field", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(&t)) > 0, emit: func() {
 			out = g.fieldRead(t)
 		}},
@@ -455,6 +469,12 @@ func (g *Generator) boolExpr(fuel int) value {
 		}},
 		{name: "field", weight: 1, ok: g.enabled("structs", "field") && len(g.fieldSources(&Type{Shape: ShapeBool})) > 0, emit: func() {
 			out = g.fieldRead(Bool())
+		}},
+		{name: "map-read", weight: 1, ok: g.enabled("maps") && len(g.mapVars(&Type{Shape: ShapeBool})) > 0, emit: func() {
+			m := &g.vars[pick(g.c, g.mapVars(&Type{Shape: ShapeBool}))]
+			m.reads++
+			g.mark("maps")
+			out = value{text: fmt.Sprintf("%s[%s]", m.name, pick(g.c, m.keys))}
 		}},
 		{name: "struct-equal", weight: 1, ok: g.enabled("structs", "equality") && len(g.structVars()) > 0, emit: func() {
 			// Whole-struct comparison: our structs' fields are all

@@ -39,6 +39,12 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.elemAssign(out) }},
 		{name: "append", weight: 2, ok: g.enabled("slices", "append") && len(g.sliceVars(nil)) > 0,
 			emit: func() { g.appendStmt(out) }},
+		{name: "map-write", weight: 2, ok: g.enabled("maps") && len(g.mapVars(nil)) > 0,
+			emit: func() { g.mapWrite(out) }},
+		{name: "map-delete", weight: 1, ok: g.enabled("maps", "delete") && len(g.mapVars(nil)) > 0,
+			emit: func() { g.mapDelete(out) }},
+		{name: "comma-ok", weight: 1, ok: g.enabled("maps", "comma_ok") && len(g.mapVars(nil)) > 0,
+			emit: func() { g.commaOk(out) }},
 		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
 			emit: func() { g.fieldAssign(out) }},
 		{name: "if", weight: 3, ok: g.enabled("if") && depth > 0,
@@ -173,12 +179,13 @@ func (g *Generator) projectInner(out *emitter, w binding) {
 
 func (g *Generator) assign(out *emitter) {
 	g.resetRisk()
-	// Slices are excluded: whole-slice assignment aliases backing arrays,
-	// and alias + append has spec-UNSPECIFIED write visibility. Every slice
-	// owns its backing; mutation happens via append and element writes.
+	// Slices and maps are excluded: whole-slice assignment aliases backing
+	// arrays (alias + append has spec-UNSPECIFIED write visibility), and
+	// container mutation happens via dedicated arms. Every slice owns its
+	// backing; maps mutate through writes and deletes only.
 	var all []int
 	for i, v := range g.vars {
-		if v.typ.Shape != ShapeSlice {
+		if v.typ.Shape != ShapeSlice && v.typ.Shape != ShapeMap {
 			all = append(all, i)
 		}
 	}
@@ -201,7 +208,7 @@ func (g *Generator) compoundAssign(out *emitter) {
 	g.resetRisk()
 	var all []int
 	for i, v := range g.vars {
-		if v.typ.Shape != ShapeSlice {
+		if v.typ.Shape != ShapeSlice && v.typ.Shape != ShapeMap {
 			all = append(all, i)
 		}
 	}
@@ -296,6 +303,37 @@ func (g *Generator) appendStmt(out *emitter) {
 	s.reads++ // append reads its first operand
 	g.mark("slices", "append", "assignment")
 	out.line("%s = append(%s, %s)", s.name, s.name, g.expr(*s.typ.Elem, g.cfg.ExprFuel).text)
+}
+
+// mapWrite sets one alphabet key. Maps are never nil, so writes cannot
+// panic; the alphabet bounds the map's size by construction.
+func (g *Generator) mapWrite(out *emitter) {
+	g.resetRisk()
+	m := &g.vars[pick(g.c, g.mapVars(nil))]
+	g.mark("maps", "assignment")
+	out.line("%s[%s] = %s", m.name, pick(g.c, m.keys), g.expr(*m.typ.Elem, g.cfg.ExprFuel).text)
+}
+
+// mapDelete removes one alphabet key — present or not, deterministically.
+func (g *Generator) mapDelete(out *emitter) {
+	g.resetRisk()
+	m := &g.vars[pick(g.c, g.mapVars(nil))]
+	m.reads++
+	g.mark("maps", "delete")
+	out.line("delete(%s, %s)", m.name, pick(g.c, m.keys))
+}
+
+// commaOk is the two-value map read: x, ok = m[k]. Both targets are
+// existing variables (the elem-type floor and the bool floor guarantee
+// them); presence and value are both observable state.
+func (g *Generator) commaOk(out *emitter) {
+	g.resetRisk()
+	m := &g.vars[pick(g.c, g.mapVars(nil))]
+	m.reads++
+	xi, _ := g.pickVar(*m.typ.Elem)
+	oki, _ := g.pickVar(Bool())
+	g.mark("maps", "comma_ok", "assignment")
+	out.line("%s, %s = %s[%s]", g.vars[xi].name, g.vars[oki].name, m.name, pick(g.c, m.keys))
 }
 
 // fieldAssign writes one struct field. Like element writes, a field write
