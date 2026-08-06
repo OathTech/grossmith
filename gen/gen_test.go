@@ -1047,6 +1047,41 @@ func TestDeferAndRecoverArePresent(t *testing.T) {
 	t.Logf("%d defer observations, %d guarded statements", defers, guards)
 }
 
+// TestLinearizedRiskIsSequenced: linearized multi-trap computations exist,
+// and (via TestOnePanicRiskPerStatement) each temporary carries at most one
+// hot site — two traps, statement-sequenced, deterministic panic order.
+func TestLinearizedRiskIsSequenced(t *testing.T) {
+	linearized := 0
+	for seed := int64(1); seed <= 300; seed++ {
+		for _, f := range generate(t, seed).Features {
+			if f == "linearized" {
+				linearized++
+			}
+		}
+	}
+	if linearized == 0 {
+		t.Fatal("no linearized computations in 300 seeds")
+	}
+	t.Logf("linearized in %d/300 programs", linearized)
+}
+
+// TestMapRangeFoldPresent: the quotiented map iteration actually occurs
+// (form-checked by TestMapsAreDeterministicByConstruction).
+func TestMapRangeFoldPresent(t *testing.T) {
+	folds := 0
+	for seed := int64(1); seed <= 300; seed++ {
+		for _, f := range generate(t, seed).Features {
+			if f == "map_range_fold" {
+				folds++
+			}
+		}
+	}
+	if folds == 0 {
+		t.Fatal("no map-range folds in 300 seeds")
+	}
+	t.Logf("map folds in %d/300 programs", folds)
+}
+
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
 func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	bad := []Config{

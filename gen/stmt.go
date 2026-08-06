@@ -49,6 +49,10 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.deferPrint(out) }},
 		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0,
 			emit: func() { g.guardedStmt(out) }},
+		{name: "linearize", weight: 1, ok: g.enabled("linearize", "division", "modulo"),
+			emit: func() { g.linearizedRisk(out) }},
+		{name: "map-fold", weight: 2, ok: g.enabled("maps", "range") && len(g.intElemMapVars()) > 0,
+			emit: func() { g.mapRangeFold(out) }},
 
 		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
 			emit: func() { g.fieldAssign(out) }},
@@ -386,6 +390,74 @@ func (g *Generator) guardedStmt(out *emitter) {
 	g.stmtIn(out, 0, false, true)
 	out.dedent()
 	out.line("}()")
+}
+
+// linearizedRisk is the deterministic form of a multi-trap computation:
+// operands are hoisted into temporaries, one per statement, so the panic
+// order is pinned by STATEMENT SEQUENCING — two hot sites, specified order
+// (the multi-site-in-one-expression form has spec-unspecified panic
+// identity and stays excluded by the risk budget).
+func (g *Generator) linearizedRisk(out *emitter) {
+	t := pick(g.c, intTypes())
+	t0 := fmt.Sprintf("t%d", g.tmpSeq)
+	t1 := fmt.Sprintf("t%d", g.tmpSeq+1)
+	g.tmpSeq += 2
+	// Spend each statement's risk slot FIRST: the hot divisor below is the
+	// statement's one risk site, and claiming the budget up front masks any
+	// nested risky arm inside the left operand.
+	g.resetRisk()
+	g.spendRisk()
+	g.mark("division", "short_decl")
+	g.note(tagPanicRisk)
+	left0 := g.nonConstExpr(t, 1).text
+	out.line("%s := (%s / %s)", t0, left0, g.variable(t).text)
+	g.resetRisk()
+	g.spendRisk()
+	g.mark("modulo", "short_decl")
+	g.note(tagPanicRisk)
+	left1 := g.nonConstExpr(t, 1).text
+	out.line("%s := (%s %% %s)", t1, left1, g.variable(t).text)
+	g.resetRisk()
+	i, _ := g.pickVar(t)
+	target := &g.vars[i]
+	g.mark("assignment", "ints")
+	g.markWidthDep(t)
+	g.note("linearized")
+	out.line("%s = (%s + %s)", target.name, t0, t1)
+}
+
+// intElemMapVars are map variables with integer elements — the ones whose
+// values fold order-invariantly.
+func (g *Generator) intElemMapVars() []int {
+	var found []int
+	for _, i := range g.mapVars(nil) {
+		if g.vars[i].typ.Elem.Shape == ShapeInt {
+			found = append(found, i)
+		}
+	}
+	return found
+}
+
+// mapRangeFold is the quotiented return of map iteration: range over a map
+// with a body that is EXACTLY one commutative fold (acc += value), so the
+// observed outcome is invariant under any iteration order — the clone must
+// still iterate correctly, but the observation quotients away the one thing
+// the spec leaves open. Nothing else may enter the body: any other side
+// effect would execute in map order.
+func (g *Generator) mapRangeFold(out *emitter) {
+	m := &g.vars[pick(g.c, g.intElemMapVars())]
+	m.reads++
+	i, _ := g.pickVar(*m.typ.Elem)
+	acc := &g.vars[i]
+	acc.reads++
+	e := fmt.Sprintf("e%d", g.tmpSeq)
+	g.tmpSeq++
+	g.mark("maps", "range", "assignment", "control_flow", "short_decl")
+	g.note("map_range_fold")
+	g.markWidthDep(acc.typ)
+	out.open("for _, %s := range %s {", e, m.name)
+	out.line("%s += %s", acc.name, e)
+	out.close()
 }
 
 // fieldAssign writes one struct field. Like element writes, a field write
