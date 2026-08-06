@@ -127,9 +127,10 @@ type Generator struct {
 	cfg        Config
 	constructs map[string]bool
 
-	vars    []binding
-	used    map[string]int
-	loopSeq int
+	vars     []binding
+	used     map[string]int
+	loopSeq  int
+	innerSeq int
 	// structs are the per-seed named struct types, declared in the preamble.
 	structs []Type
 	// corner is the resolved named corner; boundaryBias is the weight of the
@@ -481,6 +482,19 @@ func (g *Generator) fieldSources(t *Type) []fieldSource {
 		}
 	}
 	return found
+}
+
+// pickOuter picks a variable of type t from everything EXCEPT the most
+// recently pushed binding — the projection target for an inner declaration
+// must be an enclosing variable, never the inner one itself.
+func (g *Generator) pickOuter(t Type) int {
+	var found []int
+	for i, v := range g.vars[:len(g.vars)-1] {
+		if v.typ.Equal(t) {
+			found = append(found, i)
+		}
+	}
+	return pick(g.c, found)
 }
 
 // structVars returns the indices of struct-typed variables.

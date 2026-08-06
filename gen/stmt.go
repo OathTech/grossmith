@@ -54,13 +54,86 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 	}).emit()
 }
 
-// block emits a nested body. It never DECLARES a variable — a declaration
-// inside a block would go out of scope before the observation could consume
-// it, and Go rejects an unused local. Every declaration lives at function top
-// level until the block-tree emitter rung (BRIEF growth ladder #5).
+// block emits a nested body, optionally opening a BLOCK-SCOPED declaration.
+// The scope problem that once forbade inner declarations — out of scope
+// before the observation, unused rejection — is solved by the PROJECTION
+// RULE: an inner declaration is folded into an enclosing variable before its
+// block exits, so its value reaches the observation and its read discharges
+// the unused rule. Projection appends at block exit, which is why no
+// block-tree emitter is needed for real scopes.
+//
+// When a projection is pending, no statement in the block counts as "last":
+// a terminal drawn anywhere in it is the ordinary tagged dead-code minority
+// (the projection behind it goes dead, recorded as dead_code).
 func (g *Generator) block(out *emitter, depth, count int, inLoop bool) {
+	inner := g.maybeDeclareInner(out)
 	for i := 0; i < count; i++ {
-		g.stmtIn(out, depth-1, inLoop, i == count-1)
+		g.stmtIn(out, depth-1, inLoop, i == count-1 && inner == nil)
+	}
+	if inner != nil {
+		g.projectInner(out, *inner)
+		g.vars = g.vars[:len(g.vars)-1]
+	}
+}
+
+// maybeDeclareInner opens a block-scoped variable: scalar or string, drawn
+// initializer, fresh name. Bool inner declarations need the equality
+// construct — the projection `o = (o != w)` is an equality operator.
+func (g *Generator) maybeDeclareInner(out *emitter) *binding {
+	if !g.enabled("block_decl") || !g.c.chance(3) {
+		return nil
+	}
+	g.resetRisk()
+	pool := intTypes()
+	if g.enabled("equality") {
+		pool = append(pool, Bool())
+	}
+	if g.enabled("strings") {
+		pool = append(pool, Str())
+	}
+	t := pick(g.c, pool)
+	name := fmt.Sprintf("w%d", g.innerSeq)
+	g.innerSeq++
+	g.mark(append([]string{"block_decl", "short_decl"}, t.Tags()...)...)
+	out.line("%s := %s", name, g.expr(t, g.cfg.ExprFuel).text)
+	g.vars = append(g.vars, binding{name: name, typ: t})
+	w := g.vars[len(g.vars)-1]
+	return &w
+}
+
+// projectInner folds the inner variable into an enclosing one before scope
+// exit — the observation path for block-scoped state.
+func (g *Generator) projectInner(out *emitter, w binding) {
+	switch w.typ.Shape {
+	case ShapeBool:
+		o := &g.vars[g.pickOuter(Bool())]
+		o.reads++
+		g.mark("assignment", "equality")
+		out.line("%s = (%s != %s)", o.name, o.name, w.name)
+	case ShapeString:
+		o := &g.vars[g.pickOuter(Str())]
+		g.mark("assignment", "strings")
+		if g.enabled("concat") {
+			g.mark("concat")
+			out.line("%s = (%s + %s)", o.name, w.name, g.literal(Str()).text)
+			return
+		}
+		out.line("%s = %s", o.name, w.name)
+	default:
+		if g.enabled("conversions") {
+			t := pick(g.c, intTypes())
+			o := &g.vars[g.pickOuter(t)]
+			o.reads++
+			g.mark("assignment", "conversions")
+			g.markWidthDep(o.typ)
+			out.line("%s += %s(%s)", o.name, o.typ.GoName(), w.name)
+			return
+		}
+		o := &g.vars[g.pickOuter(w.typ)]
+		o.reads++
+		g.mark("assignment")
+		g.markWidthDep(o.typ)
+		out.line("%s += %s", o.name, w.name)
 	}
 }
 

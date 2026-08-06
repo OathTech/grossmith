@@ -348,7 +348,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", "."} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "w0"} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}
@@ -743,6 +743,58 @@ func TestSwitchReducesWithoutModulo(t *testing.T) {
 		t.Fatal("no bitmask-reduced switch in 80 modulo-less seeds — the fallback never fires")
 	}
 	t.Logf("bitmask-reduced switches in %d/80 programs", masked)
+}
+
+// TestInnerDeclsAreScopedAndProjected: every block-scoped declaration (w*)
+// is declared inside a nested block and read again within that block — the
+// projection rule, which is what makes inner scopes compatible with the
+// unused-variable rule and the observation.
+func TestInnerDeclsAreScopedAndProjected(t *testing.T) {
+	decls := 0
+	for seed := int64(1); seed <= 400; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		var subject *ast.FuncDecl
+		for _, d := range file.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == Subject {
+				subject = fn
+			}
+		}
+		ast.Inspect(subject, func(n ast.Node) bool {
+			blk, ok := n.(*ast.BlockStmt)
+			if !ok || blk == subject.Body {
+				return true
+			}
+			for i, stmt := range blk.List {
+				a, ok := stmt.(*ast.AssignStmt)
+				if !ok || a.Tok != token.DEFINE {
+					continue
+				}
+				name := a.Lhs[0].(*ast.Ident).Name
+				if !strings.HasPrefix(name, "w") {
+					continue
+				}
+				decls++
+				readLater := false
+				for _, later := range blk.List[i+1:] {
+					ast.Inspect(later, func(inner ast.Node) bool {
+						if id, ok := inner.(*ast.Ident); ok && id.Name == name {
+							readLater = true
+						}
+						return true
+					})
+				}
+				if !readLater {
+					t.Fatalf("seed %d: inner decl %s never referenced again in its block — projection missing\n%s", seed, name, c.Source)
+				}
+			}
+			return true
+		})
+	}
+	if decls == 0 {
+		t.Fatal("no block-scoped declarations in 400 seeds")
+	}
+	t.Logf("checked %d inner declarations, all projected or read", decls)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
