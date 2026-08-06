@@ -144,6 +144,16 @@ type Generator struct {
 	tmpSeq   int
 	// structs are the per-seed named struct types, declared in the preamble.
 	structs []Type
+	// helpers are the generated top-level functions. PURE BY CONSTRUCTION:
+	// params only (no globals, no pointers, no closures), no output, and
+	// panic-free (pureMode masks every hot arm) — so a helper call has NO
+	// effect the subject can observe, expression evaluation order cannot
+	// matter, and the effect discipline is dissolved rather than built. Its
+	// revisit trigger: pointer parameters, closures over subject state, or
+	// package-level variables.
+	helpers []helper
+	// pureMode is set while generating a helper body.
+	pureMode bool
 	// corner is the resolved named corner; boundaryBias is the weight of the
 	// boundary arm at literal/divisor/shift-count sites (0 disables, 1 is
 	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
@@ -160,6 +170,19 @@ type Generator struct {
 	// declarations and silently emit a corrupt program (review finding).
 	done bool
 }
+
+// helper is one generated top-level function.
+type helper struct {
+	name    string
+	params  []Type
+	results []Type
+	src     string
+}
+
+// riskOK reports whether the current statement may still draw a hot panic
+// site: never inside a helper (helpers are panic-free so their calls compose
+// into expressions without multi-trap identity issues).
+func (g *Generator) riskOK() bool { return !g.riskSpent && !g.pureMode }
 
 // resetRisk opens a fresh statement context for the panic-risk budget.
 func (g *Generator) resetRisk() { g.riskSpent = false }
@@ -225,6 +248,7 @@ func (g *Generator) Generate() (Case, error) {
 	if g.corner != "" {
 		g.note("corner_" + g.corner)
 	}
+	g.generateHelpers()
 	g.declare(body)
 	g.mark("functions", "short_decl", "literals", "return")
 
@@ -241,6 +265,9 @@ func (g *Generator) Generate() (Case, error) {
 	out.WriteString("package main\n\n")
 	for _, st := range g.structs {
 		out.WriteString(st.decl())
+	}
+	for _, h := range g.helpers {
+		out.WriteString(h.src)
 	}
 	fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
 	out.WriteString(body.buf.String())
@@ -300,6 +327,88 @@ func (g *Generator) pickTarget(candidates []int) int {
 		r -= weight(i)
 	}
 	panic("gen: unreachable")
+}
+
+// generateHelpers builds 1-2 top-level functions before the subject. The
+// call graph is acyclic for free: a helper is registered only after its body
+// is generated, so bodies can call only EARLIER helpers; the subject calls
+// any. Every helper's first parameter is plain int — the guaranteed
+// non-constant source that keeps constant-overflow safety without the
+// subject's one-per-type pool floor.
+func (g *Generator) generateHelpers() {
+	if !g.enabled("helpers") {
+		return
+	}
+	count := 1 + g.c.draw(2)
+	for i := 0; i < count; i++ {
+		g.helpers = append(g.helpers, g.generateHelper(i))
+	}
+}
+
+func (g *Generator) generateHelper(idx int) helper {
+	pool := scalarTypes()
+	if g.enabled("strings") {
+		pool = append(pool, Str())
+	}
+	params := []Type{Int(0, false)}
+	for j := g.c.draw(3); j > 0; j-- {
+		params = append(params, pick(g.c, pool))
+	}
+	var results []Type
+	for j := 1 + g.c.draw(2); j > 0; j-- {
+		results = append(results, pick(g.c, pool))
+	}
+
+	savedVars, savedRisk := g.vars, g.riskSpent
+	g.vars = nil
+	g.pureMode = true
+	for j, pt := range params {
+		g.vars = append(g.vars, binding{name: fmt.Sprintf("p%d", j), typ: pt})
+	}
+	body := &emitter{indent: 1}
+	for j := 1 + g.c.draw(3); j > 0; j-- {
+		g.stmtIn(body, 1, false, false)
+	}
+	rs := make([]string, len(results))
+	for j, rt := range results {
+		rs[j] = g.expr(rt, g.cfg.ExprFuel).text
+	}
+	body.line("return %s", strings.Join(rs, ", "))
+	g.vars, g.riskSpent, g.pureMode = savedVars, savedRisk, false
+	g.mark("helpers")
+
+	ps := make([]string, len(params))
+	for j, pt := range params {
+		ps[j] = fmt.Sprintf("p%d %s", j, pt.GoName())
+	}
+	rt := make([]string, len(results))
+	for j, r := range results {
+		rt[j] = r.GoName()
+	}
+	name := fmt.Sprintf("h%d", idx)
+	src := fmt.Sprintf("func %s(%s) (%s) {\n%s}\n\n",
+		name, strings.Join(ps, ", "), strings.Join(rt, ", "), body.buf.String())
+	return helper{name: name, params: params, results: results, src: src}
+}
+
+// singleResultHelpers returns helpers with exactly one result of type t.
+func (g *Generator) singleResultHelpers(t Type) []int {
+	var found []int
+	for i, h := range g.helpers {
+		if len(h.results) == 1 && h.results[0].Equal(t) {
+			found = append(found, i)
+		}
+	}
+	return found
+}
+
+// callArgs renders drawn argument expressions for a helper's parameters.
+func (g *Generator) callArgs(h helper, fuel int) string {
+	args := make([]string, len(h.params))
+	for i, pt := range h.params {
+		args[i] = g.expr(pt, fuel).text
+	}
+	return strings.Join(args, ", ")
 }
 
 // typePool is the declarable type set: scalars always, string when enabled,

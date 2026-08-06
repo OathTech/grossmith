@@ -196,7 +196,7 @@ func (g *Generator) indexExpr(bound int) string {
 			g.mark("conversions", "modulo")
 			out = fmt.Sprintf("int(%s%%%d)", u.text, bound)
 		}},
-		{name: "panicky", weight: 1, ok: !g.riskSpent, emit: func() {
+		{name: "panicky", weight: 1, ok: g.riskOK(), emit: func() {
 			// A raw int variable: usually out of range, so usually a
 			// deterministic index panic. Deliberate, tagged content —
 			// and it spends the statement's one panic-risk slot.
@@ -211,10 +211,16 @@ func (g *Generator) indexExpr(bound int) string {
 
 // nonConstExpr builds an expression of type t that is guaranteed
 // non-constant, which is what makes an overflow-capable operator safe to
-// emit. The variable leaf is total (one-per-type floor), so no retry.
+// emit. In the subject the variable leaf is total (one-per-type floor); in a
+// helper body there is no floor, so the fallback converts the guaranteed
+// plain-int first parameter — a conversion of a variable is non-constant for
+// every integer target.
 func (g *Generator) nonConstExpr(t Type, fuel int) value {
 	if e := g.expr(t, fuel); !e.constant {
 		return e
+	}
+	if g.pureMode {
+		return value{text: fmt.Sprintf("%s(p0)", t.GoName())}
 	}
 	return g.variable(t)
 }
@@ -335,6 +341,13 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 		{name: "field", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(&t)) > 0, emit: func() {
 			out = g.fieldRead(t)
 		}},
+		{name: "call", weight: 2, ok: g.enabled("helpers") && len(g.singleResultHelpers(t)) > 0, emit: func() {
+			// Helper calls are pure and panic-free, so a call composes into
+			// any expression without effect or panic-identity hazards.
+			h := g.helpers[pick(g.c, g.singleResultHelpers(t))]
+			g.mark("helpers")
+			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1))}
+		}},
 		{name: "len", weight: 1,
 			// len returns exactly `int`, and len of a string VARIABLE is
 			// non-constant (len of a literal would be a typed constant).
@@ -382,7 +395,7 @@ func (g *Generator) divModExpr(t Type, fuel int, op, tag string) value {
 	left := g.nonConstExpr(t, fuel-1)
 	divisor := g.nonZeroLiteral(t)
 	variableDivisor := false
-	if !g.riskSpent && g.c.chance(8) && g.spendRisk() {
+	if g.riskOK() && g.c.chance(8) && g.spendRisk() {
 		divisor = g.variable(t)
 		variableDivisor = true
 		g.note(tagPanicRisk)
@@ -475,6 +488,11 @@ func (g *Generator) boolExpr(fuel int) value {
 			m.reads++
 			g.mark("maps")
 			out = value{text: fmt.Sprintf("%s[%s]", m.name, pick(g.c, m.keys))}
+		}},
+		{name: "call", weight: 1, ok: g.enabled("helpers") && len(g.singleResultHelpers(Bool())) > 0, emit: func() {
+			h := g.helpers[pick(g.c, g.singleResultHelpers(Bool()))]
+			g.mark("helpers")
+			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1))}
 		}},
 		{name: "struct-equal", weight: 1, ok: g.enabled("structs", "equality") && len(g.structVars()) > 0, emit: func() {
 			// Whole-struct comparison: our structs' fields are all

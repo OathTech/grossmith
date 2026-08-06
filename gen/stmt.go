@@ -45,11 +45,11 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.mapDelete(out) }},
 		{name: "comma-ok", weight: 1, ok: g.enabled("maps", "comma_ok") && len(g.mapVars(nil)) > 0,
 			emit: func() { g.commaOk(out) }},
-		{name: "defer", weight: 1, ok: g.enabled("defer"),
+		{name: "defer", weight: 1, ok: g.enabled("defer") && !g.pureMode,
 			emit: func() { g.deferPrint(out) }},
-		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0,
+		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0 && !g.pureMode,
 			emit: func() { g.guardedStmt(out) }},
-		{name: "linearize", weight: 1, ok: g.enabled("linearize", "division", "modulo"),
+		{name: "linearize", weight: 1, ok: g.enabled("linearize", "division", "modulo") && !g.pureMode,
 			emit: func() { g.linearizedRisk(out) }},
 		{name: "map-fold", weight: 2, ok: g.enabled("maps", "range") && len(g.intElemMapVars()) > 0,
 			emit: func() { g.mapRangeFold(out) }},
@@ -68,9 +68,11 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: terminal("break")},
 		{name: "continue", weight: terminalWeight, ok: g.enabled("continue") && inLoop,
 			emit: terminal("continue")},
-		{name: "observe", weight: 2, ok: g.enabled("observe_point"),
+		{name: "call", weight: 2, ok: g.enabled("helpers") && len(g.helpers) > 0,
+			emit: func() { g.callStmt(out) }},
+		{name: "observe", weight: 2, ok: g.enabled("observe_point") && !g.pureMode,
 			emit: func() { g.observePoint(out) }},
-		{name: "early-return", weight: 1, ok: g.enabled("early_return") && !last,
+		{name: "early-return", weight: 1, ok: g.enabled("early_return") && !last && !g.pureMode,
 			emit: func() { g.earlyReturn(out) }},
 	}).emit()
 }
@@ -129,7 +131,9 @@ func (g *Generator) block(out *emitter, depth, count int, inLoop bool) {
 // initializer, fresh name. Bool inner declarations need the equality
 // construct — the projection `o = (o != w)` is an equality operator.
 func (g *Generator) maybeDeclareInner(out *emitter) *binding {
-	if !g.enabled("block_decl") || !g.c.chance(3) {
+	// Helper bodies have no type-pool floor, which the projection targets
+	// assume — inner declarations stay a subject-side construct.
+	if g.pureMode || !g.enabled("block_decl") || !g.c.chance(3) {
 		return nil
 	}
 	g.resetRisk()
@@ -343,6 +347,25 @@ func (g *Generator) commaOk(out *emitter) {
 	oki, _ := g.pickVar(Bool())
 	g.mark("maps", "comma_ok", "assignment")
 	out.line("%s, %s = %s[%s]", g.vars[xi].name, g.vars[oki].name, m.name, pick(g.c, m.keys))
+}
+
+// callStmt invokes a helper as a statement, assigning every result: targets
+// are drawn per result type, with the blank identifier on a miss (helper
+// env) or a target collision (`v1, v1 = h()` reads poorly even if legal).
+func (g *Generator) callStmt(out *emitter) {
+	g.resetRisk()
+	h := g.helpers[g.c.draw(len(g.helpers))]
+	targets := make([]string, len(h.results))
+	seen := map[int]bool{}
+	for i, rt := range h.results {
+		targets[i] = "_"
+		if idx, ok := g.pickVar(rt); ok && !seen[idx] {
+			seen[idx] = true
+			targets[i] = g.vars[idx].name
+		}
+	}
+	g.mark("helpers", "assignment")
+	out.line("%s = %s(%s)", strings.Join(targets, ", "), h.name, g.callArgs(h, g.cfg.ExprFuel-1))
 }
 
 // deferPrint schedules an exit observation: the argument is evaluated AT

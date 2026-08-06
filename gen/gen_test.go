@@ -353,7 +353,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0", "defer ", "func()"} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0", "defer ", "func()", "h0("} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}
@@ -828,13 +828,20 @@ func TestReturnSitesAreUniform(t *testing.T) {
 	for seed := int64(1); seed <= 300; seed++ {
 		c := generate(t, seed)
 		_, file := parseCase(t, c.Source, seed)
+		// Scope to the SUBJECT: helpers have their own signatures.
 		var returns []*ast.ReturnStmt
-		ast.Inspect(file, func(n ast.Node) bool {
-			if r, ok := n.(*ast.ReturnStmt); ok {
-				returns = append(returns, r)
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != Subject {
+				continue
 			}
-			return true
-		})
+			ast.Inspect(fn, func(n ast.Node) bool {
+				if r, ok := n.(*ast.ReturnStmt); ok {
+					returns = append(returns, r)
+				}
+				return true
+			})
+		}
 		if len(returns) < 2 {
 			continue
 		}
@@ -1080,6 +1087,69 @@ func TestMapRangeFoldPresent(t *testing.T) {
 		t.Fatal("no map-range folds in 300 seeds")
 	}
 	t.Logf("map folds in %d/300 programs", folds)
+}
+
+// TestHelpersArePureAndAcyclic witnesses the design that dissolves the
+// effect discipline: helper bodies contain no hot panic sites (riskSites
+// == 0 — their calls compose into expressions without panic-identity
+// hazards), no output (println/defer), and calls only to EARLIER helpers
+// (acyclic, so termination holds without recursion fuel).
+func TestHelpersArePureAndAcyclic(t *testing.T) {
+	helpers, calls := 0, 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		order := map[string]int{}
+		for _, d := range file.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && strings.HasPrefix(fn.Name.Name, "h") {
+				order[fn.Name.Name] = len(order)
+			}
+		}
+		if len(order) == 0 {
+			continue
+		}
+		helpers++
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			me, isHelper := order[fn.Name.Name]
+			if !isHelper {
+				continue
+			}
+			if n := riskSites(fn.Body); n != 0 {
+				t.Fatalf("seed %d: helper %s has %d hot panic sites — helpers must be panic-free\n%s",
+					seed, fn.Name.Name, n, c.Source)
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch e := n.(type) {
+				case *ast.DeferStmt:
+					t.Fatalf("seed %d: defer inside helper %s\n%s", seed, fn.Name.Name, c.Source)
+				case *ast.CallExpr:
+					id, ok := e.Fun.(*ast.Ident)
+					if !ok {
+						return true
+					}
+					if id.Name == "println" {
+						t.Fatalf("seed %d: output inside helper %s — helpers must be pure\n%s", seed, fn.Name.Name, c.Source)
+					}
+					if callee, isH := order[id.Name]; isH {
+						calls++
+						if callee >= me {
+							t.Fatalf("seed %d: helper %s calls %s — call graph must be acyclic (earlier-only)\n%s",
+								seed, fn.Name.Name, id.Name, c.Source)
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	if helpers == 0 {
+		t.Fatal("no helpers in 300 seeds")
+	}
+	t.Logf("helpers in %d/300 programs, %d helper-to-helper calls, all pure and acyclic", helpers, calls)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
