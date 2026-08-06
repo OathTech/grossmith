@@ -72,7 +72,7 @@ func (g *Generator) boundaryLiteralDrawn() bool {
 // notes the boundary tag (knowledge-as-data).
 func (g *Generator) typedText(t Type, text string) value {
 	g.note(tagBoundary)
-	if t.Bits == 0 && !t.Unsigned {
+	if t.Bits == 0 && !t.Unsigned && t.Named == "" {
 		return value{text: text, constant: true}
 	}
 	return value{text: fmt.Sprintf("%s(%s)", t.GoName(), text), constant: true}
@@ -96,7 +96,7 @@ func (g *Generator) nonZeroLiteral(t Type) value {
 }
 
 func (g *Generator) intLiteral(t Type, n int) value {
-	if t.Bits == 0 && !t.Unsigned {
+	if t.Bits == 0 && !t.Unsigned && t.Named == "" {
 		// Plain `int`: an untyped decimal already has the right default type.
 		return value{text: fmt.Sprintf("%d", n), constant: true}
 	}
@@ -220,7 +220,9 @@ func (g *Generator) nonConstExpr(t Type, fuel int) value {
 		return e
 	}
 	if g.pureMode {
-		return value{text: fmt.Sprintf("%s(p0)", t.GoName())}
+		// The environment's guaranteed int-ish variable: a helper's p0 or a
+		// method's receiver. A conversion of a variable is non-constant.
+		return value{text: fmt.Sprintf("%s(%s)", t.GoName(), g.pureBase)}
 	}
 	return g.variable(t)
 }
@@ -296,7 +298,13 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			// arithmetic: converting a CONSTANT the target cannot represent
 			// is a compile error, so a signed literal reaching `uint16(-10)`
 			// would fail to build.
-			from := pick(g.c, intTypes())
+			fromPool := intTypes()
+			for _, dt := range g.defined {
+				// Named-to-unnamed and cross-named conversions: the
+				// defined-type identity surface.
+				fromPool = append(fromPool, dt.typ)
+			}
+			from := pick(g.c, fromPool)
 			g.mark("conversions")
 			// Converting INTO a platform-width type cuts at that width:
 			// uint(-1) is 2^32-1 or 2^64-1 depending on the target.
@@ -347,6 +355,17 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			h := g.helpers[pick(g.c, g.singleResultHelpers(t))]
 			g.mark("helpers")
 			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1))}
+		}},
+		{name: "method", weight: 2, ok: g.enabled("methods") && len(g.methodsWithResult(t)) > 0, emit: func() {
+			// Same purity story as helpers; the receiver is a variable of
+			// the defined type, or its literal when the environment lacks
+			// one (T0(5).m0(...) is legal Go).
+			mr := pick(g.c, g.methodsWithResult(t))
+			dt := g.defined[mr.di]
+			m := dt.methods[mr.mi]
+			recv := g.variable(dt.typ)
+			g.mark("methods")
+			out = value{text: fmt.Sprintf("%s.%s(%s)", recv.text, m.name, g.argList(m.params, fuel-1))}
 		}},
 		{name: "len", weight: 1,
 			// len returns exactly `int`, and len of a string VARIABLE is

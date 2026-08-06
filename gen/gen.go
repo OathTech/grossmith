@@ -152,8 +152,14 @@ type Generator struct {
 	// revisit trigger: pointer parameters, closures over subject state, or
 	// package-level variables.
 	helpers []helper
-	// pureMode is set while generating a helper body.
+	// defined are the per-seed defined types and their methods.
+	defined   []definedType
+	methodSeq int
+	// pureMode is set while generating a helper or method body; pureBase
+	// names the environment's guaranteed non-constant int-ish variable (a
+	// helper's p0, a method's receiver r) for the nonConstExpr fallback.
 	pureMode bool
+	pureBase string
 	// corner is the resolved named corner; boundaryBias is the weight of the
 	// boundary arm at literal/divisor/shift-count sites (0 disables, 1 is
 	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
@@ -178,6 +184,23 @@ type helper struct {
 	results []Type
 	src     string
 }
+
+// definedType is one `type T0 <int-kind>` declaration with its methods.
+type definedType struct {
+	typ     Type
+	methods []method
+}
+
+// method is one pure value-receiver method on a defined type.
+type method struct {
+	name   string
+	params []Type
+	result Type
+	src    string
+}
+
+// methodRef locates one method: defined-type index, method index.
+type methodRef struct{ di, mi int }
 
 // riskOK reports whether the current statement may still draw a hot panic
 // site: never inside a helper (helpers are panic-free so their calls compose
@@ -250,6 +273,7 @@ func (g *Generator) Generate() (Case, error) {
 	}
 	g.generateHelpers()
 	g.declare(body)
+	g.generateMethods()
 	g.mark("functions", "short_decl", "literals", "return")
 
 	for i := 0; i < g.cfg.Stmts; i++ {
@@ -268,6 +292,12 @@ func (g *Generator) Generate() (Case, error) {
 	}
 	for _, h := range g.helpers {
 		out.WriteString(h.src)
+	}
+	for _, dt := range g.defined {
+		fmt.Fprintf(&out, "type %s %s\n\n", dt.typ.Named, dt.typ.underlyingName())
+		for _, m := range dt.methods {
+			out.WriteString(m.src)
+		}
 	}
 	fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
 	out.WriteString(body.buf.String())
@@ -362,6 +392,7 @@ func (g *Generator) generateHelper(idx int) helper {
 	savedVars, savedRisk := g.vars, g.riskSpent
 	g.vars = nil
 	g.pureMode = true
+	g.pureBase = "p0"
 	for j, pt := range params {
 		g.vars = append(g.vars, binding{name: fmt.Sprintf("p%d", j), typ: pt})
 	}
@@ -374,7 +405,7 @@ func (g *Generator) generateHelper(idx int) helper {
 		rs[j] = g.expr(rt, g.cfg.ExprFuel).text
 	}
 	body.line("return %s", strings.Join(rs, ", "))
-	g.vars, g.riskSpent, g.pureMode = savedVars, savedRisk, false
+	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
 	g.mark("helpers")
 
 	ps := make([]string, len(params))
@@ -391,6 +422,70 @@ func (g *Generator) generateHelper(idx int) helper {
 	return helper{name: name, params: params, results: results, src: src}
 }
 
+// generateMethods builds 0-2 pure value-receiver methods per defined type.
+// Same purity story as helpers (no globals, output, or hot panic sites) with
+// one difference: the guaranteed non-constant source is the RECEIVER, so no
+// forced int parameter is needed. Methods register after generation, so
+// bodies can call only earlier methods and helpers — acyclic for free.
+func (g *Generator) generateMethods() {
+	if !g.enabled("methods") {
+		return
+	}
+	for di := range g.defined {
+		for j := g.c.draw(3); j > 0; j-- {
+			m := g.generateMethod(di)
+			g.defined[di].methods = append(g.defined[di].methods, m)
+		}
+	}
+}
+
+func (g *Generator) generateMethod(di int) method {
+	dt := g.defined[di].typ
+	var params []Type
+	for j := g.c.draw(3); j > 0; j-- {
+		params = append(params, pick(g.c, intTypes()))
+	}
+	result := pick(g.c, append(intTypes(), dt))
+
+	savedVars, savedRisk := g.vars, g.riskSpent
+	g.vars = []binding{{name: "r", typ: dt}}
+	g.pureMode = true
+	g.pureBase = "r"
+	for j, pt := range params {
+		g.vars = append(g.vars, binding{name: fmt.Sprintf("p%d", j), typ: pt})
+	}
+	body := &emitter{indent: 1}
+	for j := 1 + g.c.draw(2); j > 0; j-- {
+		g.stmtIn(body, 1, false, false)
+	}
+	body.line("return %s", g.expr(result, g.cfg.ExprFuel).text)
+	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
+	g.mark("methods")
+
+	ps := make([]string, len(params))
+	for j, pt := range params {
+		ps[j] = fmt.Sprintf("p%d %s", j, pt.GoName())
+	}
+	name := fmt.Sprintf("m%d", g.methodSeq)
+	g.methodSeq++
+	src := fmt.Sprintf("func (r %s) %s(%s) %s {\n%s}\n\n",
+		dt.GoName(), name, strings.Join(ps, ", "), result.GoName(), body.buf.String())
+	return method{name: name, params: params, result: result, src: src}
+}
+
+// methodsWithResult returns the methods whose single result has type t.
+func (g *Generator) methodsWithResult(t Type) []methodRef {
+	var found []methodRef
+	for di, dt := range g.defined {
+		for mi, m := range dt.methods {
+			if m.result.Equal(t) {
+				found = append(found, methodRef{di: di, mi: mi})
+			}
+		}
+	}
+	return found
+}
+
 // singleResultHelpers returns helpers with exactly one result of type t.
 func (g *Generator) singleResultHelpers(t Type) []int {
 	var found []int
@@ -404,8 +499,12 @@ func (g *Generator) singleResultHelpers(t Type) []int {
 
 // callArgs renders drawn argument expressions for a helper's parameters.
 func (g *Generator) callArgs(h helper, fuel int) string {
-	args := make([]string, len(h.params))
-	for i, pt := range h.params {
+	return g.argList(h.params, fuel)
+}
+
+func (g *Generator) argList(params []Type, fuel int) string {
+	args := make([]string, len(params))
+	for i, pt := range params {
 		args[i] = g.expr(pt, fuel).text
 	}
 	return strings.Join(args, ", ")
@@ -441,6 +540,14 @@ func (g *Generator) typePool() []Type {
 			elems = append(elems, Str())
 		}
 		pool = append(pool, Map(pick(g.c, kinds), pick(g.c, elems)))
+	}
+	if g.enabled("defined_types") {
+		for i := 0; i < 1+g.c.draw(2); i++ {
+			t := pick(g.c, intTypes())
+			t.Named = fmt.Sprintf("T%d", i)
+			g.defined = append(g.defined, definedType{typ: t})
+			pool = append(pool, t)
+		}
 	}
 	if g.enabled("structs") {
 		fieldPool := scalarTypes()
@@ -597,6 +704,13 @@ func (g *Generator) driver(out *strings.Builder, observed []binding) {
 			// (unspecified after append).
 			fmt.Fprintf(out, "\tprintln(len(%s))\n", r)
 			fmt.Fprintf(out, "\tfor _, e := range %s {\n\t\tprintln(e)\n\t}\n", r)
+			continue
+		}
+		if observed[i].typ.Named != "" {
+			// Named scalars are observed through an explicit underlying
+			// conversion: println's treatment of defined types is not a
+			// contract any clone should be held to.
+			fmt.Fprintf(out, "\tprintln(%s(%s))\n", observed[i].typ.underlyingName(), r)
 			continue
 		}
 		fmt.Fprintf(out, "\tprintln(%s)\n", r)

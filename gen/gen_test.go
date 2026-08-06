@@ -353,7 +353,7 @@ func TestConstructGatingRespected(t *testing.T) {
 		if i := strings.Index(src, "func main"); i >= 0 {
 			src = src[:i]
 		}
-		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0", "defer ", "func()", "h0("} {
+		for _, kw := range []string{"for ", "if ", "switch ", "break", "continue", " / ", " % ", "<<", ">>", "min(", "max(", "range ", "[", "struct", ".", "println(", "w0", "defer ", "func()", "h0(", "type T0", ".m0("} {
 			if strings.Contains(src, kw) {
 				t.Fatalf("seed %d: %q emitted with all optional constructs disabled\n%s", seed, kw, src)
 			}
@@ -1150,6 +1150,97 @@ func TestHelpersArePureAndAcyclic(t *testing.T) {
 		t.Fatal("no helpers in 300 seeds")
 	}
 	t.Logf("helpers in %d/300 programs, %d helper-to-helper calls, all pure and acyclic", helpers, calls)
+}
+
+// TestMethodsArePureValueReceiversAndAcyclic: method bodies carry no hot
+// panic sites, no output, no defer; receivers are VALUES (pointer receivers
+// arrive with the effect discipline, not before); and a method calls only
+// lower-numbered methods — acyclic without recursion fuel.
+func TestMethodsArePureValueReceiversAndAcyclic(t *testing.T) {
+	withMethods, methodCalls := 0, 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		found := false
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil {
+				continue
+			}
+			found = true
+			if _, ptr := fn.Recv.List[0].Type.(*ast.StarExpr); ptr {
+				t.Fatalf("seed %d: pointer receiver on %s\n%s", seed, fn.Name.Name, c.Source)
+			}
+			if n := riskSites(fn.Body); n != 0 {
+				t.Fatalf("seed %d: method %s has %d hot panic sites\n%s", seed, fn.Name.Name, n, c.Source)
+			}
+			var me int
+			fmt.Sscanf(fn.Name.Name, "m%d", &me)
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch e := n.(type) {
+				case *ast.DeferStmt:
+					t.Fatalf("seed %d: defer inside method %s\n%s", seed, fn.Name.Name, c.Source)
+				case *ast.CallExpr:
+					switch fun := e.Fun.(type) {
+					case *ast.Ident:
+						if fun.Name == "println" {
+							t.Fatalf("seed %d: output inside method %s\n%s", seed, fn.Name.Name, c.Source)
+						}
+					case *ast.SelectorExpr:
+						if strings.HasPrefix(fun.Sel.Name, "m") {
+							var callee int
+							if n, _ := fmt.Sscanf(fun.Sel.Name, "m%d", &callee); n == 1 {
+								methodCalls++
+								if callee >= me {
+									t.Fatalf("seed %d: method m%d calls m%d — must be earlier-only\n%s",
+										seed, me, callee, c.Source)
+								}
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+		if found {
+			withMethods++
+		}
+	}
+	if withMethods == 0 {
+		t.Fatal("no methods in 300 seeds")
+	}
+	t.Logf("methods in %d/300 programs, %d method-to-method calls, all pure value receivers", withMethods, methodCalls)
+}
+
+// TestDefinedTypesAreDistinctAndObserved: defined types occur, method calls
+// reach subject expressions, and observed named values go through the
+// underlying conversion in the driver.
+func TestDefinedTypesAreDistinctAndObserved(t *testing.T) {
+	withTypes, calls, observedNamed := 0, 0, 0
+	for seed := int64(1); seed <= 300; seed++ {
+		c := generate(t, seed)
+		src := string(c.Source)
+		if !strings.Contains(src, "type T0 ") {
+			continue
+		}
+		withTypes++
+		subject := src
+		if i := strings.Index(subject, "func main"); i >= 0 {
+			subject = subject[:i]
+		}
+		calls += strings.Count(subject, ".m")
+		if regexp.MustCompile(`println\((?:int|uint)\d*\(r\d+\)\)`).MatchString(src) {
+			observedNamed++
+		}
+	}
+	if withTypes == 0 {
+		t.Fatal("no defined types in 300 seeds")
+	}
+	if observedNamed == 0 {
+		t.Fatal("no observed named value goes through an underlying conversion")
+	}
+	t.Logf("defined types in %d/300, %d method-call sites, %d underlying-converted observations",
+		withTypes, calls, observedNamed)
 }
 
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.

@@ -34,6 +34,7 @@ func Optional() []string {
 		"maps", "delete", "comma_ok",
 		"defer", "recover", "linearize",
 		"helpers",
+		"defined_types", "methods",
 	}
 }
 

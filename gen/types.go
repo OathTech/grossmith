@@ -77,6 +77,11 @@ type Type struct {
 	Fields []StructField
 	// Key describes ShapeMap (Elem is shared with arrays/slices).
 	Key *Type
+	// Named, when set on an integer shape, makes this a DEFINED type
+	// (`type T0 int16`): same operators as the underlying kind, but a
+	// DISTINCT identity — no assignability to or from the underlying type
+	// without conversion. Exactly the identity rules clones get wrong.
+	Named string
 }
 
 // Bool is the bool type.
@@ -123,6 +128,9 @@ func scalarTypes() []Type {
 
 // GoName is the type's Go spelling.
 func (t Type) GoName() string {
+	if t.Named != "" {
+		return t.Named
+	}
 	if t.Shape == ShapeBool {
 		return "bool"
 	}
@@ -175,11 +183,23 @@ func (t Type) Tags() []string {
 	if t.Shape == ShapeMap {
 		return append(append([]string{"maps"}, t.Key.Tags()...), t.Elem.Tags()...)
 	}
-	if t.Bits == 0 && !t.Unsigned {
-		return []string{"ints"}
+	tags := []string{"ints"}
+	if t.Named != "" {
+		tags = append(tags, "defined_types")
 	}
-	// A sized or unsigned kind is what `widths` records.
-	return []string{"ints", "widths"}
+	if t.Bits != 0 || t.Unsigned {
+		// A sized or unsigned kind is what `widths` records.
+		tags = append(tags, "widths")
+	}
+	return tags
+}
+
+// underlyingName is the spelling of a defined type's underlying kind — used
+// by the driver to observe named values through an explicit conversion.
+func (t Type) underlyingName() string {
+	u := t
+	u.Named = ""
+	return u.GoName()
 }
 
 // literalRange is the closed interval integer literals of this type are drawn
@@ -276,7 +296,8 @@ func (t Type) Equal(other Type) bool {
 		// one name — decl() is the single source).
 		return t.Name == other.Name
 	}
-	return true
+	// Defined types are distinct from their underlying kind: T0 != int16.
+	return t.Named == other.Named
 }
 
 // decl is the preamble type declaration for a named struct type.
