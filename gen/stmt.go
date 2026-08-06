@@ -65,12 +65,14 @@ func (g *Generator) block(out *emitter, depth, count int, inLoop bool) {
 }
 
 func (g *Generator) assign(out *emitter) {
+	g.resetRisk()
 	target := &g.vars[g.c.draw(len(g.vars))]
 	g.mark("assignment")
 	out.line("%s = %s", target.name, g.expr(target.typ, g.cfg.ExprFuel).text)
 }
 
 func (g *Generator) compoundAssign(out *emitter) {
+	g.resetRisk()
 	target := &g.vars[g.c.draw(len(g.vars))]
 	if target.typ.Shape == ShapeBool {
 		g.assign(out)
@@ -133,6 +135,7 @@ func (g *Generator) incDec(out *emitter) {
 // write alone does not discharge Go's unused-variable rule, so observe()'s
 // reads==0 fallback still covers a write-only array.
 func (g *Generator) elemAssign(out *emitter) {
+	g.resetRisk()
 	i := pick(g.c, g.arrayVars(nil))
 	arr := &g.vars[i]
 	g.mark("arrays", "index", "assignment")
@@ -142,6 +145,7 @@ func (g *Generator) elemAssign(out *emitter) {
 // fieldAssign writes one struct field. Like element writes, a field write
 // alone does not discharge the unused-variable rule; observe() covers it.
 func (g *Generator) fieldAssign(out *emitter) {
+	g.resetRisk()
 	src := pick(g.c, g.fieldSources(nil))
 	sv := &g.vars[src.varIdx]
 	var fieldType Type
@@ -171,6 +175,7 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 }
 
 func (g *Generator) ifStmt(out *emitter, depth int, inLoop bool) {
+	g.resetRisk()
 	g.mark("if", "control_flow")
 	out.open("if %s {", g.boolExpr(g.cfg.ExprFuel).text)
 	g.block(out, depth, 1+g.c.draw(2), inLoop)
@@ -271,7 +276,8 @@ func (g *Generator) switchStmt(out *emitter, depth int, inLoop bool) {
 	}
 	out.open("switch %s {", tagExpr)
 	seen := map[int]bool{}
-	for i := 0; i < 1+g.c.draw(3); i++ {
+	caseCount := 1 + g.c.draw(3) // hoisted: never draw in a loop condition
+	for i := 0; i < caseCount; i++ {
 		n := low + g.c.draw(high-low+1)
 		if seen[n] {
 			continue

@@ -46,9 +46,7 @@ func Check(dir string, rt Runtime, timeout time.Duration) CaseResult {
 	}
 	build := exec.Command("go", "build", "-o", bin, "main.go")
 	build.Dir = dir
-	if rt.GOARCH != "" {
-		build.Env = append(os.Environ(), "GOARCH="+rt.GOARCH, "CGO_ENABLED=0")
-	}
+	build.Env = buildEnv(rt)
 	if out, err := build.CombinedOutput(); err != nil {
 		res.Detail = fmt.Sprintf("build: %v: %s", err, out)
 		return res
@@ -63,6 +61,10 @@ func Check(dir string, rt Runtime, timeout time.Duration) CaseResult {
 		return res
 	}
 	run := exec.CommandContext(ctx, abs)
+	// An EMPTY environment: an inherited GODEBUG (inittrace, gctrace, …)
+	// makes byte-identical binaries print differently run to run — every
+	// case would become a false divergence (review finding, demonstrated).
+	run.Env = []string{}
 	out, err := run.CombinedOutput()
 	res.Output = string(out)
 	switch {
@@ -191,6 +193,22 @@ func Diff(a, b Report) []Divergence {
 		})
 	}
 	return out
+}
+
+// buildEnv is a sanitized toolchain environment: only what `go build`
+// needs, never GODEBUG/GOFLAGS/GOTOOLCHAIN from the caller — the "pinned
+// reference" claim is only true if the environment cannot re-point it.
+func buildEnv(rt Runtime) []string {
+	env := []string{"GOTOOLCHAIN=local", "CGO_ENABLED=0"}
+	for _, key := range []string{"PATH", "HOME", "TMPDIR", "GOCACHE", "GOPATH", "GOMODCACHE"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	if rt.GOARCH != "" {
+		env = append(env, "GOARCH="+rt.GOARCH)
+	}
+	return env
 }
 
 // GoVersion reports the pinned toolchain doing the building.

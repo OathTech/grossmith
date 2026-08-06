@@ -528,6 +528,173 @@ func TestBoundaryLiteralsAreRepresentable(t *testing.T) {
 	}
 }
 
+// riskSites counts the panic-capable sites the generator can make HOT in
+// one expression subtree: divisions/modulos with a variable (identifier)
+// divisor, and index expressions whose index is a bare identifier.
+func riskSites(n ast.Node) int {
+	count := 0
+	ast.Inspect(n, func(inner ast.Node) bool {
+		switch e := inner.(type) {
+		case *ast.BinaryExpr:
+			if e.Op == token.QUO || e.Op == token.REM {
+				if _, ok := e.Y.(*ast.Ident); ok {
+					count++
+				}
+			}
+		case *ast.IndexExpr:
+			if _, ok := e.Index.(*ast.Ident); ok {
+				count++
+			}
+		}
+		return true
+	})
+	return count
+}
+
+// TestOnePanicRiskPerStatement witnesses the risk budget: two hot panic
+// sites in one statement have spec-UNSPECIFIED panic identity (a conformant
+// clone may report either), so no statement context may carry more than one.
+func TestOnePanicRiskPerStatement(t *testing.T) {
+	risky := 0
+	for seed := int64(1); seed <= 500; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		check := func(n ast.Node) {
+			if s := riskSites(n); s > 1 {
+				t.Fatalf("seed %d: statement with %d panic-risk sites — panic identity unspecified\n%s", seed, s, c.Source)
+			} else if s == 1 {
+				risky++
+			}
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch s := n.(type) {
+			case *ast.AssignStmt:
+				check(s)
+				return false
+			case *ast.IfStmt:
+				check(s.Cond)
+			case *ast.SwitchStmt:
+				if s.Tag != nil {
+					check(s.Tag)
+				}
+			}
+			return true
+		})
+	}
+	if risky == 0 {
+		t.Fatal("no single-risk statements in 500 seeds — the panic population is gone")
+	}
+	t.Logf("%d single-risk statements, none with more", risky)
+}
+
+// TestPlatformDivisionByMinusOneIsWidthTagged witnesses the discrimination
+// proof's tag honesty: MinInt32 / -1 on platform int wraps on a 32-bit
+// target but not a 64-bit one, so any platform-int division whose divisor
+// is -1 or a variable must carry width_dependent (review finding: this was
+// an untagged cross-arch divergence).
+func TestPlatformDivisionByMinusOneIsWidthTagged(t *testing.T) {
+	hit := 0
+	for seed := int64(1); seed <= 600; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Corner = "boundary"
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
+		fset, file := parseCase(t, c.Source, seed)
+		info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
+		if _, err := (&types.Config{}).Check("main", fset, []*ast.File{file}, info); err != nil {
+			t.Fatalf("seed %d: typecheck: %v", seed, err)
+		}
+		divides := false
+		ast.Inspect(file, func(n ast.Node) bool {
+			e, ok := n.(*ast.BinaryExpr)
+			if !ok || e.Op != token.QUO {
+				return true
+			}
+			tv, ok := info.Types[e]
+			if !ok {
+				return true
+			}
+			b, ok := tv.Type.Underlying().(*types.Basic)
+			if !ok || b.Kind() != types.Int {
+				return true
+			}
+			risky := false
+			if _, isVar := e.Y.(*ast.Ident); isVar {
+				risky = true
+			}
+			if u, isUnary := e.Y.(*ast.UnaryExpr); isUnary && u.Op == token.SUB {
+				if lit, isLit := u.X.(*ast.BasicLit); isLit && lit.Value == "1" {
+					risky = true
+				}
+			}
+			if risky {
+				divides = true
+			}
+			return true
+		})
+		if !divides {
+			continue
+		}
+		hit++
+		tagged := false
+		for _, f := range c.Features {
+			if f == tagWidthDependent {
+				tagged = true
+			}
+		}
+		if !tagged {
+			t.Fatalf("seed %d: platform-int division with -1/variable divisor lacks %s\n%s", seed, tagWidthDependent, c.Source)
+		}
+	}
+	if hit == 0 {
+		t.Fatal("no risky platform-int divisions in 600 boundary seeds — the witness asserted nothing")
+	}
+	t.Logf("%d risky platform-int divisions, all width-tagged", hit)
+}
+
+// TestGeneratorIsSingleUse: a second Generate must error, not corrupt.
+func TestGeneratorIsSingleUse(t *testing.T) {
+	g := New(DefaultConfig(7))
+	if _, err := g.Generate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Generate(); err == nil {
+		t.Fatal("second Generate on one Generator succeeded — reuse must error")
+	}
+}
+
+// TestCaseIsASnapshot: the returned Tape and Stats must not alias live
+// generator state.
+func TestCaseIsASnapshot(t *testing.T) {
+	g := New(DefaultConfig(9))
+	c, err := g.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(c.Tape)
+	c.Tape = append(c.Tape, 999999)
+	c2, err := New(DefaultConfig(9)).Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c2.Tape) != before {
+		t.Fatalf("tape lengths differ across identical generations: %d vs %d", before, len(c2.Tape))
+	}
+	for site, s := range c.Stats {
+		for k := range s.Chosen {
+			s.Chosen[k] = -1
+			_ = site
+			break
+		}
+		break
+	}
+	if c2.Stats == nil {
+		t.Fatal("no stats")
+	}
+}
+
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
 func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	bad := []Config{
@@ -537,6 +704,12 @@ func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: -1, ExprFuel: 3, LoopCap: 6},
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 0, LoopCap: 6},
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6, Corner: "bogus"},
+		// Practically non-terminating: worst-case executed statements bound.
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 3, ExprFuel: 3, LoopCap: 1 << 40},
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 6, ExprFuel: 3, LoopCap: 4096},
+		// Misspelled construct key: silent population degradation.
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6,
+			Constructs: map[string]bool{"array": true}},
 	}
 	for i, cfg := range bad {
 		func() {

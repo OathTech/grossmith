@@ -61,6 +61,35 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: LoopCap %d must be >= 1 — every loop draws a trip count in [1,LoopCap]", c.LoopCap)
 	case c.Corner != "" && c.Corner != "none" && c.Corner != "boundary":
 		return fmt.Errorf("config: unknown corner %q", c.Corner)
+	case c.Vars > 128:
+		return fmt.Errorf("config: Vars %d exceeds 128", c.Vars)
+	case c.ExprFuel > 12:
+		return fmt.Errorf("config: ExprFuel %d exceeds 12", c.ExprFuel)
+	}
+	// "Halts" must include "halts before the heat death": bound the
+	// worst-case executed statement count, not just each knob (review
+	// finding: LoopCap 1<<40 passed Validate and generated a years-long
+	// loop). Worst case is ~Stmts * (2*LoopCap)^Depth.
+	worst := float64(c.Stmts)
+	for i := 0; i < c.Depth; i++ {
+		worst *= 2 * float64(c.LoopCap)
+	}
+	if worst > 1e9 {
+		return fmt.Errorf("config: worst-case executed statements ~%.0g exceeds 1e9 (Stmts=%d, LoopCap=%d, Depth=%d)",
+			worst, c.Stmts, c.LoopCap, c.Depth)
+	}
+	// Unknown construct keys are misconfigurations, not empty gates: a typo
+	// like "array" would silently degrade the population to core-only.
+	if c.Constructs != nil {
+		known := map[string]bool{}
+		for _, tag := range Optional() {
+			known[tag] = true
+		}
+		for tag := range c.Constructs {
+			if !known[tag] && !coreConstructs[tag] {
+				return fmt.Errorf("config: unknown construct %q", tag)
+			}
+		}
 	}
 	return nil
 }
@@ -103,6 +132,28 @@ type Generator struct {
 	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
 	corner       string
 	boundaryBias int
+	// riskSpent is the per-statement panic-risk budget (review finding: two
+	// hot panic sites in one statement have SPEC-UNSPECIFIED panic identity
+	// — a conformant clone may report either panic). Each statement context
+	// resets it; the risky arms (variable divisor, raw index) consult and
+	// spend it, so every panic-path program has a unique possible panic.
+	// Multi-risk statements return later as a quotient-compared corner.
+	riskSpent bool
+	// done makes a Generator single-use: a second Generate would re-append
+	// declarations and silently emit a corrupt program (review finding).
+	done bool
+}
+
+// resetRisk opens a fresh statement context for the panic-risk budget.
+func (g *Generator) resetRisk() { g.riskSpent = false }
+
+// spendRisk claims the statement's single panic-risk slot.
+func (g *Generator) spendRisk() bool {
+	if g.riskSpent {
+		return false
+	}
+	g.riskSpent = true
+	return true
 }
 
 const cornerBoundaryBias = 5
@@ -142,8 +193,13 @@ func New(cfg Config) *Generator {
 	return g
 }
 
-// Generate produces one case.
+// Generate produces one case. A Generator is single-use: a second call
+// errors rather than silently emitting a corrupt program.
 func (g *Generator) Generate() (Case, error) {
+	if g.done {
+		return Case{}, fmt.Errorf("gen: Generator is single-use — make one per case")
+	}
+	g.done = true
 	if err := g.cfg.Validate(); err != nil {
 		return Case{}, err
 	}
@@ -184,7 +240,22 @@ func (g *Generator) Generate() (Case, error) {
 		features = append(features, tag)
 	}
 	sort.Strings(features)
-	return Case{Source: source, Features: features, Tape: g.c.tape, Stats: g.c.stats}, nil
+	// Snapshots, not aliases: the returned Case must not share live chooser
+	// state with the Generator (review finding: callers and generator could
+	// clobber each other's Tape, and Stats mutated retroactively).
+	tape := append([]int(nil), g.c.tape...)
+	stats := make(map[string]*SiteStats, len(g.c.stats))
+	for site, s := range g.c.stats {
+		cp := &SiteStats{Valid: map[string]int{}, Chosen: map[string]int{}}
+		for k, v := range s.Valid {
+			cp.Valid[k] = v
+		}
+		for k, v := range s.Chosen {
+			cp.Chosen[k] = v
+		}
+		stats[site] = cp
+	}
+	return Case{Source: source, Features: features, Tape: tape, Stats: stats}, nil
 }
 
 // typePool is the declarable type set: scalars always, string when enabled,
@@ -205,7 +276,11 @@ func (g *Generator) typePool() []Type {
 		if g.enabled("strings") {
 			fieldPool = append(fieldPool, Str())
 		}
-		for s := 0; s < 1+g.c.draw(2); s++ {
+		// Bound hoisted: a draw in a loop CONDITION re-draws every
+		// iteration, decoupling tape length from decision count (review
+		// finding — brittleness for the shrinking seam).
+		structCount := 1 + g.c.draw(2)
+		for s := 0; s < structCount; s++ {
 			fields := make([]StructField, 2+g.c.draw(2))
 			for f := range fields {
 				fields[f] = StructField{Name: fmt.Sprintf("f%d", f), Typ: pick(g.c, fieldPool)}

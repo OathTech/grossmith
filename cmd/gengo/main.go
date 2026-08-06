@@ -100,6 +100,20 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 	if err := os.WriteFile(filepath.Join(out, "manifest.tsv"), []byte(manifest.String()), 0o644); err != nil {
 		return err
 	}
+	// Remove stale case dirs from a previous larger batch in the same out
+	// dir: the conformance glob would otherwise mix two batches' verdicts
+	// (review finding).
+	stale, err := filepath.Glob(filepath.Join(out, "case_*"))
+	if err != nil {
+		return err
+	}
+	for _, dir := range stale {
+		if _, live := tagsByDir[dir]; !live {
+			if err := os.RemoveAll(dir); err != nil {
+				return err
+			}
+		}
+	}
 	fmt.Printf("generated %d cases in %s (seeds %d..%d)\n", n, out, seed, seed+int64(n)-1)
 
 	fmt.Println("\ncomposition (tag histogram):")

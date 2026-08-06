@@ -195,9 +195,11 @@ func (g *Generator) indexExpr(t Type) string {
 			g.mark("conversions", "modulo")
 			out = fmt.Sprintf("int(%s%%%d)", u.text, t.Len)
 		}},
-		{name: "panicky", weight: 1, ok: true, emit: func() {
+		{name: "panicky", weight: 1, ok: !g.riskSpent, emit: func() {
 			// A raw int variable: usually out of range, so usually a
-			// deterministic index panic. Deliberate, tagged content.
+			// deterministic index panic. Deliberate, tagged content —
+			// and it spends the statement's one panic-risk slot.
+			g.spendRisk()
 			v := g.variable(Int(0, false))
 			g.note(tagPanicRisk)
 			out = v.text
@@ -351,11 +353,21 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 func (g *Generator) divModExpr(t Type, fuel int, op, tag string) value {
 	left := g.nonConstExpr(t, fuel-1)
 	divisor := g.nonZeroLiteral(t)
-	if g.c.chance(8) {
+	variableDivisor := false
+	if !g.riskSpent && g.c.chance(8) && g.spendRisk() {
 		divisor = g.variable(t)
+		variableDivisor = true
 		g.note(tagPanicRisk)
 	}
 	g.mark(tag)
+	// Division of platform-width signed int is width-dependent when the
+	// divisor can be -1: MinInt32 / -1 wraps to MinInt32 on a 32-bit target
+	// but is +2^31 on a 64-bit one (review finding: this was the untagged
+	// divergence that would have broken the discrimination proof). Modulo
+	// stays value-preserving (MinInt % -1 is 0 at every width).
+	if op == "/" && (variableDivisor || divisor.text == "-1") {
+		g.markWidthDep(t)
+	}
 	return value{text: fmt.Sprintf("(%s "+op+" %s)", left.text, divisor.text)}
 }
 
