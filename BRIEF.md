@@ -212,10 +212,14 @@ break / continue; panic paths (division, modulo). Then:
 2. **Boundary literals** — the first named corner (charter 3's edge cases).
 3. **Arrays** — plus `range` loops over fixed-size data (termination free).
 4. **Structs**.
-5. **Block-tree emitter + real scopes** — the priced rewrite (gosmith's
-   pending-block-tree with retroactive declaration; Xsmith's ~200-line
-   scope-graph resolution is the reference design), prerequisite for
-   helpers, closures, defer.
+5. **Real scopes** — DELIVERED without the block-tree emitter: the
+   projection rule (fold an inner declaration into an enclosing variable
+   before block exit) appends rather than inserts, and the total pool
+   floor means type demands never fail — dissolving both of the rewrite's
+   motivating consumers. The emitter rewrite stays DEFERRED with a named
+   trigger: demand-driven retroactive declaration, or out-of-order
+   function bodies when helpers arrive (gosmith's pending-block-tree and
+   Xsmith's scope graphs remain the reference designs).
 6. Onward per the trap catalogue: slices, maps (determinism via
    construction or declared quotient — decided then, knowledge never
    punted), defer/recover, methods, interfaces. Observation levers ride
