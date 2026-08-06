@@ -75,7 +75,10 @@ func Check(dir string, rt Runtime, timeout time.Duration) CaseResult {
 		res.Detail = fmt.Sprintf("run: %v: %s", err, out)
 	default:
 		res.Ran = true
-		res.PanicPath = strings.HasPrefix(res.Output, "panic")
+		// Not HasPrefix: interleaved observation points print BEFORE a later
+		// panic, which is the point — the panic line can sit anywhere. The
+		// generated string alphabet cannot produce the word "panic".
+		res.PanicPath = strings.Contains(res.Output, "panic")
 	}
 	return res
 }
