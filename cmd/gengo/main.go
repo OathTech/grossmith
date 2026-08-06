@@ -73,7 +73,13 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 		if err := os.WriteFile(filepath.Join(dir, "main.go"), c.Source, 0o644); err != nil {
 			return err
 		}
-		fmt.Fprintf(&manifest, "%s\t%d\t%s\n", id, caseSeed, strings.Join(c.Features, ","))
+		// Features carry per-program COUNTS (tag=N): presence saturates for
+		// common tags; counts keep them stratifiable.
+		counted := make([]string, len(c.Features))
+		for fi, f := range c.Features {
+			counted[fi] = fmt.Sprintf("%s=%d", f, c.FeatureCounts[f])
+		}
+		fmt.Fprintf(&manifest, "%s\t%d\t%s\n", id, caseSeed, strings.Join(counted, ","))
 		tagsByDir[dir] = c.Features
 		for _, t := range c.Features {
 			tagCount[t]++
@@ -170,6 +176,12 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 		widthTagged := tagCount["width_dependent"]
 		fmt.Printf("  width_dependent-tagged cases: %d; divergences inside the tag: %d, outside: %d\n",
 			widthTagged, inTag, offTag)
+		if widthTagged > 0 {
+			// The yield makes over-application visible: a tag on 90% of
+			// cases with a 15% hit rate is honest but weak.
+			fmt.Printf("  width_dependent yield: %d/%d (%.1f%%)\n",
+				inTag, widthTagged, 100*float64(inTag)/float64(widthTagged))
+		}
 		switch {
 		case len(divs) == 0:
 			fmt.Println("  WARNING: no divergences — the observation may be blind, or all cases width-independent")

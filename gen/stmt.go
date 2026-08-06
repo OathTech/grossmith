@@ -66,14 +66,32 @@ func (g *Generator) block(out *emitter, depth, count int, inLoop bool) {
 
 func (g *Generator) assign(out *emitter) {
 	g.resetRisk()
-	target := &g.vars[g.c.draw(len(g.vars))]
+	all := make([]int, len(g.vars))
+	for i := range all {
+		all[i] = i
+	}
+	target := &g.vars[g.pickTarget(all)]
 	g.mark("assignment")
-	out.line("%s = %s", target.name, g.expr(target.typ, g.cfg.ExprFuel).text)
+	rhs := g.expr(target.typ, g.cfg.ExprFuel)
+	// `v = v` is an identity no-op that arises whenever a type has one
+	// variable (review finding: ~19% of plain assigns). Re-initializing
+	// with a literal at least writes a value. The discarded bare-variable
+	// RHS was counted as a read — un-count it, or the phantom read would
+	// suppress the `_ = v` discharge and break the compile bar.
+	if rhs.text == target.name {
+		target.reads--
+		rhs = g.literal(target.typ)
+	}
+	out.line("%s = %s", target.name, rhs.text)
 }
 
 func (g *Generator) compoundAssign(out *emitter) {
 	g.resetRisk()
-	target := &g.vars[g.c.draw(len(g.vars))]
+	all := make([]int, len(g.vars))
+	for i := range all {
+		all[i] = i
+	}
+	target := &g.vars[g.pickTarget(all)]
 	if target.typ.Shape == ShapeBool {
 		g.assign(out)
 		return
@@ -111,7 +129,15 @@ func (g *Generator) compoundAssign(out *emitter) {
 	// The right side is forced non-constant for the same reason binary
 	// arithmetic operands are: the target must not let Go fold the whole
 	// thing into an overflowing constant.
-	out.line("%s %s %s", target.name, op, g.nonConstExpr(target.typ, g.cfg.ExprFuel-1).text)
+	rhs := g.nonConstExpr(target.typ, g.cfg.ExprFuel-1)
+	// `v ^= v` and friends zero or fix the target — identity no-ops. A
+	// single literal RHS is safe here: the TARGET is non-constant, so the
+	// statement cannot constant-fold. Un-count the discarded read.
+	if rhs.text == target.name {
+		target.reads--
+		rhs = g.literal(target.typ)
+	}
+	out.line("%s %s %s", target.name, op, rhs.text)
 }
 
 func (g *Generator) incDec(out *emitter) {
@@ -121,7 +147,7 @@ func (g *Generator) incDec(out *emitter) {
 			numeric = append(numeric, i)
 		}
 	}
-	target := &g.vars[pick(g.c, numeric)]
+	target := &g.vars[g.pickTarget(numeric)]
 	op := "++"
 	if g.c.chance(2) {
 		op = "--"
@@ -251,16 +277,26 @@ func (g *Generator) switchStmt(out *emitter, depth int, inLoop bool) {
 
 	low, high := t.literalRange()
 	tagExpr := tag.name
-	reduce := g.enabled("modulo")
+	// Reduction keeps case labels reachable. Modulo is preferred; a bitmask
+	// serves when the swarm mix lacks modulo — previously any modulo-less
+	// mix forced EVERY switch wide, making unreachable_case a swarm
+	// side-effect instead of the drawn 4:1 minority (review finding).
+	reduceVia := ""
+	switch {
+	case g.enabled("modulo"):
+		reduceVia = "%"
+	case g.enabled("bitwise"):
+		reduceVia = "&"
+	}
+	reduce := reduceVia != ""
 	if reduce {
-		var reduced arm
-		reduced = g.c.choose("switch-tag", []arm{
+		reduce = g.c.choose("switch-tag", []arm{
 			{name: "reduced", weight: 4, ok: true},
 			{name: "wide", weight: 1, ok: true},
-		})
-		reduce = reduced.name == "reduced"
+		}).name == "reduced"
 	}
-	if reduce {
+	switch {
+	case reduce && reduceVia == "%":
 		g.mark("modulo")
 		if t.Bits == 0 && !t.Unsigned {
 			tagExpr = fmt.Sprintf("%s %% 3", tag.name)
@@ -271,7 +307,16 @@ func (g *Generator) switchStmt(out *emitter, depth int, inLoop bool) {
 		if !t.Unsigned {
 			low = -2 // Go's % keeps the dividend's sign.
 		}
-	} else {
+	case reduce:
+		// x & 3 is in [0,3] for every integer type (two's complement).
+		g.mark("bitwise")
+		if t.Bits == 0 && !t.Unsigned {
+			tagExpr = fmt.Sprintf("%s & 3", tag.name)
+		} else {
+			tagExpr = fmt.Sprintf("%s & %s(3)", tag.name, t.GoName())
+		}
+		low, high = 0, 3
+	default:
 		g.note(tagUnreachableCase)
 	}
 	out.open("switch %s {", tagExpr)

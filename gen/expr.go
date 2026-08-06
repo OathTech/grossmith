@@ -454,7 +454,15 @@ func (g *Generator) boolExpr(fuel int) value {
 				op = "!="
 			}
 			g.mark("structs", "equality")
-			out = value{text: fmt.Sprintf("(%s %s %s)", sv.name, op, g.structExpr(sv.typ).text)}
+			rhs := g.structExpr(sv.typ)
+			// s == s is constant-in-effect; compare against a composite
+			// instead (review finding: identity self-compares). Un-count
+			// the discarded bare-variable read.
+			if rhs.text == sv.name {
+				sv.reads--
+				rhs = g.literal(sv.typ)
+			}
+			out = value{text: fmt.Sprintf("(%s %s %s)", sv.name, op, rhs.text)}
 		}},
 		{name: "str-compare", weight: 1, ok: g.enabled("strings", "comparisons"), emit: func() {
 			// Strings order lexically by bytes — a comparison edge clones

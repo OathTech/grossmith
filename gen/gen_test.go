@@ -695,6 +695,56 @@ func TestCaseIsASnapshot(t *testing.T) {
 	}
 }
 
+// TestNoIdentitySelfAssignment: `v = v`, `v ^= v`, and struct self-compares
+// are identity no-ops that arose whenever a type had one variable (review
+// finding: ~19% of plain assigns). They are replaced at emission.
+func TestNoIdentitySelfAssignment(t *testing.T) {
+	for seed := int64(1); seed <= 400; seed++ {
+		c := generate(t, seed)
+		_, file := parseCase(t, c.Source, seed)
+		ast.Inspect(file, func(n ast.Node) bool {
+			a, ok := n.(*ast.AssignStmt)
+			if !ok || len(a.Lhs) != 1 || len(a.Rhs) != 1 {
+				return true
+			}
+			lhs, ok := a.Lhs[0].(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if rhs, ok := a.Rhs[0].(*ast.Ident); ok && rhs.Name == lhs.Name {
+				t.Fatalf("seed %d: identity self-assignment %s %s %s\n%s", seed, lhs.Name, a.Tok, rhs.Name, c.Source)
+			}
+			return true
+		})
+	}
+}
+
+// TestSwitchReducesWithoutModulo: a swarm mix lacking modulo must not force
+// every switch wide — the bitmask fallback keeps case labels reachable.
+func TestSwitchReducesWithoutModulo(t *testing.T) {
+	cons := map[string]bool{"switch": true, "bitwise": true}
+	masked := 0
+	for seed := int64(1); seed <= 80; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Constructs = cons
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
+		src := string(c.Source)
+		if strings.Contains(src, " % ") {
+			t.Fatalf("seed %d: modulo emitted while disabled\n%s", seed, src)
+		}
+		if regexp.MustCompile(`switch v\d+ & `).MatchString(src) {
+			masked++
+		}
+	}
+	if masked == 0 {
+		t.Fatal("no bitmask-reduced switch in 80 modulo-less seeds — the fallback never fires")
+	}
+	t.Logf("bitmask-reduced switches in %d/80 programs", masked)
+}
+
 // TestInvalidConfigIsRejectedNotPanicked: a bad config is a diagnosis.
 func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	bad := []Config{

@@ -74,14 +74,14 @@ func (g *Generator) mark(tags ...string) {
 		if !g.enabled(tag) {
 			panic("gen: emitted disabled construct " + tag)
 		}
-		g.used[tag] = true
+		g.used[tag]++
 	}
 }
 
 // note records info tags — knowledge, never gated.
 func (g *Generator) note(tags ...string) {
 	for _, tag := range tags {
-		g.used[tag] = true
+		g.used[tag]++
 	}
 }
 

@@ -100,6 +100,11 @@ type Case struct {
 	// Features are all tags recorded at emission — constructs used plus info
 	// tags (knowledge-as-data). Sorted.
 	Features []string
+	// FeatureCounts is how many times each tag was recorded. Program-level
+	// presence saturates for common tags (review finding: boundary at 98%
+	// of programs while a 19% minority per draw); counts keep the tag
+	// informative for stratification.
+	FeatureCounts map[string]int
 	// Tape is the recorded choice sequence: the program re-derives from it
 	// byte-identically. The seam for shrinking and search.
 	Tape []int
@@ -123,7 +128,7 @@ type Generator struct {
 	constructs map[string]bool
 
 	vars    []binding
-	used    map[string]bool
+	used    map[string]int
 	loopSeq int
 	// structs are the per-seed named struct types, declared in the preamble.
 	structs []Type
@@ -164,7 +169,7 @@ func New(cfg Config) *Generator {
 	g := &Generator{
 		c:    newChooser(cfg.Seed),
 		cfg:  cfg,
-		used: map[string]bool{},
+		used: map[string]int{},
 	}
 	switch {
 	case cfg.Constructs != nil:
@@ -236,8 +241,10 @@ func (g *Generator) Generate() (Case, error) {
 	}
 
 	features := make([]string, 0, len(g.used))
-	for tag := range g.used {
+	counts := make(map[string]int, len(g.used))
+	for tag, n := range g.used {
 		features = append(features, tag)
+		counts[tag] = n
 	}
 	sort.Strings(features)
 	// Snapshots, not aliases: the returned Case must not share live chooser
@@ -255,7 +262,32 @@ func (g *Generator) Generate() (Case, error) {
 		}
 		stats[site] = cp
 	}
-	return Case{Source: source, Features: features, Tape: tape, Stats: stats}, nil
+	return Case{Source: source, Features: features, FeatureCounts: counts, Tape: tape, Stats: stats}, nil
+}
+
+// pickTarget draws a write target from candidates, biased 3:1 toward
+// OBSERVED variables — writes landing on unobserved vars mostly echo the
+// declaration literal back through the observation (review finding: 68% of
+// observed output lines equalled the initializer).
+func (g *Generator) pickTarget(candidates []int) int {
+	weight := func(i int) int {
+		if g.vars[i].observed {
+			return 3
+		}
+		return 1
+	}
+	total := 0
+	for _, i := range candidates {
+		total += weight(i)
+	}
+	r := g.c.draw(total)
+	for _, i := range candidates {
+		if r < weight(i) {
+			return i
+		}
+		r -= weight(i)
+	}
+	panic("gen: unreachable")
 }
 
 // typePool is the declarable type set: scalars always, string when enabled,
