@@ -489,6 +489,11 @@ func (g *Generator) guardedStmt(out *emitter) {
 	out.dedent()
 	out.line("} else {")
 	out.indent++
+	// The non-error arm discards the panic value (the import-free subject
+	// cannot Sprint it), unlike the driver's main recover which preserves
+	// it. Unreachable today — every generated panic is a runtime.Error —
+	// and the arms must be reconciled before explicit panic(v) enters the
+	// grammar (audit L2).
 	out.line("obsRecovered(%q)", "")
 	out.close()
 	out.close()

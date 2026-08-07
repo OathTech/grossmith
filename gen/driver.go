@@ -122,8 +122,13 @@ func _gReflect(v _greflect.Value) map[string]any {
 				return a.String() < b.String()
 			case _greflect.Uint, _greflect.Uint8, _greflect.Uint16, _greflect.Uint32, _greflect.Uint64:
 				return a.Uint() < b.Uint()
-			default:
+			case _greflect.Int, _greflect.Int8, _greflect.Int16, _greflect.Int32, _greflect.Int64:
 				return a.Int() < b.Int()
+			default:
+				// Fail closed, not a.Int() on whatever arrived: a bool or
+				// float key would panic INSIDE reflect with a misleading
+				// message (audit H1 demonstrated exactly that).
+				panic("grossmith driver: unsortable map key kind " + a.Kind().String())
 			}
 		})
 		entries := []any{}
@@ -155,6 +160,18 @@ func _gReflect(v _greflect.Value) map[string]any {
 }
 
 func _gEmit(status string, ptrs []any, panicMsg string) {
+	// A DRIVER defect must never be laundered into a subject observation
+	// (audit H1): a serialization panic (unobservable kind, unsortable map
+	// key) previously unwound into main's recover and was emitted as a
+	// legitimate status:"panic" document with exit 0 — a fabricated
+	// semantic outcome. Driver panics now exit 3 with no document; the
+	// adapter reports run failure, which is infrastructure.
+	defer func() {
+		if r := recover(); r != nil {
+			_gfmt.Fprintln(_gos.Stderr, "grossmith driver:", r)
+			_gos.Exit(3)
+		}
+	}()
 	doc := map[string]any{"schema": "grossmith-observation-v2", "status": status}
 	if len(_gEvents) > 0 {
 		doc["events"] = _gEvents

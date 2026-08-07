@@ -35,9 +35,11 @@ type Config struct {
 	Constructs map[string]bool
 	// Exclude force-disables optional construct tags on top of whatever
 	// Swarm or Constructs decided — the construct half of an adapter
-	// capability profile (NoObserve is the shape half). Applied AFTER the
-	// swarm mix is drawn, so a seed's draw trace is unchanged by the
-	// profile.
+	// capability profile (NoObserve is the shape half). Exclusion consumes
+	// no draws, so the swarm-mix and corner draws for a seed are
+	// unperturbed — but downstream statement draws naturally diverge once
+	// arms are masked, so the full draw trace is NOT profile-invariant
+	// (audit M6 corrected the earlier overclaim).
 	Exclude []string
 	// NoObserve lists shapes masked OUT of the observed liveness tier — an
 	// adapter capability profile (e.g. GoLean's harness fails closed on
