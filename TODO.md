@@ -129,19 +129,20 @@ now first-party. Mapping onto this backlog:
   the reason) / out-of-scope, and fold the mapping into the Phase 4
   spec ledger. Their future→active promotions are a standing demand
   signal for grossmith rungs. Specific nuggets already visible:
-  - **g32 three-index slicing relaxes the cap quotient**: `s[a:b:c]`
-    pins cap, so append reallocation becomes DETERMINISTIC — the
-    shared-backing aliasing family (g03, g25, c18, c21) can be
-    exercised without violating outcome-determinism. Today's "cap
-    never observed, every slice owns its backing" rule is broader than
-    the spec requires.
+  - **g32 three-index slicing relaxes the cap quotient** — DELIVERED
+    (the `slice_triple` rung, 2026-08-07): `s[a:b:c]` pins cap, so
+    append reallocation becomes DETERMINISTIC — the shared-backing
+    aliasing family (g03, g25, c18, c21) is exercised as an atomic
+    derive/append/fold emission; the post-reallocation append tail
+    stays quotiented (see the Slices ledger row).
   - Deterministic corners over the EXISTING grammar: shadowing
     depth (g14), wide/negative shift counts (g31), defer-in-loop
     accumulation (g18), string(int) rune conversion (g30).
   - Small deterministic rungs grossmith lacks entirely: string
-    indexing/slicing/range (byte-offset semantics — c12/c13/g09),
-    named results with defer mutation (g06/c54), method values
-    copying their receiver (g16/c53), `copy` builtin (g33),
+    indexing/slicing/range (byte-offset semantics — c12/c13/g09) —
+    DELIVERED (the strings rung, 2026-08-07; type switches c03 landed
+    the same day); named results with defer mutation (g06/c54), method
+    values copying their receiver (g16/c53), `copy` builtin (g33),
     uncomparable-dynamic-type interface comparison panics (g11/g17,
     needs non-comparable payloads first).
   - Cross-references that land in EXISTING backlog items: nil-vs-empty
