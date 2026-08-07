@@ -118,6 +118,11 @@ type CaseRecord struct {
 	SubjectSHA256 string         `json:"subjectSha256"`
 	Features      map[string]int `json:"features"`
 	DrawTrace     []int          `json:"drawTrace"`
+	// Config is the generator configuration the case was drawn under
+	// (audit M5: seed alone is not a regeneration key — swarm, corner,
+	// profile exclusions all change the program for a fixed seed). Typed
+	// as the producer's config struct; opaque to the harness.
+	Config any `json:"config,omitempty"`
 }
 
 const CaseSchema = "grossmith-case-v1"

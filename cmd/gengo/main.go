@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -206,6 +207,7 @@ func run(cfg config) error {
 			Schema: harness.CaseSchema, ID: id, Seed: caseSeed, GeneratorRev: rev,
 			SubjectSHA256: harness.SubjectHash(c.Source),
 			Features:      c.FeatureCounts, DrawTrace: c.Tape,
+			Config: gcfg,
 		}); err != nil {
 			return err
 		}
@@ -395,24 +397,33 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 
 // generatorRev is the generator's own identity in every artifact: VCS
 // revision from build info, "-dirty" when the build had local changes.
+// `go run` and test builds do not stamp VCS settings (audit M5 observed
+// "unknown" in real artifacts), so the fallback asks git about the working
+// directory — prefixed so the record is honest about its provenance.
 func generatorRev() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
 	rev, dirty := "", false
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			rev = s.Value
-		case "vcs.modified":
-			dirty = s.Value == "true"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.modified":
+				dirty = s.Value == "true"
+			}
 		}
 	}
-	if rev == "" {
+	if rev != "" {
+		if dirty {
+			rev += "-dirty"
+		}
+		return rev
+	}
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
 		return "unknown"
 	}
-	if dirty {
+	rev = "cwd-git:" + strings.TrimSpace(string(out))
+	if s, err := exec.Command("git", "status", "--porcelain").Output(); err == nil && len(strings.TrimSpace(string(s))) > 0 {
 		rev += "-dirty"
 	}
 	return rev
