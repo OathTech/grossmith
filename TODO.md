@@ -1,8 +1,62 @@
 # Backlog
 
 Items outside the governing audit phase plan (that plan lives in
-`docs/2026-08-06_project-charter-and-engineering-audit.md`; Phase 2
-planted defects is the next phase). Ordering here is not commitment.
+`docs/2026-08-06_project-charter-and-engineering-audit.md`). Ordering
+here is not commitment.
+
+## Customer-prioritized: GoLean's generation requests (2026-08-07)
+
+`docs/grossmith-requests-2026-08-07.md` — six requests ordered by
+demonstrated yield against their 43-entry bug ledger, filed after their
+2,900-case campaign (grossmith 5b4c5b0 vs GoLean 458386d, zero
+divergences). These are the Phase 4 "prioritize by clone value" input,
+now first-party. Mapping onto this backlog:
+
+- **R1 recover-observation wrapper** (their highest yield): a canonical
+  defer/recover-into-named-result idiom — pure Go, no obs* events, so
+  it survives the golean profile and DISSOLVES the
+  defer/recover-unmeasurable disposition. Absorbs three existing items:
+  the recovered-coverage rung, the g06/c54 named-results-defer rung,
+  and the Phase 2 defer/recover gap. Their panic-value-to-int encoding
+  table keeps it strict-lane. First rung when the ladder resumes.
+- **R2a multi-assign with aliased/nested targets**: extends the
+  ladder-prioritization item (already top of that list) with their
+  seed shapes — `i, a[i] = ...`, chains, comma-ok into mixed targets.
+  Spec-defined assignment phases = deterministic, observable via final
+  state; no effect discipline needed.
+- **R2b order-witnessing generation**: every subexpression bumps a
+  counter through a call, the result encodes realized order. Requires
+  a deliberate DETERMINISTIC effect mechanism (spec orders function
+  calls left-to-right) — i.e. the audit Phase 4 #3 effect-discipline
+  design (closures/pointer params), not a quick rung. High yield
+  (their evaluation-order bug class), high design cost.
+- **R3 kind/definedness matrix corner**: {op site} x {int kinds,
+  floats} x {defined vs unnamed} with IN-KIND arithmetic — their
+  insight that `int(x)` conversion laundering masks the whole
+  kind-defaulting class (the BUG-042/043 family our seed 559 started)
+  is a grammar-design constraint, not just a corner: sweeps need
+  conversion-free paths. Fits the named-corner machinery.
+- **R4 pairwise swarm objective**: n cases per construct PAIR rather
+  than per construct — a campaign/CLI orchestration feature over the
+  existing Constructs override, mechanizing what their adversarial
+  audits do by hand. Their worst cross-cutting bugs were all pair
+  interactions.
+- **R5 aggregate observation of maps/slices**: order-independent
+  encodings (sums, min/max folds, length+membership bits) let
+  maps/slices ENTER the observed tier under the golean profile instead
+  of being masked — supersedes half the NoObserve disposition at zero
+  harness cost. The membership-lane item remains the later, stronger
+  form.
+- **R6 embedding/promotion/interface matrices**: blocked on the
+  embedding + pointer-receiver rungs (Phase 4 dependency order);
+  bounded enumeration once those exist.
+- Their non-ask list matches ours (concurrency, goto, float
+  bit-exactness) — independent convergence worth noting.
+- **Bug report accepted (fix immediately, not backlog)**: the witness
+  suite is red in stock module mode — our sandbox TMPDIR lives inside
+  the repo, so t.TempDir() case dirs inherit the repo go.mod and the
+  missing per-dir go.mod is masked locally. Applies to the harness
+  test helpers and runReplay's temp dir.
 
 - **GitHub CI** (none exists today — no `.github/`). Two tiers:
   - Tier 1, per-push: `go vet ./...` + `go test ./...`. Everything runs
