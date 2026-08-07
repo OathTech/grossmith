@@ -63,17 +63,23 @@ func TestVerdictTaxonomy(t *testing.T) {
 	if err := copyTree(root, altRoot); err != nil {
 		t.Fatal(err)
 	}
-	var doctored string
+	// Flip every observed int's sign in EVERY altered driver: doctoring
+	// only one case made the witness hostage to that case's draw path (a
+	// panicking case observes no values and the flip is invisible).
 	dirs, _ := filepath.Glob(filepath.Join(altRoot, "*", "driver.go"))
-	doctored = dirs[0]
-	b, _ := os.ReadFile(doctored)
-	// Flip every observed int's sign in the altered clone's driver.
-	nb := strings.Replace(string(b), `"int": v.Int()`, `"int": -v.Int()`, 1)
-	if nb == string(b) {
-		t.Fatal("driver corruption did not apply")
+	applied := 0
+	for _, doctored := range dirs {
+		b, _ := os.ReadFile(doctored)
+		nb := strings.Replace(string(b), `"int": v.Int()`, `"int": -(v.Int() + 1)`, 1)
+		if nb != string(b) {
+			applied++
+		}
+		if err := os.WriteFile(doctored, []byte(nb), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(doctored, []byte(nb), 0o644); err != nil {
-		t.Fatal(err)
+	if applied == 0 {
+		t.Fatal("driver corruption did not apply")
 	}
 	altered := &treeAdapter{inner: &GcAdapter{AdapterName: "altered", Timeout: 20 * time.Second}, root: root, altRoot: altRoot}
 	rep2, err := RunBatch(ctx, root, ref, altered, observe.PanicExact, 4)

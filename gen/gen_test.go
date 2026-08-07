@@ -368,6 +368,34 @@ func TestNonConstExprIsNeverConstant(t *testing.T) {
 
 // TestConstructGatingRespected: with every optional construct disabled the
 // program is straight-line scalar assignments — and still valid.
+// TestBareCallEmitted (Phase 2, the BUG-012 detection gap): the grammar
+// emits bare value-returning calls in statement position. GoLean's own
+// audit found the bare-call lowering its most frequent novel-program
+// failure, and a measured campaign across their fix commit produced ZERO
+// verdict flips with the old grammar — callStmt always wrote targets, so
+// the shape was ungenerated. This witness pins the arm that closed that.
+func TestBareCallEmitted(t *testing.T) {
+	re := regexp.MustCompile(`(?m)^\t+h\d+\(`)
+	found := false
+	for seed := int64(500); seed < 800 && !found; seed++ {
+		c, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range c.Features {
+			if f == "bare_call" {
+				if !re.Match(c.Source) {
+					t.Fatalf("seed %d: bare_call tagged but no statement-position bare call\n%s", seed, c.Source)
+				}
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no seed in 500..800 drew bare_call — arm starved")
+	}
+}
+
 func TestConstructGatingRespected(t *testing.T) {
 	off := map[string]bool{}
 	for seed := int64(1); seed <= 40; seed++ {

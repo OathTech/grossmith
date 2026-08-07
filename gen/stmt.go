@@ -74,6 +74,8 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: terminal("continue")},
 		{name: "call", weight: 2, ok: g.enabled("helpers") && len(g.helpers) > 0,
 			emit: func() { g.callStmt(out) }},
+		{name: "bare-call", weight: 1, ok: g.enabled("helpers", "bare_call") && len(g.helpers) > 0,
+			emit: func() { g.bareCallStmt(out) }},
 		{name: "observe", weight: 2, ok: g.enabled("observe_point") && !g.pureMode,
 			emit: func() { g.observePoint(out) }},
 		{name: "early-return", weight: 1, ok: g.enabled("early_return") && !last && !g.pureMode,
@@ -405,6 +407,23 @@ func (g *Generator) callStmt(out *emitter) {
 	}
 	g.mark("helpers", "assignment")
 	out.line("%s = %s(%s)", strings.Join(targets, ", "), h.name, g.callArgs(h, g.cfg.ExprFuel-1))
+}
+
+// bareCallStmt invokes a helper as a statement with NO targets — a legal,
+// ubiquitous Go shape (discarding results needs no `_ =`) the grammar
+// previously never emitted. Phase 2's first measured detection gap: GoLean's
+// BUG-012 (bare value-returning calls went stuck) was their own audit's most
+// frequent novel-program failure, and grossmith could not have found it
+// because callStmt always writes targets. Helpers are pure, so the call is
+// dead computation — a tagged legal-but-degenerate minority, exactly the
+// ban/weight taxonomy's territory; its VALUE is the call lowering it forces
+// a clone to perform.
+func (g *Generator) bareCallStmt(out *emitter) {
+	g.resetRisk()
+	h := g.helpers[g.c.draw(len(g.helpers))]
+	g.mark("helpers", "bare_call")
+	g.note("dead_value")
+	out.line("%s(%s)", h.name, g.callArgs(h, g.cfg.ExprFuel-1))
 }
 
 // ifaceAssign reassigns an interface variable — dynamic-type churn, which
