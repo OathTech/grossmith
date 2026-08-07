@@ -1,6 +1,9 @@
 package gen
 
-import "math/rand"
+import (
+	"fmt"
+	"math/rand"
+)
 
 // arm is one weighted candidate at a choice site. ok is the legality mask;
 // weight is the bias. An arm that is illegal or zero-weighted takes no
@@ -21,26 +24,93 @@ type SiteStats struct {
 	Chosen map[string]int
 }
 
+// drawSource produces the raw draws the chooser records: seeded (a PRNG)
+// or replay (a recorded trace, consumed with fail-closed semantics).
+type drawSource interface {
+	draw(n int) int
+}
+
+type seededSource struct{ rng *rand.Rand }
+
+func (s *seededSource) draw(n int) int { return s.rng.Intn(n) }
+
+// ReplayError is a replay-mode violation: the trace and the generator
+// disagreed. Every field is diagnosis, not prose — a mismatched trace
+// means the config or generator revision differs from the one that
+// recorded it (or a shrinker mutated the trace into an invalid decode,
+// which is an ordinary rejected candidate, not a bug).
+type ReplayError struct {
+	// Pos is the draw index at which replay failed (== len(trace) for
+	// surplus, where the failure is that generation ENDED there).
+	Pos int
+	// Bound is the bound the generator requested (0 for surplus).
+	Bound int
+	// Value is the offending trace value (-1 for exhaustion; the first
+	// unconsumed value for surplus).
+	Value  int
+	Reason string // "exhausted" | "out-of-range" | "surplus"
+}
+
+func (e *ReplayError) Error() string {
+	switch e.Reason {
+	case "exhausted":
+		return fmt.Sprintf("gen: replay trace exhausted at draw %d (generator requested a draw in [0,%d))", e.Pos, e.Bound)
+	case "out-of-range":
+		return fmt.Sprintf("gen: replay value %d at draw %d is outside the requested bound [0,%d)", e.Value, e.Pos, e.Bound)
+	case "surplus":
+		return fmt.Sprintf("gen: replay trace has %d unconsumed draws after generation completed (next: %d)", e.Bound, e.Value)
+	}
+	return "gen: replay violation (" + e.Reason + ")"
+}
+
+// replaySource consumes a recorded trace. Violations PANIC with a
+// *ReplayError — Generate recovers them into an ordinary error (the same
+// discipline as the empty-choice-space assertion); there is never a
+// silent fallback to randomness.
+type replaySource struct {
+	trace []int
+	pos   int
+}
+
+func (s *replaySource) draw(n int) int {
+	if s.pos >= len(s.trace) {
+		panic(&ReplayError{Pos: s.pos, Bound: n, Value: -1, Reason: "exhausted"})
+	}
+	v := s.trace[s.pos]
+	if v < 0 || v >= n {
+		panic(&ReplayError{Pos: s.pos, Bound: n, Value: v, Reason: "out-of-range"})
+	}
+	s.pos++
+	return v
+}
+
 // chooser is the single choice primitive: weights × legality mask →
 // renormalize → one draw. Never a rejection loop, never a silent fallback.
 // Every random draw in the generator flows through here and is appended to
-// the draw trace. The INTENDED end state is a decoder from choice sequence
-// to program (shrinking-by-regeneration, coverage-guided search); until a
-// replay source with exhaustion/out-of-range semantics exists, the trace is
-// a log, not an input.
+// the draw trace; with a replay source the chooser is a DECODER from choice
+// sequence to program (audit Phase 3) — the seam shrinking-by-regeneration
+// builds on.
 type chooser struct {
-	rng   *rand.Rand
-	tape  []int
-	stats map[string]*SiteStats
+	src    drawSource
+	replay *replaySource // nil when seeded
+	tape   []int
+	stats  map[string]*SiteStats
 }
 
 func newChooser(seed int64) *chooser {
-	return &chooser{rng: rand.New(rand.NewSource(seed)), stats: map[string]*SiteStats{}}
+	return &chooser{src: &seededSource{rng: rand.New(rand.NewSource(seed))}, stats: map[string]*SiteStats{}}
 }
 
-// draw returns a uniform int in [0,n), recorded on the tape.
+func newReplayChooser(trace []int) *chooser {
+	// Copied, not aliased: the caller's slice must not change decode
+	// behavior mid-generation (the same rule as Config maps).
+	rs := &replaySource{trace: append([]int(nil), trace...)}
+	return &chooser{src: rs, replay: rs, stats: map[string]*SiteStats{}}
+}
+
+// draw returns an int in [0,n) from the source, recorded on the tape.
 func (c *chooser) draw(n int) int {
-	v := c.rng.Intn(n)
+	v := c.src.draw(n)
 	c.tape = append(c.tape, v)
 	return v
 }

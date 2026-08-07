@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -45,6 +46,9 @@ type config struct {
 	policySet bool
 	timeout   time.Duration
 	workers   int
+	// replay: path to a case directory containing case.json; regenerate
+	// the case from its record and verify byte and observation identity.
+	replay string
 }
 
 func main() {
@@ -60,6 +64,7 @@ func main() {
 	flag.StringVar(&cfg.policy, "panic-policy", "exact", "panic equivalence: exact (message bytes) or kind (taxonomy only)")
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-case run timeout")
 	flag.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "parallel build/run workers")
+	flag.StringVar(&cfg.replay, "replay", "", "case directory to REPLAY from its case.json record (verifies byte + observation identity; ignores generation flags)")
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "panic-policy" {
@@ -139,6 +144,9 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 }
 
 func run(cfg config) error {
+	if cfg.replay != "" {
+		return runReplay(cfg)
+	}
 	policy, checkout, err := cfg.validate()
 	if err != nil {
 		return err
@@ -288,6 +296,102 @@ func run(cfg config) error {
 	}
 	printReport(rep, cfg, featuresByID, tagCount)
 	return nil
+}
+
+// caseRecordIn is CaseRecord with the config typed for reading back —
+// the harness keeps it opaque, the CLI knows it is a gen.Config.
+type caseRecordIn struct {
+	Schema        string     `json:"schema"`
+	ID            string     `json:"id"`
+	Seed          int64      `json:"seed"`
+	GeneratorRev  string     `json:"generatorRev"`
+	SubjectSHA256 string     `json:"subjectSha256"`
+	DrawTrace     []int      `json:"drawTrace"`
+	Config        gen.Config `json:"config"`
+}
+
+// runReplay is Phase 3's done-when as a command: regenerate a case from
+// its case.json record ALONE (no seed-range convention), verify the
+// subject byte-identical by hash, re-run the reference, and — when the
+// batch report is present next to the case — verify the observation
+// document equal to the recorded one.
+func runReplay(cfg config) error {
+	if cfg.timeout <= 0 {
+		return fmt.Errorf("-timeout %s: must be positive", cfg.timeout)
+	}
+	b, err := os.ReadFile(filepath.Join(cfg.replay, "case.json"))
+	if err != nil {
+		return err
+	}
+	var rec caseRecordIn
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return fmt.Errorf("case.json: %w", err)
+	}
+	if rec.Schema != harness.CaseSchema {
+		return fmt.Errorf("case.json: schema %q, want %q", rec.Schema, harness.CaseSchema)
+	}
+	rec.Config.Seed = rec.Seed
+
+	c, err := gen.NewReplay(rec.Config, rec.DrawTrace).Generate()
+	if err != nil {
+		return fmt.Errorf("replay decode failed (recorded under generator %s, this binary is %s): %w",
+			rec.GeneratorRev, generatorRev(), err)
+	}
+	if got := harness.SubjectHash(c.Source); got != rec.SubjectSHA256 {
+		return fmt.Errorf("replayed subject hash %s != recorded %s (recorded under generator %s, this binary is %s)",
+			got, rec.SubjectSHA256, rec.GeneratorRev, generatorRev())
+	}
+	fmt.Printf("replay %s: subject byte-identical (sha256 %s)\n", rec.ID, rec.SubjectSHA256[:12])
+
+	dir, err := os.MkdirTemp("", "grossmith-replay-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	for name, content := range map[string][]byte{"subject.go": c.Source, "driver.go": c.Driver} {
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
+			return err
+		}
+	}
+	ref := &harness.GcAdapter{GoBin: cfg.goBin, Timeout: cfg.timeout, AdapterName: "gc"}
+	out := ref.Run(context.Background(), dir)
+	if out.Status != harness.StatusRan {
+		return fmt.Errorf("replayed case did not run: %s: %s", out.Status, out.Detail)
+	}
+	fmt.Printf("replay %s: reference ran (status %s)\n", rec.ID, out.Document.Status)
+
+	// Observation identity against the batch record, when present.
+	batchPath := filepath.Join(filepath.Dir(filepath.Clean(cfg.replay)), "batch.json")
+	rb, err := os.ReadFile(batchPath)
+	if os.IsNotExist(err) {
+		fmt.Println("no batch.json next to the case — observation verified against a fresh run only")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var rep harness.BatchReport
+	if err := json.Unmarshal(rb, &rep); err != nil {
+		return fmt.Errorf("batch.json: %w", err)
+	}
+	for _, cr := range rep.Cases {
+		if cr.ID != rec.ID {
+			continue
+		}
+		if cr.Reference.Status != harness.StatusRan {
+			return fmt.Errorf("recorded reference outcome was %s — nothing to compare", cr.Reference.Status)
+		}
+		eq, err := observe.Equal(out.Document, cr.Reference.Document, observe.PanicExact)
+		if err != nil {
+			return err
+		}
+		if !eq {
+			return fmt.Errorf("replayed observation differs from the recorded one (reference identity then: %s)", rep.ReferenceIdentity)
+		}
+		fmt.Printf("replay %s: observation byte-identical to the batch record\n", rec.ID)
+		return nil
+	}
+	return fmt.Errorf("case %s not found in %s", rec.ID, batchPath)
 }
 
 // runGoLean judges the batch's reference outcomes through GoLean's harness

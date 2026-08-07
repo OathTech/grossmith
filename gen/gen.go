@@ -281,14 +281,37 @@ func (g *Generator) spendRisk() bool {
 
 const cornerBoundaryBias = 5
 
-// New builds a Generator. With cfg.Swarm and no explicit Constructs, the
-// per-seed mix is drawn first — through the chooser, so it is on the tape.
+// New builds a seeded Generator. The per-seed setup draws (swarm mix,
+// corner) happen at the START of Generate — through the chooser, so they
+// are on the tape and inside Generate's single recovery point.
 func New(cfg Config) *Generator {
-	g := &Generator{
+	return &Generator{
 		c:    newChooser(cfg.Seed),
 		cfg:  cfg,
 		used: map[string]int{},
 	}
+}
+
+// NewReplay builds a Generator that DECODES a recorded draw trace instead
+// of drawing from a seed (audit Phase 3): the same config plus the same
+// trace reproduces the same case byte-for-byte, and any disagreement
+// between trace and generator — exhaustion, out-of-range, surplus — is a
+// typed *ReplayError from Generate, never a silent fallback to
+// randomness. cfg must be the RESOLVED config the trace was recorded
+// under (case.json carries it); cfg.Seed is retained for record equality
+// but no PRNG is consulted.
+func NewReplay(cfg Config, trace []int) *Generator {
+	return &Generator{
+		c:    newReplayChooser(trace),
+		cfg:  cfg,
+		used: map[string]int{},
+	}
+}
+
+// drawSetup resolves the construct mix and corner — the first draws on
+// the tape.
+func (g *Generator) drawSetup() {
+	cfg := g.cfg
 	switch {
 	case cfg.Constructs != nil:
 		// Copied, not aliased: the caller's map was the one non-tape input
@@ -332,12 +355,12 @@ func New(cfg Config) *Generator {
 			}
 		}
 	}
-	return g
 }
 
 // Generate produces one case. A Generator is single-use: a second call
-// errors rather than silently emitting a corrupt program.
-func (g *Generator) Generate() (Case, error) {
+// errors rather than silently emitting a corrupt program. In replay mode
+// a trace/generator disagreement surfaces as a *ReplayError.
+func (g *Generator) Generate() (c Case, err error) {
 	if g.done {
 		return Case{}, fmt.Errorf("gen: Generator is single-use — make one per case")
 	}
@@ -347,6 +370,20 @@ func (g *Generator) Generate() (Case, error) {
 		return Case{}, err
 	}
 	g.done = true
+	// The one recovery point for replay violations: the replay source
+	// panics with *ReplayError at the failing draw (any deeper plumbing
+	// would thread errors through every emit arm); everything else
+	// propagates — a non-replay panic is a generator bug.
+	defer func() {
+		if r := recover(); r != nil {
+			re, ok := r.(*ReplayError)
+			if !ok {
+				panic(r)
+			}
+			c, err = Case{}, re
+		}
+	}()
+	g.drawSetup()
 	body := &emitter{indent: 1}
 
 	if g.corner != "" {
@@ -428,6 +465,14 @@ func (g *Generator) Generate() (Case, error) {
 			cp.Chosen[k] = v
 		}
 		stats[site] = cp
+	}
+	// Surplus is a replay violation too: leftover trace means the decode
+	// path diverged from the recording (shorter program), even though a
+	// source was produced — fail closed rather than hand back a case the
+	// trace does not describe.
+	if rs := g.c.replay; rs != nil && rs.pos != len(rs.trace) {
+		return Case{}, &ReplayError{Pos: rs.pos, Bound: len(rs.trace) - rs.pos,
+			Value: rs.trace[rs.pos], Reason: "surplus"}
 	}
 	return Case{Source: source, Driver: driver, Features: features, FeatureCounts: counts, Tape: tape, Stats: stats}, nil
 }

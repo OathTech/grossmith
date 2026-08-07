@@ -116,6 +116,48 @@ func TestStaleBatchReportRemoved(t *testing.T) {
 	}
 }
 
+// TestReplayFromArtifacts (Phase 3 done-when): a case regenerates from
+// its case.json record alone — byte-identical subject, observation equal
+// to the batch record — and a tampered record is refused, never
+// silently regenerated differently.
+func TestReplayFromArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs binaries")
+	}
+	out := filepath.Join(t.TempDir(), "batch")
+	cfg := base(out)
+	cfg.judge = true
+	cfg.timeout = 20 * time.Second
+	cfg.workers = 2
+	if err := run(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	rcfg := base("")
+	rcfg.replay = filepath.Join(out, "case_00000")
+	rcfg.timeout = 20 * time.Second
+	if err := run(rcfg); err != nil {
+		t.Fatalf("replay of a fresh artifact failed: %v", err)
+	}
+
+	// Tamper with the recorded subject hash: replay must refuse.
+	recPath := filepath.Join(out, "case_00000", "case.json")
+	b, err := os.ReadFile(recPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := strings.Replace(string(b), `"subjectSha256": "`, `"subjectSha256": "0000`, 1)
+	if tampered == string(b) {
+		t.Fatal("tamper did not apply")
+	}
+	if err := os.WriteFile(recPath, []byte(tampered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(rcfg); err == nil || !strings.Contains(err.Error(), "hash") {
+		t.Fatalf("tampered record accepted: %v", err)
+	}
+}
+
 // TestJudgeWritesBatchReport: the reference pass produces the durable
 // artifact of record.
 func TestJudgeWritesBatchReport(t *testing.T) {

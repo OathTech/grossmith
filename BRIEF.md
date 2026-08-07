@@ -167,31 +167,32 @@ observation points — now obs* protocol events — (pin intermediate state,
 create mid-function liveness ranges, localize *where* implementations
 diverge).
 
-## The draw trace (a recorded log; replay is PLANNED, not built)
+## The draw trace (a recorded log AND a decoder input — replay delivered)
 
 All randomness flows through the choice primitive, and the primitive records
-its draws — a DRAW TRACE. The intended end state is a decoder (choice
-sequence → valid program), but no replay source, exhaustion policy, or
-out-of-range policy exists yet — the trace (with the resolved config) is
-persisted in each case.json, but the seam is an intention with its
-preconditions audited, not a capability. The
-trace buys, in order of adoption:
+its draws — a DRAW TRACE, persisted with the resolved config in each
+case.json. TODAY (Phase 3, 2026-08-07) the trace is also a DECODER input:
+`gen.NewReplay(config, trace)` regenerates the case byte-for-byte, every
+trace/generator disagreement (exhaustion, out-of-range value, surplus
+draws) is a typed `*ReplayError` naming the failing draw — never a silent
+fallback to randomness — and `gengo -replay <case-dir>` reproduces subject
+and observation from the record alone, hash-verified, with no seed-range
+convention. The trace buys, in order of adoption:
 
-1. **Reproducibility**: seed ⇒ byte-identical program (ordered containers
-   everywhere; no map-range dependence).
-2. **Shrinking by regeneration** (when the first real finding needs
-   minimizing): reduce the *choice sequence* and re-decode — every candidate
-   is valid/halting/deterministic by construction. No C-Reduce, nothing goes
-   stale. (Literature: "Test-Case Reduction via Test-Case Generation" — the
-   Hypothesis reducer; Xsmith builds on Clotho, the same idea as a library.)
-3. **Coverage-guided search over tapes** (if blind generation ever plateaus):
-   mutate bytes, decode to valid programs — libFuzzer-style feedback without
-   sacrificing any by-construction guarantee.
-
-Only (1) ships today; (2) and (3) require the replay source first (audit
-Phase 3: persist trace + generator version + config, define
-consumption/exhaustion semantics, prove byte-identical replay) — no
-shrinker before replay is proven.
+1. **Reproducibility** (shipped): seed ⇒ byte-identical program, and now
+   record ⇒ byte-identical program without the generator binary that made
+   it needing the same seed conventions.
+2. **Shrinking by regeneration** (unlocked, deliberately not built): reduce
+   the *choice sequence* and re-decode — every candidate is
+   valid/halting/deterministic by construction or a fail-closed rejected
+   decode (witnessed: mutated traces either decode to type-checking
+   programs or return *ReplayError, measured 200 valid / 70 rejected over
+   a mutation sweep). Built when the first real finding needs minimizing,
+   per the audit — not before. (Literature: "Test-Case Reduction via
+   Test-Case Generation" — the Hypothesis reducer; Xsmith's Clotho.)
+3. **Coverage-guided search over tapes** (if blind generation ever
+   plateaus): mutate draws, decode to valid programs — libFuzzer-style
+   feedback without sacrificing any by-construction guarantee.
 
 ## Population design: swarm mixes and named corners
 
