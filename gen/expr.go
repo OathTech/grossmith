@@ -30,6 +30,56 @@ func boolToInt(b bool) int {
 // clone divergence, and concatenation with "" is an identity edge.
 var stringWords = []string{``, `go`, `fuzz`, `gros`, `mith`, `µ`, `ab`, `x`}
 
+// indexableWords are the alphabet entries with at least one byte — the
+// known-length targets a constant string index is safe against (strings have
+// no minLen machinery, so index safety comes from lengths the generator
+// KNOWS; a constant index out of range of a constant string is a COMPILE
+// error, and an empty string admits no index at all).
+var indexableWords = func() []string {
+	var out []string
+	for _, w := range stringWords {
+		if len(w) > 0 {
+			out = append(out, w)
+		}
+	}
+	return out
+}()
+
+// asciiWords are the all-ASCII alphabet entries — the only legal targets for
+// VARIABLE-bound slicing. A variable bound that lands mid-rune would emit an
+// invalid-UTF-8 string, which the JSON observation channel canonicalizes
+// lossily (U+FFFD replacement): two different byte strings would observe
+// identically, breaking injectivity, and adapters with byte-faithful channels
+// would diverge on infrastructure rather than semantics. ASCII operands make
+// every non-panicking outcome valid UTF-8.
+var asciiWords = func() []string {
+	var out []string
+	for _, w := range stringWords {
+		ascii := true
+		for i := 0; i < len(w); i++ {
+			if w[i] >= 0x80 {
+				ascii = false
+			}
+		}
+		if ascii {
+			out = append(out, w)
+		}
+	}
+	return out
+}()
+
+// runeBounds are the legal constant slice offsets of w: every rune start plus
+// len(w). Constant slicing only at rune boundaries keeps every generated
+// string valid UTF-8 (same hazard as asciiWords — the alphabet's µ is the
+// one multi-byte entry).
+func runeBounds(w string) []int {
+	bounds := []int{}
+	for i := range w {
+		bounds = append(bounds, i)
+	}
+	return append(bounds, len(w))
+}
+
 // literal builds a typed constant of type t, drawn from a range representable
 // in every integer kind.
 func (g *Generator) literal(t Type) value {
@@ -462,6 +512,35 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				s := g.variable(Str())
 				out = value{text: fmt.Sprintf("len(%s)", s.text), constant: s.constant}
 			}},
+		{name: "string-index", weight: 2, ok: t.Equal(Int(8, true)) && g.enabled("strings", "string_index"), emit: func() {
+			// s[i] yields a BYTE (uint8) at a byte offset, never a rune —
+			// "µ"[1] is 0xB5 (the c12 edge). Safety is derived honestly:
+			// the safe majority indexes an alphabet LITERAL whose byte
+			// length the generator knows (`s[len-1]`-style is unsafe when
+			// a string can be empty); the hot minority indexes a string
+			// VARIABLE with a raw int variable — usually out of range, a
+			// deterministic index-out-of-range panic — under the risk
+			// budget. String indexing is never a Go constant, so both
+			// arms are honestly non-constant.
+			g.c.choose("string-index", []arm{
+				{name: "literal", weight: 3, ok: true, emit: func() {
+					w := pick(g.c, indexableWords)
+					i := g.c.draw(len(w))
+					g.mark("strings", "string_index")
+					out = value{text: fmt.Sprintf("%q[%d]", w, i)}
+				}},
+				{name: "panicky", weight: 1 + 3*boolToInt(g.guardBias),
+					ok: g.riskOK() && len(g.varsOfShape(ShapeString, nil)) > 0, emit: func() {
+						g.spendRisk()
+						s := &g.vars[pick(g.c, g.varsOfShape(ShapeString, nil))]
+						s.reads++
+						iv := g.variable(Int(0, false))
+						g.mark("strings", "string_index")
+						g.note(tagPanicRisk)
+						out = value{text: fmt.Sprintf("%s[%s]", s.name, iv.text)}
+					}},
+			}).emit()
+		}},
 		{name: "minmax", weight: 1, ok: g.enabled("min") || g.enabled("max"), emit: func() {
 			name := "min"
 			if !g.enabled("min") || (g.enabled("max") && g.c.chance(2)) {
@@ -530,7 +609,7 @@ func (g *Generator) divModExpr(t Type, fuel int, op, tag string) value {
 // halts-by-construction property extended to space. (`s = s + s` in a loop
 // doubles per iteration; the one-variable rule makes that inexpressible.)
 func (g *Generator) stringExpr(fuel int) value {
-	if fuel <= 0 || !g.enabled("concat") {
+	if fuel <= 0 {
 		if g.c.chance(3) {
 			return g.literal(Str())
 		}
@@ -540,6 +619,35 @@ func (g *Generator) stringExpr(fuel int) value {
 	g.c.choose("string-expr", []arm{
 		{name: "leaf", weight: 2, ok: true, emit: func() {
 			out = g.expr(Str(), 0)
+		}},
+		{name: "slice", weight: 2, ok: g.enabled("strings", "string_slice"), emit: func() {
+			// s[a:b] never GROWS (a substring of the operand), so slicing
+			// is safe for the linear-space half of HALTS with no extra
+			// bookkeeping. The safe majority slices an alphabet literal at
+			// constant RUNE-BOUNDARY offsets, in range by construction
+			// (out-of-range constants on a constant string are compile
+			// errors; mid-rune bounds would emit invalid UTF-8 — see
+			// runeBounds). The hot minority slices an ASCII literal at a
+			// raw variable low bound — panic kind slice-bounds — under
+			// the risk budget.
+			g.c.choose("string-slice", []arm{
+				{name: "literal", weight: 3, ok: true, emit: func() {
+					w := pick(g.c, stringWords)
+					bounds := runeBounds(w)
+					ai := g.c.draw(len(bounds))
+					bi := ai + g.c.draw(len(bounds)-ai)
+					g.mark("strings", "string_slice")
+					out = value{text: fmt.Sprintf("%q[%d:%d]", w, bounds[ai], bounds[bi])}
+				}},
+				{name: "panicky", weight: 1 + 3*boolToInt(g.guardBias), ok: g.riskOK(), emit: func() {
+					g.spendRisk()
+					w := pick(g.c, asciiWords)
+					iv := g.variable(Int(0, false))
+					g.mark("strings", "string_slice")
+					g.note(tagPanicRisk)
+					out = value{text: fmt.Sprintf("%q[%s:]", w, iv.text)}
+				}},
+			}).emit()
 		}},
 		{name: "concat", weight: 3, ok: g.enabled("strings", "concat"), emit: func() {
 			operands := 2 + g.c.draw(2)

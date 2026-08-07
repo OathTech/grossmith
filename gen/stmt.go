@@ -59,6 +59,12 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.linearizedRisk(out) }},
 		{name: "map-fold", weight: 2, ok: g.enabled("maps", "range") && len(g.intElemMapVars()) > 0,
 			emit: func() { g.mapRangeFold(out) }},
+		{name: "string-fold", weight: 2,
+			// int(r) is a conversion, so the fold is conversion-gated and
+			// masked under the kinds corner like every laundering site.
+			ok: g.enabled("strings", "string_range", "range", "conversions") && g.corner != "kinds" &&
+				len(g.varsOfShape(ShapeString, nil)) > 0,
+			emit: func() { g.stringRangeFold(out) }},
 
 		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
 			emit: func() { g.fieldAssign(out) }},
@@ -777,6 +783,36 @@ func (g *Generator) mapRangeFold(out *emitter) {
 	g.markWidthDep(acc.typ)
 	out.open("for _, %s := range %s {", e, m.name)
 	out.line("%s += %s", acc.name, e)
+	out.close()
+}
+
+// stringRangeFold ranges over a string variable: the index is the BYTE
+// OFFSET of each rune and the value is the rune (int32) — the byte-offset
+// semantics GoLean's g09 pins ("µx" yields offsets 0 and 2, not 0 and 1).
+// String range order is spec-DEFINED (increasing byte offset), so unlike the
+// map fold this one may be position-sensitive: acc += i*31 + int(r) keeps
+// both offset and rune value discriminating. Termination is free — the range
+// operand is evaluated once and strings only grow linearly — and the body is
+// exactly the fold, so nothing executes in any order the spec leaves open.
+func (g *Generator) stringRangeFold(out *emitter) {
+	g.resetRisk()
+	s := &g.vars[pick(g.c, g.varsOfShape(ShapeString, nil))]
+	s.reads++
+	// The accumulator is the guaranteed plain-int variable: the subject's
+	// pool floor, or a helper's p0 (methods have no string vars, so the arm
+	// never fires there).
+	ai, _ := g.pickVar(Int(0, false))
+	acc := &g.vars[ai]
+	acc.reads++
+	idx := fmt.Sprintf("i%d", g.loopSeq)
+	r := fmt.Sprintf("r%d", g.loopSeq)
+	g.loopSeq++
+	g.mark("strings", "string_range", "range", "conversions", "assignment", "control_flow", "short_decl")
+	// += on platform int is wrap-capable arithmetic: width-dependent by the
+	// house convention (conservative over values, exact over operations).
+	g.markWidthDep(acc.typ)
+	out.open("for %s, %s := range %s {", idx, r, s.name)
+	out.line("%s += %s*31 + int(%s)", acc.name, idx, r)
 	out.close()
 }
 

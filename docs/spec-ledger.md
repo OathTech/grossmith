@@ -21,7 +21,7 @@ their full disposition is the appendix.
 |---|---|---|---|
 | Integer kinds (int, int8..64, uint, uint8..64) | supported | `ints`, `widths`, `width_dependent`; 386 typecheck witness | Width-preserving observation (`goType`); cross-arch quotient declared via tag. |
 | Booleans | supported | `bools` | |
-| Strings: literals, concat, len, compare | partial | `strings`, `concat`, `len`, `equality` | Linear-growth concat rule (space half of HALTS). Missing: index/slice/range over strings — byte-offset semantics, deterministic, a rung (sx: c12, c13, c14, g09). |
+| Strings: literals, concat, len, compare, index, slice, range | supported | `strings`, `concat`, `len`, `equality`, `string_index`, `string_slice`, `string_range` | Linear-growth concat rule (space half of HALTS; slicing never grows, so it is space-safe for free). Index yields BYTES at byte offsets ("µ"[1] is 0xB5 — sx c12); range folds byte offsets + rune values (`acc += i*31 + int(r)` — sx g09's byte-offset semantics; order spec-defined, so the fold is position-sensitive, unlike the map fold). Safety derived honestly: strings have no minLen, so constant indices/bounds target alphabet LITERALS of known byte length; raw-variable index / low bound are the hot minority (panic kinds index-out-of-range / slice-bounds) under the risk budget (sx c13). EXCLUDED for observation injectivity: slice bounds that split a multi-byte rune — the JSON channel canonicalizes invalid UTF-8 lossily (U+FFFD), so constant bounds sit on rune boundaries and variable-bound slicing is restricted to ASCII literals. `string(int)` conversion still deferred(rung; sx: g30). |
 | Arrays | supported | `arrays`, `index`, `range` | Value semantics exercised via copy-on-assign contexts (sx: g08, g25, c19 covered by construction). |
 | Slices | partial | `slices`, `append`, `index`, `len`, `range` | Owned backing, literal-born, never nil. QUOTIENTED: cap never observed, no whole-slice assignment, no aliasing (append realloc unspecified). Planned relaxation: three-index `s[a:b:c]` pins cap and makes the aliasing family deterministic (sx: g32, g03, c18, c21; TODO g32 item). `copy` builtin missing (sx: g33). Nil-vs-empty unobservable pending adapter shape (a) (sx: g13, c22). |
 | Maps | partial | `maps`, `delete`, `comma_ok`, `range` | Literal-born (never nil — sx: g04 by construction), restricted key alphabets, full-map sorted observation. QUOTIENTED: iteration order — range only as the commutative fold (`map_range_fold`); membership-lane emission is the stronger future form (sx: g34). Missing: NaN keys (needs floats), map-element addressability negatives (sx: c16 → negative generator). |
@@ -82,9 +82,10 @@ Grouped disposition of GoLean's catalogue; the named entries are the
 representatives, membership per group verified against the manifest.
 
 - **Covered by today's construction** (12): g03*, g04, g08, g10, g22,
-  g25, g32*, g33*, c12-c14*, c18*, c19, c20*, c21*, c22*, g35 — the
+  g25, g32*, g33*, c12-c14, c18*, c19, c20*, c21*, c22*, g35 — the
   starred ones covered in their SAFE form only (the quotiented aliasing/
-  cap/copy/string-index halves are the g32/copy/string rungs above).
+  cap/copy halves are the g32/copy rungs above; c12-c14's full
+  index/slice/range forms landed with the strings rung).
 - **Corner candidates over the existing grammar** (6): g14/c33
   (shadowing), g31 (wide/negative shifts), g18 (defer-in-loop — after
   rung 1), g30 (string(int)), c24/c25 (complement/bit-clear — present,
@@ -92,8 +93,9 @@ representatives, membership per group verified against the manifest.
 - **Rung-blocked, scheduled this arc** (9): g19 (rung 2), g05/g06/c54
   (rung 1), c07-c11/g12/c08 (constants, with rung 3), g34 (rung 4's
   aggregate form; membership lane later).
-- **Rung-blocked, later arcs** (31): strings family (g09, c12-c14 full
-  forms), variadics (g24, c55), method values (g16, c53), nil-interface
+- **Rung-blocked, later arcs** (27; the strings family — g09 + the
+  c12-c14 full forms — delivered by the strings rung): variadics (g24,
+  c55), method values (g16, c53), nil-interface
   family (g01, c02, c03, g11, g17), pointers/closures (g29, c45, c52,
   g02), embedding/generics (c04-c06, c56-c58), type switches (c28),
   labels/goto (g23, c34), range-over-int/func (c30, c31), floats (g20,

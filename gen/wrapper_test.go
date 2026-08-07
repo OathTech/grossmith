@@ -205,6 +205,57 @@ func TestKindsCorner(t *testing.T) {
 	t.Logf("kinds corner: %d inc/dec sites over 60 seeds, %d cases with defined types present", sites, definedTyped)
 }
 
+// TestStringFamilyEmitted (strings rung; sx c12/c13/g09): the grammar
+// emits string indexing (byte-typed; known-length literal safe majority,
+// raw-variable hot minority), string slicing (constant rune-boundary
+// bounds on literals safe, ASCII-literal variable low bound hot), and the
+// string range fold (byte offsets + rune values), each under its own tag,
+// across a seed sweep — and every tag is backed by its shape.
+func TestStringFamilyEmitted(t *testing.T) {
+	litIndex := regexp.MustCompile(`"[^"]*"\[\d+\]`)
+	varIndex := regexp.MustCompile(`\bv\d+\[v\d+\]`)
+	litSlice := regexp.MustCompile(`"[^"]*"\[\d+:\d+\]`)
+	hotSlice := regexp.MustCompile(`"[^"]*"\[v\d+:\]`)
+	fold := regexp.MustCompile(`(?m)^\t+for i\d+, r\d+ := range \w+ \{\n\t+\w+ \+= i\d+\*31 \+ int\(r\d+\)`)
+	indexed, sliced, hotSliced, folds := 0, 0, 0, 0
+	for seed := int64(20000); seed < 20400; seed++ {
+		c, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hasFeature(c, "string_index") {
+			if !litIndex.Match(c.Source) && !varIndex.Match(c.Source) {
+				t.Fatalf("seed %d: string_index tagged but no index shape\n%s", seed, c.Source)
+			}
+			if litIndex.Match(c.Source) {
+				indexed++
+			}
+		}
+		if hasFeature(c, "string_slice") {
+			if !litSlice.Match(c.Source) && !hotSlice.Match(c.Source) {
+				t.Fatalf("seed %d: string_slice tagged but no slice shape\n%s", seed, c.Source)
+			}
+			if litSlice.Match(c.Source) {
+				sliced++
+			}
+			if hotSlice.Match(c.Source) {
+				hotSliced++
+			}
+		}
+		if hasFeature(c, "string_range") {
+			if !fold.Match(c.Source) {
+				t.Fatalf("seed %d: string_range tagged but no range fold\n%s", seed, c.Source)
+			}
+			folds++
+		}
+	}
+	if indexed == 0 || sliced == 0 || hotSliced == 0 || folds == 0 {
+		t.Fatalf("string family starved over 400 seeds: %d literal-indexed, %d const-sliced, %d hot-sliced, %d folds",
+			indexed, sliced, hotSliced, folds)
+	}
+	t.Logf("string family: %d literal-indexed, %d const-sliced, %d hot-sliced, %d range folds", indexed, sliced, hotSliced, folds)
+}
+
 // TestRecoverWrapperObservesPanics (Phase 4 rung 1, GoLean R1): wrapped
 // subjects return status OK with the panic ENCODED in the trailing int
 // result and partial state in the others — panic identity and
