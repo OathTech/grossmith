@@ -915,10 +915,14 @@ func TestReturnSitesAreUniform(t *testing.T) {
 }
 
 // TestSlicesOwnTheirBacking witnesses the slice determinism constraints:
-// no whole-slice assignment or slice-typed expression aliasing (alias +
-// append has spec-unspecified write visibility), cap is never observed, and
-// every constant index is under the variable's initial composite length
-// (appends only grow, so len >= that bound forever).
+// no whole-slice assignment or PLAIN slice-typed expression aliasing (alias
+// + append has spec-unspecified write visibility), cap is never observed,
+// and every constant index is under the variable's initial composite length
+// (appends only grow, so len >= that bound forever). The one deliberate
+// aliasing form is the slice_triple carve-out (see the ledger): a derived
+// t\d+ := s[a:b:c] TEMPORARY whose pinned cap makes its single controlled
+// append spec-deterministic — its shape is pinned by TestSliceTripleEmitted
+// and its runtime semantics by TestSliceTripleAliasingObserved.
 func TestSlicesOwnTheirBacking(t *testing.T) {
 	slices, indexed := 0, 0
 	for seed := int64(1); seed <= 400; seed++ {

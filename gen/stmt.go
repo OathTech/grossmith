@@ -66,6 +66,12 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 				len(g.varsOfShape(ShapeString, nil)) > 0,
 			emit: func() { g.stringRangeFold(out) }},
 
+		{name: "slice-triple", weight: 2,
+			// The observation fold converts (int(e)) — conversion-gated and
+			// masked under the kinds corner like every laundering site.
+			ok: g.enabled("slices", "slice_triple", "append", "range", "conversions") &&
+				g.corner != "kinds" && len(g.intElemSliceVars()) > 0,
+			emit: func() { g.sliceTripleStmt(out) }},
 		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
 			emit: func() { g.fieldAssign(out) }},
 		{name: "if", weight: 3, ok: g.enabled("if") && depth > 0,
@@ -750,6 +756,80 @@ func (g *Generator) linearizedRisk(out *emitter) {
 	g.markWidthDep(t)
 	g.note("linearized")
 	out.line("%s = (%s + %s)", target.name, t0, t1)
+}
+
+// intElemSliceVars are slice variables with integer elements — the ones the
+// three-index rung's derived-slice fold can observe through int(e).
+func (g *Generator) intElemSliceVars() []int {
+	var found []int
+	for _, i := range g.sliceVars(nil) {
+		if g.vars[i].typ.Elem.Shape == ShapeInt {
+			found = append(found, i)
+		}
+	}
+	return found
+}
+
+// sliceTripleStmt is the three-index-slicing carve-out from the slice
+// aliasing quotient (sx g32/g03/c18/c21). The quotient exists because
+// whether a PLAIN append reallocates is unspecified (the new capacity after
+// any reallocation is only "sufficiently large"), so alias + append has
+// unspecified write visibility. A full slice expression dissolves that for
+// exactly one step: t := s[a:b:c] pins cap(t) = c-a by spec, so the spec's
+// append rule becomes deterministic BOTH ways —
+//
+//   - b < c: len(t) < cap(t), append MUST re-use the backing array
+//     ("Otherwise, append re-uses the underlying array") — the write lands
+//     in s's backing at s[b], VISIBLE through the base (b < c <= minLen, so
+//     s[b] is within s's observed length);
+//   - b == c: len(t) == cap(t), append MUST allocate anew ("If the capacity
+//     of s is not large enough ... append allocates") — t and s are provably
+//     unshared after, and the base is provably UNCHANGED.
+//
+// The emission is ATOMIC — derive, one controlled append, fold — and the
+// derived slice is a statement-local temporary, so no later statement can
+// extend the aliasing chain past the spec-pinned first append (a SECOND
+// append after a reallocation would depend on the reallocation's
+// unspecified new capacity; that family stays quotiented, recorded on the
+// ledger). Constant a <= b <= c <= minLen(s) keeps the slice expression
+// legal on every run. Termination: appending to t never changes len(s), so
+// enclosing ranges over the base stay bounded; the fold ranges the
+// temporary exactly once. Both slices are observed: the derived through the
+// position-weighted int fold (rung 4's slice encoding), the base through
+// its ordinary observation paths — where the aliasing effect, not cap,
+// shows. cap itself remains UNOBSERVED (that quotient stands).
+func (g *Generator) sliceTripleStmt(out *emitter) {
+	g.resetRisk()
+	s := &g.vars[pick(g.c, g.intElemSliceVars())]
+	s.reads++
+	// 0 <= a <= b <= c <= minLen, with cap = c-a >= 1 so the shared case is
+	// reachable; minLen >= 2 for every slice declaration.
+	a := g.c.draw(s.minLen - 1)          // [0, minLen-2]
+	cc := a + 1 + g.c.draw(s.minLen-a)   // [a+1, minLen]
+	b := a + g.c.draw(cc-a+1)            // [a, cc]
+	tn := fmt.Sprintf("t%d", g.tmpSeq)
+	en := fmt.Sprintf("e%d", g.tmpSeq+1)
+	g.tmpSeq += 2
+	g.mark("slices", "slice_triple", "short_decl")
+	out.line("%s := %s[%d:%d:%d]", tn, s.name, a, b, cc)
+	// The controlled append: within cap iff b < cc (shared write to s[b]),
+	// at cap iff b == cc (reallocation, base untouched). The element draw
+	// may spend this statement's own risk slot.
+	g.resetRisk()
+	elem := g.expr(*s.typ.Elem, g.cfg.ExprFuel-1)
+	g.mark("slices", "append", "assignment")
+	out.line("%s = append(%s, %s)", tn, tn, elem.text)
+	g.resetRisk()
+	ai, _ := g.pickVar(Int(0, false))
+	acc := &g.vars[ai]
+	acc.reads++
+	g.mark("slices", "range", "conversions", "assignment", "control_flow", "short_decl")
+	// The *31 chain on platform int is wrap-capable: width-dependent, the
+	// same convention as the rung-4 aggregate folds.
+	g.markWidthDep(acc.typ)
+	out.open("for _, %s := range %s {", en, tn)
+	out.line("%s = %s*31 + int(%s)", acc.name, acc.name, en)
+	out.close()
 }
 
 // intElemMapVars are map variables with integer elements — the ones whose

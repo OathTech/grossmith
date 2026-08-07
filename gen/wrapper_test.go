@@ -2,10 +2,12 @@ package gen
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"grossmith/observe"
@@ -254,6 +256,120 @@ func TestStringFamilyEmitted(t *testing.T) {
 			indexed, sliced, hotSliced, folds)
 	}
 	t.Logf("string family: %d literal-indexed, %d const-sliced, %d hot-sliced, %d range folds", indexed, sliced, hotSliced, folds)
+}
+
+// TestSliceTripleEmitted (three-index rung; sx g32/g03/c18/c21): the
+// grammar emits the atomic derive/append/fold shape, every triple's
+// constant bounds satisfy 0 <= a <= b <= c <= the base's initial
+// composite length (always-legal by construction), and both aliasing
+// regimes (b < c shared, b == c reallocating) occur in the population.
+func TestSliceTripleEmitted(t *testing.T) {
+	triple := regexp.MustCompile(`(?m)^\t+(t\d+) := (v\d+)\[(\d+):(\d+):(\d+)\]\n\t+t\d+ = append\(t\d+, `)
+	declLen := regexp.MustCompile(`(?m)^\t+(v\d+) := \[\]\w+\{([^}]*)\}`)
+	tagged, shared, realloc := 0, 0, 0
+	for seed := int64(30000); seed < 30400; seed++ {
+		c, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasFeature(c, "slice_triple") {
+			continue
+		}
+		tagged++
+		ms := triple.FindAllSubmatch(c.Source, -1)
+		if len(ms) == 0 {
+			t.Fatalf("seed %d: slice_triple tagged but no derive+append shape\n%s", seed, c.Source)
+		}
+		initLen := map[string]int{}
+		for _, d := range declLen.FindAllSubmatch(c.Source, -1) {
+			initLen[string(d[1])] = len(strings.Split(string(d[2]), ","))
+		}
+		for _, m := range ms {
+			var a, b, cc int
+			fmt.Sscanf(string(m[3]), "%d", &a)
+			fmt.Sscanf(string(m[4]), "%d", &b)
+			fmt.Sscanf(string(m[5]), "%d", &cc)
+			bound, ok := initLen[string(m[2])]
+			if !ok {
+				t.Fatalf("seed %d: triple over %s with no composite declaration\n%s", seed, m[2], c.Source)
+			}
+			if !(0 <= a && a <= b && b <= cc && cc <= bound) {
+				t.Fatalf("seed %d: triple bounds [%d:%d:%d] not within initial length %d\n%s",
+					seed, a, b, cc, bound, c.Source)
+			}
+			if b < cc {
+				shared++
+			} else {
+				realloc++
+			}
+		}
+	}
+	if tagged == 0 || shared == 0 || realloc == 0 {
+		t.Fatalf("slice_triple starved: %d tagged, %d shared-regime, %d realloc-regime", tagged, shared, realloc)
+	}
+	t.Logf("slice_triple: %d tagged, %d shared (b<c), %d reallocating (b==c)", tagged, shared, realloc)
+}
+
+// TestSliceTripleAliasingObserved is the RUNTIME witness for the aliasing
+// carve-out, in the emitter's exact three-line shape: with b < c the
+// controlled append MUST write the base's backing (s[b] changes — the
+// shared-backing write visible through the base), and with b == c it MUST
+// reallocate (base untouched). Both are spec-mandated ("If the capacity of
+// s is not large enough ... append allocates ... Otherwise, append re-uses
+// the underlying array"), which is what makes the family generable at all.
+func TestSliceTripleAliasingObserved(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs binaries")
+	}
+	obs := []binding{
+		{name: "q0", typ: Int(0, false)},
+		{name: "q1", typ: Int(0, false)},
+		{name: "q2", typ: Int(0, false)},
+	}
+	driver := []byte((&Generator{}).driverSource(obs))
+	run := func(name, subject string, wantFold, wantElem, wantLast int64) {
+		doc := runCase(t, Case{Source: []byte(subject), Driver: driver})
+		if doc.Status != observe.StatusOK {
+			t.Fatalf("%s: status %s", name, doc.Status)
+		}
+		got := []int64{doc.Values[0].Int, doc.Values[1].Int, doc.Values[2].Int}
+		want := []int64{wantFold, wantElem, wantLast}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s: observed %v, want %v", name, got, want)
+			}
+		}
+	}
+	// b(2) < c(4): cap(t0)=3, len(t0)=1 — the append re-uses v1's backing
+	// and the write lands at v1[2]; the fold sees [20, 99].
+	run("shared", `package main
+
+func fuzzSubject() (int, int, int) {
+	v0 := 0
+	v1 := []int{10, 20, 30, 40}
+	t0 := v1[1:2:4]
+	t0 = append(t0, 99)
+	for _, e0 := range t0 {
+		v0 = v0*31 + int(e0)
+	}
+	return v0, v1[2], v1[3]
+}
+`, 20*31+99, 99, 40)
+	// b(2) == c(2): cap(t0)=1 == len(t0) — the append MUST reallocate;
+	// the fold still sees [20, 99] but v1 is provably untouched.
+	run("realloc", `package main
+
+func fuzzSubject() (int, int, int) {
+	v0 := 0
+	v1 := []int{10, 20, 30, 40}
+	t0 := v1[1:2:2]
+	t0 = append(t0, 99)
+	for _, e0 := range t0 {
+		v0 = v0*31 + int(e0)
+	}
+	return v0, v1[2], v1[3]
+}
+`, 20*31+99, 30, 40)
 }
 
 // TestRecoverWrapperObservesPanics (Phase 4 rung 1, GoLean R1): wrapped
