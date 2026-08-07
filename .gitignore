@@ -1,4 +1,5 @@
-deps/
+deps/*
+!deps/go.mod
 /out*/
 case*.bin
 .tmp/
