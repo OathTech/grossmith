@@ -161,18 +161,20 @@ So each variable draws an observation tier, recorded as a tag:
 
 A dead-rich mix joins the named-corner list for optimizing consumers; for a
 pure semantics clone all-live is harmless — which is why this is a knob, not
-a constant. Future levers on the same axis: multiple return sites
-(path-dependent liveness) and interleaved `println` observation points (pin
-intermediate state, create mid-function liveness ranges, localize *where*
-implementations diverge).
+a constant. Further levers on the same axis, both since delivered:
+multiple return sites (path-dependent liveness) and interleaved
+observation points — now obs* protocol events — (pin intermediate state,
+create mid-function liveness ranges, localize *where* implementations
+diverge).
 
 ## The draw trace (a recorded log; replay is PLANNED, not built)
 
 All randomness flows through the choice primitive, and the primitive records
 its draws — a DRAW TRACE. The intended end state is a decoder (choice
 sequence → valid program), but no replay source, exhaustion policy, or
-out-of-range policy exists yet, and the CLI does not persist the trace: the
-seam is an intention with its preconditions audited, not a capability. The
+out-of-range policy exists yet — the trace (with the resolved config) is
+persisted in each case.json, but the seam is an intention with its
+preconditions audited, not a capability. The
 trace buys, in order of adoption:
 
 1. **Reproducibility**: seed ⇒ byte-identical program (ordered containers
@@ -289,13 +291,15 @@ cmd/gengo/      CLI: gengo -n N -seed S -out DIR [-judge] [-clone gc-386|golean]
 deps/           read-only reference checkouts (gitignored): grossmith-proto, xsmith, golean
 ```
 
-MVP acceptance, mechanically checkable: `go test ./...` green (witness
-tests: reproducibility, typecheck-in-process over hundreds of seeds,
-loops-bounded, every-declaration-observed); `gengo -n 1000 -conformance`
-reports ≥99% compile+run on the pinned toolchain with the composition
-histogram; a deliberately-broken "clone" (e.g. the same toolchain at a
-different `GOARCH`, or a mutated binary) shows divergences — proof the
-observation discriminates.
+MVP acceptance, mechanically checkable — MET as of Phase 1 (2026-08-07):
+`go test ./...` green (witness tests: reproducibility,
+typecheck-in-process over hundreds of seeds, loops-bounded,
+every-declaration-observed); `gengo -n 1000 -judge` reports ≥99%
+compile+run on the pinned toolchain (measured 2026-08-07: 1000/1000
+ref-ran at seed 260807, go1.26.5/amd64); a deliberately-broken clone (the
+doctored-driver harness witness, and gc-386 for width) shows divergences
+classified as observation-mismatch, never conflated with an unavailable
+clone — proof the observation discriminates.
 
 ## Sources
 

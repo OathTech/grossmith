@@ -1,6 +1,12 @@
 # Design draft: observation protocol v2 and runtime adapters (Phase 1)
 
 **Status: DRAFT for discussion — nothing below is implemented.**
+*(2026-08-07 postscript: implemented and merged — shape (b) shipped for
+GoLean; the as-built details that drifted from this draft are the obs*
+signatures, which carry `(at, goType)` from the call site, and map
+observation, which serializes the FULL map with driver-sorted keys
+rather than probed-alphabet entries. See
+`docs/2026-08-07_phase1-premerge-audit.md` for the audited final state.)*
 Responds to audit findings C1 (no clone adapter), C2 (println is not a
 conformance protocol), C3 (pinning/panic policy unimplemented), C4
 (interface payload dropped), C5 (runtime failure conflated with
