@@ -14,6 +14,7 @@ package golean
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -134,12 +135,30 @@ func Run(ctx context.Context, workDir string, cases []Case, cfg Config) (map[str
 		return results, nil
 	}
 	manifestPath := filepath.Join(absWork, "manifest.tsv")
-	if err := os.WriteFile(manifestPath, []byte(manifest.String()), 0o644); err != nil {
+	manifestBytes := []byte(manifest.String())
+	if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
 		return nil, err
 	}
 
+	// A stale results file must never be readable as this run's verdicts
+	// (audit F1, demonstrated: diff-coverage exits 1 BOTH for legitimate
+	// FAIL rows and for a lake-build failure that publishes nothing — with
+	// index-based case IDs, a previous campaign's results.tsv passed every
+	// id check and its verdicts were republished as this run's conformance
+	// statement). Freshness is enforced twice: the old files are removed
+	// before the run, and the published meta must name the manifest we
+	// just wrote.
 	resultsPath := filepath.Join(absWork, "results.tsv")
-	if err := invoke(ctx, script, cfg, absWork, manifestPath, resultsPath); err != nil {
+	metaPath := resultsPath + ".meta"
+	for _, p := range []string{resultsPath, metaPath} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	if err := invoke(ctx, script, cfg, absWork, manifestPath, resultsPath, metaPath); err != nil {
+		return nil, err
+	}
+	if err := checkMeta(metaPath, manifestBytes); err != nil {
 		return nil, err
 	}
 
@@ -214,9 +233,12 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 }
 
 // invoke runs diff-coverage against the manifest with a sanitized
-// environment. Exit 1 is a normal outcome (FAIL rows exist — those are
-// verdicts, not errors); anything else nonzero is an infrastructure error.
-func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPath, resultsPath string) error {
+// environment, persisting its full output as a campaign artifact. Exit 1
+// alone does NOT mean FAIL rows exist — the script also exits 1 on
+// no-publish paths (lake build failure) — so invoke only distinguishes
+// "ran to some exit" from hard errors; freshness and publication are
+// checked by the caller against the meta file.
+func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPath, resultsPath, metaPath string) error {
 	lakeBudget := cfg.LakeBuildTimeout
 	if lakeBudget <= 0 {
 		lakeBudget = 20 * time.Minute
@@ -226,7 +248,7 @@ func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPat
 	env := []string{
 		"GOLEAN_COVERAGE_ARTIFACTS=" + filepath.Join(absWork, "artifacts"),
 		"GOLEAN_COVERAGE_RESULTS=" + resultsPath,
-		"GOLEAN_COVERAGE_META=" + resultsPath + ".meta",
+		"GOLEAN_COVERAGE_META=" + metaPath,
 		fmt.Sprintf("LAKE_BUILD_TIMEOUT_SECONDS=%d", int(lakeBudget.Seconds())),
 		"GOTOOLCHAIN=local", "CGO_ENABLED=0",
 	}
@@ -240,13 +262,41 @@ func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPat
 	}
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
+	// The script's own narration (lake failures, worker-pool warnings, the
+	// pass/fail summary) is a campaign artifact, not noise (audit F2).
+	if werr := os.WriteFile(filepath.Join(absWork, "diff-coverage.log"), out, 0o644); werr != nil {
+		return werr
+	}
 	if err != nil {
 		if ee, isExit := err.(*exec.ExitError); isExit && ee.ExitCode() == 1 {
-			return nil // FAIL rows present; results.tsv is still authoritative
+			return nil // FAIL rows or a no-publish failure; checkMeta decides
 		}
 		return fmt.Errorf("diff-coverage: %w: %s", err, tail(out, 2000))
 	}
 	return nil
+}
+
+// checkMeta requires the run to have PUBLISHED results for exactly the
+// manifest we wrote: diff-coverage records the manifest sha256 in its meta
+// file at publish time, so a missing meta means the run died before
+// publishing and a mismatched sha means the results belong to some other
+// manifest. Either way the results file is not this campaign's verdicts.
+func checkMeta(metaPath string, manifest []byte) error {
+	b, err := os.ReadFile(metaPath)
+	if err != nil {
+		return fmt.Errorf("golean: diff-coverage published no results (lake build failure or early exit) — see diff-coverage.log: %w", err)
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256(manifest))
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(line, "\t")
+		if ok && k == "manifest_sha256" {
+			if v != want {
+				return fmt.Errorf("golean: published results are for manifest %s, not ours (%s)", v, want)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("golean: meta file %s has no manifest_sha256", metaPath)
 }
 
 // parseResults reads GoLean's results TSV fail-closed: exact header, five
@@ -293,10 +343,16 @@ func parseResults(path string, known map[string]bool) (map[string]Result, error)
 //     case (frontend coverage gap, nonzero machine exit, dead worker) —
 //     clone-infra-failure, never conflated with divergence.
 //   - manifest / go-source / litmus-contract / go-harness / go-run /
-//     go-observation: THEIR gc oracle disagreed with the row we wrote, and
-//     both sides are gc — the translation itself is broken: harness-error.
+//     go-observation: the go SIDE of their harness failed — usually a
+//     translation defect (both oracles are gc, so a status disagreement
+//     means we corrupted the case), but go-harness/go-run also fire on
+//     their go-side infrastructure (a 30s timeout, an OOM under load), so
+//     inspect the detail before hunting a translation bug (audit F7).
+//     harness-error either way: a fail-closed red, never a semantic claim.
 //   - An unknown stage (their vocabulary grew) is harness-error with the
 //     stage preserved — explicit unclassifiable, never a guessed verdict.
+//     The membership-lane stages are known-unreachable (translate pins
+//     lane=strict) and deliberately unmapped; they fall through here.
 func judge(result, stage, detail string) (Result, error) {
 	switch result {
 	case "PASS":
@@ -309,6 +365,16 @@ func judge(result, stage, detail string) (Result, error) {
 	switch stage {
 	case "differential", "lean-observation", "nondet":
 		res.Verdict = harness.VerdictMismatch
+		// A machine that got STUCK produced no observation at all — the
+		// interpreter analogue of the frontend-quarantined gap, and the
+		// same side of the infra/semantics line (audit F6: a stuck case
+		// was inflating observation-mismatch, the metric that is supposed
+		// to mean "the clone computed a different answer"). The detail
+		// carries their observation JSON verbatim, which is the only
+		// channel that distinguishes stuck from a wrong value.
+		if stage == "lean-observation" && strings.Contains(detail, `"status":"stuck"`) {
+			res.Verdict = harness.VerdictCloneInfra
+		}
 	case "frontend-export", "lean-run", "harness":
 		res.Verdict = harness.VerdictCloneInfra
 	case "manifest", "go-source", "litmus-contract", "go-harness", "go-run", "go-observation":

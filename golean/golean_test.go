@@ -123,6 +123,94 @@ func TestJudgeMapping(t *testing.T) {
 	}
 }
 
+// TestStaleResultsNeverRepublished (audit F1, demonstrated live before the
+// fix): diff-coverage exits 1 both for legitimate FAIL rows and for a
+// lake-build failure that publishes nothing. With index-based case IDs a
+// previous campaign's results.tsv passed every id check, and its verdicts
+// — including a fabricated mismatch — were republished as this run's
+// conformance statement. Run must instead error on a no-publish run, and
+// on results published for a different manifest.
+func TestStaleResultsNeverRepublished(t *testing.T) {
+	ranOK := harness.Outcome{Status: harness.StatusRan,
+		Document: observe.Document{Schema: observe.Schema, Status: observe.StatusOK}}
+	caseDir := t.TempDir()
+	src := "package main\n\nfunc fuzzSubject() int {\n\treturn 1\n}\n"
+	if err := os.WriteFile(filepath.Join(caseDir, "subject.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []Case{{ID: "case_00000", Dir: caseDir, Features: []string{"ints"}, Reference: ranOK}}
+
+	stubCheckout := func(script string) string {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "scripts", "diff-coverage"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	staleWork := func() string {
+		work := t.TempDir()
+		if err := os.MkdirAll(work, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stale := "result\tid\tfeatures\tstage\tdetail\nFAIL\tcase_00000\tints\tdifferential\tfabricated\n"
+		if err := os.WriteFile(filepath.Join(work, "results.tsv"), []byte(stale), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return work
+	}
+
+	// A no-publish exit 1 (the lake-build failure shape) with a stale
+	// results.tsv already in place: must error, never read the stale file.
+	noPublish := stubCheckout("#!/usr/bin/env bash\necho 'lake build failed' >&2\nexit 1\n")
+	_, err := Run(context.Background(), staleWork(), cases, Config{Checkout: noPublish})
+	if err == nil || !strings.Contains(err.Error(), "published no results") {
+		t.Fatalf("no-publish run: %v", err)
+	}
+
+	// Results published for a DIFFERENT manifest: must error on the sha.
+	wrongManifest := stubCheckout("#!/usr/bin/env bash\n" +
+		"printf 'result\\tid\\tfeatures\\tstage\\tdetail\\nPASS\\tcase_00000\\tints\\t-\\t-\\n' > \"$GOLEAN_COVERAGE_RESULTS\"\n" +
+		"printf 'key\\tvalue\\nmanifest_sha256\\tdeadbeef\\n' > \"$GOLEAN_COVERAGE_META\"\n")
+	_, err = Run(context.Background(), staleWork(), cases, Config{Checkout: wrongManifest})
+	if err == nil || !strings.Contains(err.Error(), "not ours") {
+		t.Fatalf("wrong-manifest run: %v", err)
+	}
+
+	// Both failure modes leave the script log behind for diagnosis.
+	work := staleWork()
+	if _, err := Run(context.Background(), work, cases, Config{Checkout: noPublish}); err == nil {
+		t.Fatal("expected error")
+	}
+	if _, err := os.Stat(filepath.Join(work, "diff-coverage.log")); err != nil {
+		t.Fatalf("diff-coverage.log not persisted: %v", err)
+	}
+}
+
+// TestStuckIsInfraNotMismatch (audit F6): a machine that cannot evaluate
+// the case produced no observation — the interpreter analogue of a
+// frontend gap, never a semantic divergence.
+func TestStuckIsInfraNotMismatch(t *testing.T) {
+	stuck, err := judge("FAIL", "lean-observation",
+		`expected status ok, got {"message":"mismatched + integer kinds","schema":"golean-observation-v1","status":"stuck"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stuck.Verdict != harness.VerdictCloneInfra {
+		t.Fatalf("stuck judged %s", stuck.Verdict)
+	}
+	wrong, err := judge("FAIL", "lean-observation",
+		`expected status ok, got {"schema":"golean-observation-v1","status":"panic","message":"x"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrong.Verdict != harness.VerdictMismatch {
+		t.Fatalf("non-stuck lean-observation judged %s", wrong.Verdict)
+	}
+}
+
 // TestGoLeanEndToEnd is the Phase 1 vertical slice: profile-generated
 // cases, gc reference pass, GoLean campaign, verdicts. Requires the
 // deps/golean checkout (skipped elsewhere) and builds real binaries.
