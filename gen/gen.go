@@ -978,9 +978,12 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		if typ.Shape == shape {
 			// R5 (rung 4): a masked shape the draw wanted observed is
 			// observed through an aggregate instead of silently demoted —
-			// for the range-able shapes, which are the only masked ones in
-			// practice.
-			if observed && (typ.Shape == ShapeSlice || typ.Shape == ShapeMap) {
+			// for the range-able shapes, and ONLY when the constructs the
+			// fold emits are enabled (audit F1: the fold bypassed the
+			// capability-profile contract, handing range/len/conversions
+			// to mixes that declared them off).
+			if observed && (typ.Shape == ShapeSlice || typ.Shape == ShapeMap) &&
+				g.enabled("range", "len", "conversions") {
 				agg = true
 			}
 			observed = false
@@ -1042,6 +1045,10 @@ func (g *Generator) observe(out *emitter) []binding {
 		case v.observed:
 			observed = append(observed, *v)
 			names = append(names, v.name)
+		case v.aggObserved:
+			// Folded below — a real use (audit F4: the discharge loop was
+			// emitting `_ = v` and tagging dead_value for containers the
+			// aggregate pass observes two lines later).
 		case v.reads == 0:
 			out.line("_ = %s", v.name)
 			g.note(tagDeadValue)
@@ -1051,7 +1058,7 @@ func (g *Generator) observe(out *emitter) []binding {
 	}
 	// Aggregate observation (rung 4, GoLean R5): profile-masked
 	// containers the liveness draw wanted observed are folded into plain
-	// ints at function end — commutative sums for maps (the only
+	// ints at function end — key-weighted commutative sums for maps (an
 	// order-safe map observation), position-weighted chains for slices
 	// (order is specified, so the stronger encoding is free). Plain-int
 	// accumulators wrap platform-width: width_dependent, tagged so.
@@ -1066,33 +1073,57 @@ func (g *Generator) observe(out *emitter) []binding {
 		aggIdx++
 		g.note(tagAggObserved)
 		g.markWidthDep(Int(0, false))
-		out.line("%s := len(%s)", name, v.name)
-		out.open("for _, e := range %s {", v.name)
 		elem := *v.typ.Elem
-		ordered := v.typ.Shape == ShapeSlice
-		switch {
-		case ordered && elem.Shape == ShapeString:
-			out.line("%s = %s*31 + len(e)", name, name)
-		case ordered && elem.Shape == ShapeBool:
-			out.line("%s *= 31", name)
-			out.line("if e {")
-			out.indent++
-			out.line("%s++", name)
-			out.close()
-		case ordered:
-			out.line("%s = %s*31 + int(e)", name, name)
-		case elem.Shape == ShapeString:
-			out.line("%s += len(e)", name)
-		case elem.Shape == ShapeBool:
-			out.line("if e {")
-			out.indent++
-			out.line("%s++", name)
-			out.close()
-		default:
-			out.line("%s += int(e)", name)
+		out.line("%s := len(%s)", name, v.name)
+		if v.typ.Shape == ShapeMap {
+			// Key-WEIGHTED commutative fold (audit F5: a value-only sum
+			// made delete(k1) and delete(k2) indistinguishable when the
+			// values collided): Σ over entries of kTerm*31 + eTerm stays
+			// order-safe and is key-sensitive.
+			g.mark("maps", "range", "len")
+			kTerm := "int(k)"
+			if v.typ.Key.Shape == ShapeString {
+				kTerm = "len(k)"
+			} else {
+				g.mark("conversions")
+			}
+			out.open("for k, e := range %s {", v.name)
+			switch elem.Shape {
+			case ShapeString:
+				out.line("%s += %s*31 + len(e)", name, kTerm)
+			case ShapeBool:
+				out.line("%s += %s * 31", name, kTerm)
+				out.line("if e {")
+				out.indent++
+				out.line("%s++", name)
+				out.close()
+			default:
+				g.mark("conversions")
+				out.line("%s += %s*31 + int(e)", name, kTerm)
+			}
+			out.dedent()
+			out.line("}")
+		} else {
+			// Slices: order is specified, so the stronger position-
+			// weighted chain is free.
+			g.mark("slices", "range", "len")
+			out.open("for _, e := range %s {", v.name)
+			switch elem.Shape {
+			case ShapeString:
+				out.line("%s = %s*31 + len(e)", name, name)
+			case ShapeBool:
+				out.line("%s *= 31", name)
+				out.line("if e {")
+				out.indent++
+				out.line("%s++", name)
+				out.close()
+			default:
+				g.mark("conversions")
+				out.line("%s = %s*31 + int(e)", name, name)
+			}
+			out.dedent()
+			out.line("}")
 		}
-		out.dedent()
-		out.line("}")
 		observed = append(observed, binding{name: name, typ: Int(0, false)})
 		names = append(names, name)
 	}

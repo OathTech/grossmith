@@ -542,10 +542,16 @@ func (g *Generator) multiAssign(out *emitter) {
 		// store still uses the OLD u. Unsigned modulo keeps it on the
 		// ok-path; a raw signed index is the hot minority.
 		{name: "alias-index", weight: 3,
-			ok: g.enabled("index") && len(aliases) > 0 && len(g.indexableVars()) > 0, emit: func() {
+			// The safe index is a conversion of a modulo — gated AND
+			// marked as both, like indexExpr's mod arm (audit F1: this
+			// emitter bypassed the capability-profile contract), and
+			// corner-gated so the kinds corner stays conversion-free.
+			ok: g.enabled("index", "conversions", "modulo") && g.corner != "kinds" &&
+				len(aliases) > 0 && len(g.indexableVars()) > 0, emit: func() {
 				u := &g.vars[pick(g.c, aliases)]
 				arr := &g.vars[pick(g.c, g.indexableVars())]
 				u.reads++ // the index read
+				g.mark("conversions", "modulo")
 				idx := fmt.Sprintf("int(%s %% %s(%d))", u.name, u.typ.GoName(), arr.indexBound())
 				if g.riskOK() && g.c.chance(4) && g.spendRisk() {
 					// Hot: index by a raw signed int var instead.

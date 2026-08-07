@@ -377,8 +377,12 @@ func judge(result, stage, detail string) (Result, error) {
 		// machine-level $runtime.Error refusal). The detail carries their
 		// observation JSON verbatim, which is the only channel that
 		// distinguishes a refusal from a wrong value.
+		// Suffix match, not substring (Phase 4 audit): their encoder sorts
+		// keys, so a refusal document ENDS with its status — a free-text
+		// detail that merely mentioned the string mid-message could
+		// otherwise downgrade a genuine wrong answer to infra.
 		if stage == "lean-observation" &&
-			(strings.Contains(detail, `"status":"stuck"`) || strings.Contains(detail, `"status":"unsupported"`)) {
+			(strings.HasSuffix(detail, `"status":"stuck"}`) || strings.HasSuffix(detail, `"status":"unsupported"}`)) {
 			res.Verdict = harness.VerdictCloneInfra
 		}
 	case "frontend-export", "lean-run", "harness":

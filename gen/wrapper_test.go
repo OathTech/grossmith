@@ -165,6 +165,8 @@ func TestAggregateObservation(t *testing.T) {
 // reaches defined-type targets — the BUG-042/043 family's habitat.
 func TestKindsCorner(t *testing.T) {
 	incdec := regexp.MustCompile(`(?m)^\t+v\d+(\+\+|--)$`)
+	varConv := regexp.MustCompile(`\b(u?int(8|16|32|64)?|T\d+)\(\(?v\d+`)
+	obsLines := regexp.MustCompile(`(?m)^.*\bobs(Bool|Int|Uint|Str|Recovered)\(.*$`)
 	sites, definedTyped := 0, 0
 	for seed := int64(4000); seed < 4060; seed++ {
 		cfg := DefaultConfig(seed)
@@ -178,6 +180,16 @@ func TestKindsCorner(t *testing.T) {
 		}
 		if hasFeature(c, "conversions") {
 			t.Fatalf("seed %d: conversions tagged inside the kinds corner\n%s", seed, c.Source)
+		}
+		// TEXT-level check too (Phase 4 audit F1: the tag check alone was
+		// vacuous when an emitter forgot to mark): a conversion applied to
+		// a VARIABLE is the laundering shape; typed literals T(5) are not.
+		// Observation-channel conversions are exempt BY NAME (the obs* API
+		// widens its argument; the ledger states the exemption) — never a
+		// blanket exemption.
+		src := obsLines.ReplaceAll(c.Source, nil)
+		if m := varConv.Find(src); m != nil {
+			t.Fatalf("seed %d: conversion text %q inside the kinds corner\n%s", seed, m, c.Source)
 		}
 		sites += len(incdec.FindAll(c.Source, -1))
 		if hasFeature(c, "defined_types") && incdec.Match(c.Source) {

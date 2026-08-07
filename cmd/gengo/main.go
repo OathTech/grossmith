@@ -206,6 +206,25 @@ func run(cfg config) error {
 	var specs []caseSpec
 	if cfg.pairs > 0 {
 		tags := gen.Optional()
+		// The pair universe must respect the clone's capability profile
+		// (audit F3: Include is applied after Exclude, so forcing an
+		// excluded tag would hand the clone exactly the constructs its
+		// profile removes and misattribute every resulting verdict).
+		if checkout != "" {
+			excluded := map[string]bool{}
+			for _, t := range golean.Profile(gen.DefaultConfig(0)).Exclude {
+				excluded[t] = true
+			}
+			kept := tags[:0:0]
+			for _, t := range tags {
+				if !excluded[t] {
+					kept = append(kept, t)
+				}
+			}
+			fmt.Printf("pairs mode: %d of %d tags in the pair universe (profile excludes %d)\n",
+				len(kept), len(tags), len(tags)-len(kept))
+			tags = kept
+		}
 		idx := 0
 		for i := 0; i < len(tags); i++ {
 			for j := i + 1; j < len(tags); j++ {
@@ -371,6 +390,20 @@ func run(cfg config) error {
 	rep.GeneratorRev = rev
 	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(len(specs)) - 1}
 	rep.Composition = tagCount
+	// Wrapper catches (audit F2): a wrapped subject that caught a panic
+	// returns status ok with a nonzero trailing code — invisible to
+	// PanicPaths, counted here from features + reference documents.
+	for _, cr := range rep.Cases {
+		if !hasTag(featuresByID[cr.ID], "recover_wrapper") || cr.Reference.Status != harness.StatusRan {
+			continue
+		}
+		doc := cr.Reference.Document
+		if doc.Status == observe.StatusOK && len(doc.Values) > 0 {
+			if last := doc.Values[len(doc.Values)-1]; last.Kind == "int" && last.Int != 0 {
+				rep.WrapperCaught++
+			}
+		}
+	}
 
 	if checkout != "" {
 		if err := runGoLean(ctx, &rep, cfg, checkout, featuresByID); err != nil {
@@ -573,8 +606,8 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 	if rep.CloneName != "" {
 		fmt.Printf("  clone:     %s (%s)\n", rep.CloneName, rep.CloneIdentity)
 	}
-	fmt.Printf("  policy: panic-%s   cases: %d   ref-ran: %d   panic-paths: %d   recovered: %d\n",
-		rep.PanicPolicy, rep.Total, rep.RefRan, rep.PanicPaths, rep.Recovered)
+	fmt.Printf("  policy: panic-%s   cases: %d   ref-ran: %d   panic-paths: %d   recovered-events: %d   wrapper-caught: %d\n",
+		rep.PanicPolicy, rep.Total, rep.RefRan, rep.PanicPaths, rep.Recovered, rep.WrapperCaught)
 	fmt.Printf("  subject bytes min/mean/max: %d/%d/%d\n",
 		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax)
 	if len(rep.Verdicts) > 0 {

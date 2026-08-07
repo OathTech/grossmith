@@ -8,8 +8,10 @@ here is not commitment.
 
 STATUS (Phase 4 arc, 2026-08-07): R1, R2a, R3, R5, R4 DELIVERED as
 rungs 1-5 (see docs/spec-ledger.md and the rung commits); the
-composition-histogram and recovered-coverage backlog items were
-absorbed and closed by the same rungs. Remaining from the request set:
+composition-histogram backlog item was absorbed and closed by rung 5.
+The recover WRAPPER observes panics at function level (wrapperCaught
+in batch.json); the guarded-STATEMENT recovered-event rung below
+remains open — a different mechanism, not absorbed. Remaining from the request set:
 R2b (order witnessing — effect-discipline design) and R6 (embedding
 matrices — blocked on rungs).
 

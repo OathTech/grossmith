@@ -157,6 +157,13 @@ type BatchReport struct {
 	// Aggregates, computed over Cases.
 	Total    int             `json:"total"`
 	Verdicts map[Verdict]int `json:"verdicts,omitempty"`
+	// WrapperCaught counts recover-wrapper subjects whose reference run
+	// caught a panic (status ok, nonzero trailing panic code) — panics
+	// PanicPaths cannot see, since the wrapper converts them to normal
+	// returns (audit F2: rung 1 was pushing the headline panic metric the
+	// wrong way with the catch invisible). Populated by the producer,
+	// which knows the per-case features.
+	WrapperCaught int `json:"wrapperCaught,omitempty"`
 	// Composition is the per-tag program-presence histogram — the charter
 	// lists it as part of the conformance statement (rung 5 closed the
 	// gap: it was stdout-only). Populated by the producer from generated

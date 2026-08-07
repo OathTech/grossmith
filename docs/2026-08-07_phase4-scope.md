@@ -11,6 +11,14 @@ GoLean campaign closes each rung (verdict drift examined — their
 frontend-export gaps will GROW as the grammar widens; that is signal,
 not failure).
 
+*(Post-arc corrections, per the pre-merge audit: rung 2 delivered
+without the "nested chains" shape — reclassified deferred(effect
+discipline) in the ledger; rung 4 delivered len+key-weighted-sum for
+maps and position-weighted chains for slices, not the note's "min/max
+folds, membership bits"; rung 1's coverage claim is delivered as the
+batch report's wrapperCaught field, while the separate GUARDED-
+statement recovered-event rung in TODO.md remains open.)*
+
 ## Rungs, in order
 
 **Rung 0 — the spec-surface ledger** (the audit's precondition).
