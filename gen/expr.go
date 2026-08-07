@@ -447,11 +447,17 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			out = value{text: fmt.Sprintf("%s.%s(%s)", recv.text, m.name, g.argList(m.params, fuel-1))}
 		}},
 		{name: "len", weight: 1,
-			// len returns exactly `int`, and len of a string VARIABLE is
-			// non-constant (len of a literal would be a typed constant).
+			// len returns exactly `int`. len of a string VARIABLE is
+			// non-constant, but variable() can fall back to a string
+			// LITERAL (pure helper bodies have no string in scope), and
+			// len("µ") is a typed CONSTANT — the constness must follow the
+			// operand or a downstream shift chain overflows at compile
+			// time on 32-bit targets (latent until the bare-call arm
+			// shifted draw paths; seed 36 in the 386 witness).
 			ok: t.Equal(Int(0, false)) && g.enabled("len", "strings"), emit: func() {
 				g.mark("len", "strings")
-				out = value{text: fmt.Sprintf("len(%s)", g.variable(Str()).text)}
+				s := g.variable(Str())
+				out = value{text: fmt.Sprintf("len(%s)", s.text), constant: s.constant}
 			}},
 		{name: "minmax", weight: 1, ok: g.enabled("min") || g.enabled("max"), emit: func() {
 			name := "min"
