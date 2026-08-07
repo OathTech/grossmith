@@ -1,0 +1,364 @@
+// Package harness is the conformance product boundary: runtime adapters,
+// the verdict taxonomy, and durable batch/case artifacts (audit C1, C3, C5,
+// H2). An adapter is anything that can take a case directory and produce an
+// observation document; the harness compares documents under an explicit
+// equivalence policy and never confuses runtime failure with semantic
+// divergence.
+package harness
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"grossmith/observe"
+)
+
+// OutcomeStatus is how one adapter's run of one case ended.
+type OutcomeStatus string
+
+const (
+	StatusRan         OutcomeStatus = "ran"
+	StatusBuildFailed OutcomeStatus = "build-failed"
+	StatusRunFailed   OutcomeStatus = "run-failed"
+	StatusTimeout     OutcomeStatus = "timeout"
+	StatusAdapterErr  OutcomeStatus = "adapter-error"
+)
+
+// Outcome is one adapter's result for one case.
+type Outcome struct {
+	Status   OutcomeStatus    `json:"status"`
+	Document observe.Document `json:"document,omitempty"`
+	Detail   string           `json:"detail,omitempty"`
+}
+
+// Adapter runs cases under one implementation.
+type Adapter interface {
+	Name() string
+	// Identity is the pinned implementation identity (toolchain path and
+	// version, clone commit) — persisted in every batch artifact.
+	Identity(ctx context.Context) (string, error)
+	Run(ctx context.Context, caseDir string) Outcome
+}
+
+// Verdict is the per-case comparison result — a closed taxonomy (audit C5):
+// infrastructure failure is never semantic divergence.
+type Verdict string
+
+const (
+	VerdictMatch        Verdict = "match"
+	VerdictMismatch     Verdict = "observation-mismatch"
+	VerdictRefInfra     Verdict = "reference-infra-failure"
+	VerdictCloneInfra   Verdict = "clone-infra-failure"
+	VerdictBothInfra    Verdict = "both-infra-failure"
+	VerdictHarnessError Verdict = "harness-error"
+)
+
+// Judge compares two outcomes under the policy.
+func Judge(ref, clone Outcome, policy observe.PanicPolicy) (Verdict, string) {
+	refOK := ref.Status == StatusRan
+	cloneOK := clone.Status == StatusRan
+	switch {
+	case !refOK && !cloneOK:
+		return VerdictBothInfra, ref.Detail + " / " + clone.Detail
+	case !refOK:
+		return VerdictRefInfra, ref.Detail
+	case !cloneOK:
+		return VerdictCloneInfra, clone.Detail
+	}
+	eq, err := observe.Equal(ref.Document, clone.Document, policy)
+	if err != nil {
+		return VerdictHarnessError, err.Error()
+	}
+	if eq {
+		return VerdictMatch, ""
+	}
+	return VerdictMismatch, ""
+}
+
+// CaseRecord is the durable per-case metadata (audit H2): everything needed
+// to identify, regenerate, and re-judge one case.
+type CaseRecord struct {
+	Schema        string         `json:"schema"`
+	ID            string         `json:"id"`
+	Seed          int64          `json:"seed"`
+	GeneratorRev  string         `json:"generatorRev"`
+	SubjectSHA256 string         `json:"subjectSha256"`
+	Features      map[string]int `json:"features"`
+	DrawTrace     []int          `json:"drawTrace"`
+}
+
+const CaseSchema = "grossmith-case-v1"
+
+// CaseResult is one case's judged result inside a batch report.
+type CaseResult struct {
+	ID            string  `json:"id"`
+	SubjectSHA256 string  `json:"subjectSha256"`
+	Verdict       Verdict `json:"verdict,omitempty"`
+	Reference     Outcome `json:"reference"`
+	Clone         *Outcome `json:"clone,omitempty"`
+	Detail        string  `json:"detail,omitempty"`
+}
+
+// BatchReport is the conformance statement as a durable artifact (audit H2):
+// stdout is a view, this file is the product.
+type BatchReport struct {
+	Schema            string       `json:"schema"`
+	GeneratorRev      string       `json:"generatorRev"`
+	Seeds             [2]int64     `json:"seeds"` // inclusive range
+	ReferenceName     string       `json:"referenceName"`
+	ReferenceIdentity string       `json:"referenceIdentity"`
+	CloneName         string       `json:"cloneName,omitempty"`
+	CloneIdentity     string       `json:"cloneIdentity,omitempty"`
+	PanicPolicy       string       `json:"panicPolicy"`
+	Started           string       `json:"started"`
+	Cases             []CaseResult `json:"cases"`
+	// Aggregates, computed over Cases.
+	Total       int             `json:"total"`
+	Verdicts    map[Verdict]int `json:"verdicts,omitempty"`
+	RefRan      int             `json:"refRan"`
+	PanicPaths  int             `json:"panicPaths"`
+	Recovered   int             `json:"recovered"`
+	// Subject size distribution (audit M4: "small" as a number).
+	SubjectBytesMin  int `json:"subjectBytesMin,omitempty"`
+	SubjectBytesMean int `json:"subjectBytesMean,omitempty"`
+	SubjectBytesMax  int `json:"subjectBytesMax,omitempty"`
+}
+
+const BatchSchema = "grossmith-batch-v1"
+
+// SubjectHash is the case identity hash.
+func SubjectHash(subject []byte) string {
+	h := sha256.Sum256(subject)
+	return hex.EncodeToString(h[:])
+}
+
+// GcAdapter is the reference adapter: a PINNED go toolchain (explicit
+// binary path — identity is the resolved path plus its reported version),
+// building a case directory with a sanitized environment and running the
+// binary with an EMPTY environment (an inherited GODEBUG makes identical
+// binaries print differently).
+type GcAdapter struct {
+	// GoBin is the toolchain to use; empty resolves "go" from PATH once at
+	// construction, and the RESOLVED path is the pinned identity.
+	GoBin   string
+	GOARCH  string
+	Timeout time.Duration
+	// name distinguishes multiple instances (reference vs degenerate clone).
+	AdapterName string
+}
+
+func (a *GcAdapter) Name() string {
+	if a.AdapterName != "" {
+		return a.AdapterName
+	}
+	return "gc"
+}
+
+func (a *GcAdapter) resolveGo() (string, error) {
+	if a.GoBin != "" {
+		return a.GoBin, nil
+	}
+	return exec.LookPath("go")
+}
+
+func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
+	bin, err := a.resolveGo()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, bin, "version")
+	cmd.Env = a.buildEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("%s version: %w", bin, err)
+	}
+	id := strings.TrimSpace(string(out)) + " (" + bin
+	if a.GOARCH != "" {
+		id += ", GOARCH=" + a.GOARCH
+	}
+	return id + ")", nil
+}
+
+func (a *GcAdapter) buildEnv() []string {
+	env := []string{"GOTOOLCHAIN=local", "CGO_ENABLED=0"}
+	for _, key := range []string{"PATH", "HOME", "TMPDIR", "GOCACHE", "GOPATH", "GOMODCACHE"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	if a.GOARCH != "" {
+		env = append(env, "GOARCH="+a.GOARCH)
+	}
+	return env
+}
+
+func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
+	bin, err := a.resolveGo()
+	if err != nil {
+		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
+	}
+	exe := "case-" + a.Name() + ".bin"
+	build := exec.CommandContext(ctx, bin, "build", "-o", exe, ".")
+	build.Dir = caseDir
+	build.Env = a.buildEnv()
+	if out, err := build.CombinedOutput(); err != nil {
+		return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build: %v: %s", err, out)}
+	}
+	timeout := a.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	abs, err := filepath.Abs(filepath.Join(caseDir, exe))
+	if err != nil {
+		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
+	}
+	run := exec.CommandContext(runCtx, abs)
+	run.Env = []string{}
+	var stdout, stderr bytes.Buffer
+	run.Stdout, run.Stderr = &stdout, &stderr
+	err = run.Run()
+	switch {
+	case runCtx.Err() == context.DeadlineExceeded:
+		return Outcome{Status: StatusTimeout, Detail: "timeout"}
+	case err != nil:
+		return Outcome{Status: StatusRunFailed, Detail: fmt.Sprintf("run: %v: %s", err, stderr.String())}
+	}
+	doc, err := observe.Parse(bytes.TrimSpace(stdout.Bytes()))
+	if err != nil {
+		return Outcome{Status: StatusRunFailed, Detail: "observation parse: " + err.Error()}
+	}
+	return Outcome{Status: StatusRan, Document: doc}
+}
+
+// RunBatch judges every case directory under root (sorted) with the
+// reference and optional clone adapter.
+func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, policy observe.PanicPolicy, workers int) (BatchReport, error) {
+	matches, err := filepath.Glob(filepath.Join(root, "*", "subject.go"))
+	if err != nil {
+		return BatchReport{}, err
+	}
+	if len(matches) == 0 {
+		return BatchReport{}, fmt.Errorf("no cases under %s", root)
+	}
+	sort.Strings(matches)
+	dirs := make([]string, len(matches))
+	for i, m := range matches {
+		dirs[i] = filepath.Dir(m)
+	}
+
+	rep := BatchReport{Schema: BatchSchema, PanicPolicy: string(policy),
+		ReferenceName: ref.Name(), Started: time.Now().UTC().Format(time.RFC3339)}
+	if rep.ReferenceIdentity, err = ref.Identity(ctx); err != nil {
+		return BatchReport{}, fmt.Errorf("reference identity: %w", err)
+	}
+	if clone != nil {
+		rep.CloneName = clone.Name()
+		if rep.CloneIdentity, err = clone.Identity(ctx); err != nil {
+			return BatchReport{}, fmt.Errorf("clone identity: %w", err)
+		}
+	}
+
+	results := make([]CaseResult, len(dirs))
+	if workers < 1 {
+		workers = 1
+	}
+	var wg sync.WaitGroup
+	jobs := make(chan int)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				dir := dirs[i]
+				subject, err := os.ReadFile(filepath.Join(dir, "subject.go"))
+				cr := CaseResult{ID: filepath.Base(dir)}
+				if err != nil {
+					cr.Verdict, cr.Detail = VerdictHarnessError, err.Error()
+					results[i] = cr
+					continue
+				}
+				cr.SubjectSHA256 = SubjectHash(subject)
+				cr.Reference = ref.Run(ctx, dir)
+				if clone != nil {
+					co := clone.Run(ctx, dir)
+					cr.Clone = &co
+					cr.Verdict, cr.Detail = Judge(cr.Reference, co, policy)
+				}
+				results[i] = cr
+			}
+		}()
+	}
+	for i := range dirs {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	rep.Cases = results
+	rep.Total = len(results)
+	rep.Verdicts = map[Verdict]int{}
+	sizeMin, sizeSum, sizeMax := 1<<31, 0, 0
+	for i, cr := range results {
+		if cr.Verdict != "" {
+			rep.Verdicts[cr.Verdict]++
+		}
+		if cr.Reference.Status == StatusRan {
+			rep.RefRan++
+			if cr.Reference.Document.Status == observe.StatusPanic {
+				rep.PanicPaths++
+			}
+			for _, e := range cr.Reference.Document.Events {
+				if e.At == "recovered" {
+					rep.Recovered++
+					break
+				}
+			}
+		}
+		if b, err := os.Stat(filepath.Join(dirs[i], "subject.go")); err == nil {
+			n := int(b.Size())
+			sizeSum += n
+			if n < sizeMin {
+				sizeMin = n
+			}
+			if n > sizeMax {
+				sizeMax = n
+			}
+		}
+	}
+	if rep.Total > 0 {
+		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax = sizeMin, sizeSum/rep.Total, sizeMax
+	}
+	return rep, nil
+}
+
+// WriteBatch persists the report next to the cases.
+func WriteBatch(root string, rep BatchReport) error {
+	b, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, "batch.json"), b, 0o644)
+}
+
+// WriteCaseRecord persists one case's durable metadata.
+func WriteCaseRecord(dir string, rec CaseRecord) error {
+	rec.Schema = CaseSchema
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "case.json"), b, 0o644)
+}
