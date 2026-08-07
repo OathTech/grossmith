@@ -1,0 +1,82 @@
+# Tier-2 CI (TODO backlog item): the cross-repo conformance heartbeat —
+# a real GoLean campaign, nightly and on demand. Deliberately decoupled
+# from the per-push gate: it needs a private-repo checkout and a Lean
+# toolchain, and its verdicts are findings to triage, not build health.
+#
+# REQUIRED SECRET: GOLEAN_CHECKOUT_TOKEN — a fine-grained PAT (or GitHub
+# App token) with contents:read on OathTech/golean.
+#
+# Failure policy (mirrors the verdict taxonomy's meaning):
+#   harness-error / reference-infra-failure  -> FAIL (our side broke)
+#   observation-mismatch                     -> FAIL (a conformance
+#       finding — the loud page is the point; triage, then either fix
+#       lands upstream or the case is pinned as a known divergence)
+#   clone-infra-failure                      -> allowed (their fail-closed
+#       coverage gaps; the count is printed and archived, never hidden)
+name: golean-nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: campaign size
+        default: "300"
+
+jobs:
+  campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      HAVE_TOKEN: ${{ secrets.GOLEAN_CHECKOUT_TOKEN != '' }}
+    steps:
+      - name: require token
+        if: env.HAVE_TOKEN != 'true'
+        run: |
+          echo "GOLEAN_CHECKOUT_TOKEN is not configured; see the header comment." >&2
+          exit 1
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: OathTech/golean
+          token: ${{ secrets.GOLEAN_CHECKOUT_TOKEN }}
+          path: deps/golean
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: cache lake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/golean/.lake
+            ~/.elan
+          key: lake-${{ hashFiles('deps/golean/lean-toolchain', 'deps/golean/lake-manifest.json') }}
+      - name: lake build
+        run: cd deps/golean && lake build
+      - name: campaign
+        run: |
+          N="${{ github.event.inputs.cases || '300' }}"
+          SEED="$(date -u +%Y%m%d)"
+          go run ./cmd/gengo -n "$N" -seed "$SEED" -out "$RUNNER_TEMP/campaign" -clone golean
+      - name: judge the verdicts
+        run: |
+          B="$RUNNER_TEMP/campaign/batch.json"
+          jq '{clone: .cloneIdentity, verdicts: .verdicts, wrapperCaught: .wrapperCaught}' "$B"
+          jq -e '(.verdicts["harness-error"] // 0) == 0
+             and (.verdicts["reference-infra-failure"] // 0) == 0
+             and (.verdicts["observation-mismatch"] // 0) == 0' "$B"
+      - name: archive the conformance statement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campaign-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/campaign/batch.json
+            ${{ runner.temp }}/campaign/golean-work/diff-coverage.log
+          if-no-files-found: warn

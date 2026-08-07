@@ -1,0 +1,40 @@
+# Tier-1 CI (TODO backlog item): everything here runs on a bare runner
+# with only a Go toolchain. The golean end-to-end test self-skips when
+# deps/golean is absent, and every generated case dir carries its own
+# throwaway go.mod (the module-mode fix), so no repo-external setup is
+# needed. The GoLean campaign is tier 2 (golean-nightly.yml), never a
+# push gate.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: vet
+        run: go vet ./...
+      - name: witness suite
+        run: go test -count=1 ./...
+      - name: race (pure logic; -short skips the binary-building witnesses)
+        run: go test -race -short -count=1 ./...
+      - name: conformance smoke
+        # A 50-case judged batch must run 50/50 on the reference — catches
+        # driver/toolchain regressions the unit witnesses cannot (the
+        # BRIEF's mechanically-checkable acceptance, shrunk to CI size).
+        run: |
+          go run ./cmd/gengo -n 50 -seed 1 -out "$RUNNER_TEMP/smoke" -judge
+          jq -e '.schema == "grossmith-batch-v1" and .total == 50 and .refRan == 50' \
+            "$RUNNER_TEMP/smoke/batch.json"
+      - name: replay smoke
+        # The Phase 3 done-when as a CI check: a case regenerates from its
+        # record alone, byte- and observation-identical.
+        run: go run ./cmd/gengo -replay "$RUNNER_TEMP/smoke/case_00007"

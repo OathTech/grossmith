@@ -67,19 +67,15 @@ now first-party. Mapping onto this backlog:
   missing per-dir go.mod is masked locally. Applies to the harness
   test helpers and runReplay's temp dir.
 
-- **GitHub CI** (none exists today — no `.github/`). Two tiers:
-  - Tier 1, per-push: `go vet ./...` + `go test ./...`. Everything runs
-    on a bare runner with only a Go toolchain — the `golean` end-to-end
-    test already self-skips when `deps/golean` is absent. ~1 min.
-  - Tier 2, nightly/manual: a real GoLean campaign — clone GoLean at a
-    pinned rev (private repo: needs a token), elan/lake toolchain
-    install + `lake build` (cold: minutes; cacheable), then
-    `gengo -n 200 -clone golean` and fail on any `harness-error` /
-    unexplained verdict drift. This is the cross-repo conformance
-    heartbeat; don't block per-push CI on it.
-  - Optional in tier 1: a conformance smoke (`gengo -n 50 -judge`,
-    assert ref-ran = 50) to catch driver/toolchain regressions the unit
-    witnesses can't.
+- **GitHub CI** — DELIVERED (2026-08-07, `.github/workflows/`):
+  tier 1 per-push (vet, witness suite, race-short, 50-case conformance
+  smoke, replay smoke — every step proven locally verbatim) and tier 2
+  `golean-nightly` (private checkout + elan/lake cached + n=300
+  campaign; fails on harness-error/ref-infra/mismatch, allows and
+  archives clone-infra gap counts). PENDING ON MIKE: create the
+  `GOLEAN_CHECKOUT_TOKEN` secret (fine-grained PAT, contents:read on
+  OathTech/golean) — the nightly fails loudly with instructions until
+  then; first green runs happen on GitHub after push.
 - **Recovered-event coverage rung** (audit deferral, measured 1/120
   cases): force a hot statement form inside guarded statements so
   statement-level catch is exercised end to end; re-measure, then

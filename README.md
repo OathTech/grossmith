@@ -1,5 +1,7 @@
 # grossmith
 
+[![ci](https://github.com/OathTech/grossmith/actions/workflows/ci.yml/badge.svg)](https://github.com/OathTech/grossmith/actions/workflows/ci.yml)
+
 A generator of small, valid, **outcome-deterministic** Go programs, built
 for differential conformance testing of Go reimplementations ("clones" —
 interpreters, formal semantics, alternative backends) against the reference
