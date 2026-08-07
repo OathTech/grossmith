@@ -68,6 +68,15 @@ func TestParseFailsClosed(t *testing.T) {
 		`{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"quaternion","goType":"q"}]}`,
 		`{"schema":"grossmith-observation-v2","status":"ok","bonus":1}`,
 		`not json`,
+		// Audit findings: the vocabularies BEYOND the three the driver
+		// exercises must be closed too, and trailing data is a protocol
+		// violation, not ignorable.
+		`{"schema":"grossmith-observation-v2","status":"panic","panic":{"kind":"divide-by-zero","message":"m"}}`,
+		`{"schema":"grossmith-observation-v2","status":"ok","events":[{"at":"recovered","panic":{"kind":"KABOOM","message":"m"}}]}`,
+		`{"schema":"grossmith-observation-v2","status":"ok","events":[{"at":"teleport","value":{"kind":"bool","goType":"bool"}}]}`,
+		`{"schema":"grossmith-observation-v2","status":"error","error":{"kind":"gremlins","detail":"d"}}`,
+		`{"schema":"grossmith-observation-v2","status":"ok"} trailing`,
+		`{"schema":"grossmith-observation-v2","status":"ok"}{"schema":"grossmith-observation-v2","status":"ok"}`,
 	}
 	for _, s := range bad {
 		if _, err := Parse([]byte(s)); err == nil {

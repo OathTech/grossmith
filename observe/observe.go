@@ -188,6 +188,11 @@ func Parse(data []byte) (Document, error) {
 	if err := dec.Decode(&d); err != nil {
 		return Document{}, fmt.Errorf("observe: %w", err)
 	}
+	if dec.More() {
+		// One document per parse: trailing bytes mean the producer is not
+		// speaking the protocol (two concatenated documents, stray output).
+		return Document{}, fmt.Errorf("observe: trailing data after document")
+	}
 	if d.Schema != Schema {
 		return Document{}, fmt.Errorf("observe: unknown schema %q (want %q)", d.Schema, Schema)
 	}
@@ -231,11 +236,43 @@ func Parse(data []byte) (Document, error) {
 			return Document{}, err
 		}
 	}
+	// Every closed vocabulary is closed at parse time, not just the three
+	// the driver happens to exercise (audit finding: a clone misspelling a
+	// panic kind parsed cleanly, and under PanicKindOnly the kind IS the
+	// verdict).
+	checkPanic := func(p *PanicInfo) error {
+		if p == nil {
+			return nil
+		}
+		switch p.Kind {
+		case PanicDivide, PanicIndexRange, PanicSliceBounds, PanicIfaceConv, PanicNilDeref, PanicOther:
+			return nil
+		}
+		return fmt.Errorf("observe: unknown panic kind %q", p.Kind)
+	}
+	if err := checkPanic(d.Panic); err != nil {
+		return Document{}, err
+	}
+	if d.Error != nil {
+		switch d.Error.Kind {
+		case ErrCompile, ErrTimeout, ErrRun, ErrNoObservation, ErrAdapter:
+		default:
+			return Document{}, fmt.Errorf("observe: unknown error kind %q", d.Error.Kind)
+		}
+	}
 	for _, e := range d.Events {
+		switch e.At {
+		case "point", "defer", "recovered":
+		default:
+			return Document{}, fmt.Errorf("observe: unknown event position %q", e.At)
+		}
 		if e.Value != nil {
 			if err := checkValue(*e.Value); err != nil {
 				return Document{}, err
 			}
+		}
+		if err := checkPanic(e.Panic); err != nil {
+			return Document{}, err
 		}
 	}
 	return d, nil
