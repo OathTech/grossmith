@@ -76,6 +76,21 @@ func Judge(ref, clone Outcome, policy observe.PanicPolicy) (Verdict, string) {
 	case !cloneOK:
 		return VerdictCloneInfra, clone.Detail
 	}
+	// The DOCUMENT status is the second infrastructure axis (audit H2): an
+	// adapter can report StatusRan while its document says "error" — no
+	// observation exists, so there is nothing semantic to compare. Without
+	// this gate two error documents compared equal (a fabricated match) and
+	// one error document against a real observation became a fabricated
+	// observation-mismatch.
+	refDocOK, cloneDocOK := !ref.Document.Failed(), !clone.Document.Failed()
+	switch {
+	case !refDocOK && !cloneDocOK:
+		return VerdictBothInfra, docDetail(ref.Document) + " / " + docDetail(clone.Document)
+	case !refDocOK:
+		return VerdictRefInfra, docDetail(ref.Document)
+	case !cloneDocOK:
+		return VerdictCloneInfra, docDetail(clone.Document)
+	}
 	eq, err := observe.Equal(ref.Document, clone.Document, policy)
 	if err != nil {
 		return VerdictHarnessError, err.Error()
@@ -84,6 +99,13 @@ func Judge(ref, clone Outcome, policy observe.PanicPolicy) (Verdict, string) {
 		return VerdictMatch, ""
 	}
 	return VerdictMismatch, ""
+}
+
+func docDetail(d observe.Document) string {
+	if d.Error != nil {
+		return string(d.Error.Kind) + ": " + d.Error.Detail
+	}
+	return "error document"
 }
 
 // CaseRecord is the durable per-case metadata (audit H2): everything needed
@@ -149,13 +171,19 @@ func SubjectHash(subject []byte) string {
 // binary with an EMPTY environment (an inherited GODEBUG makes identical
 // binaries print differently).
 type GcAdapter struct {
-	// GoBin is the toolchain to use; empty resolves "go" from PATH once at
-	// construction, and the RESOLVED path is the pinned identity.
+	// GoBin is the toolchain to use; empty resolves "go" from PATH. The
+	// FIRST resolution is cached and pinned for the adapter's lifetime
+	// (audit L3: re-resolving per run meant a PATH change mid-batch could
+	// run cases under a toolchain the persisted identity never named).
 	GoBin   string
 	GOARCH  string
 	Timeout time.Duration
 	// name distinguishes multiple instances (reference vs degenerate clone).
 	AdapterName string
+
+	resolveOnce sync.Once
+	resolved    string
+	resolveErr  error
 }
 
 func (a *GcAdapter) Name() string {
@@ -166,10 +194,20 @@ func (a *GcAdapter) Name() string {
 }
 
 func (a *GcAdapter) resolveGo() (string, error) {
-	if a.GoBin != "" {
-		return a.GoBin, nil
-	}
-	return exec.LookPath("go")
+	a.resolveOnce.Do(func() {
+		bin := a.GoBin
+		if bin == "" {
+			bin = "go"
+		}
+		if strings.ContainsRune(bin, os.PathSeparator) {
+			// Absolute NOW: build commands run with Dir set to the case
+			// directory, and a relative path would re-resolve against it.
+			a.resolved, a.resolveErr = filepath.Abs(bin)
+			return
+		}
+		a.resolved, a.resolveErr = exec.LookPath(bin)
+	})
+	return a.resolved, a.resolveErr
 }
 
 func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
@@ -282,6 +320,9 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
+				if ctx.Err() != nil {
+					continue // drain the channel; the batch aborts below
+				}
 				dir := dirs[i]
 				subject, err := os.ReadFile(filepath.Join(dir, "subject.go"))
 				cr := CaseResult{ID: filepath.Base(dir)}
@@ -306,6 +347,12 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 	}
 	close(jobs)
 	wg.Wait()
+	// An aborted batch is not a conformance statement (audit L5): without
+	// this, cancellation surfaced as reference-infra-failure on every
+	// remaining case in a report returned with a nil error.
+	if err := ctx.Err(); err != nil {
+		return BatchReport{}, fmt.Errorf("batch aborted: %w", err)
+	}
 
 	rep.Cases = results
 	rep.Total = len(results)

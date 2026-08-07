@@ -118,6 +118,40 @@ func TestVerdictTaxonomy(t *testing.T) {
 	}
 }
 
+// TestJudgeDocumentStatusAxis (audit H2): StatusRan with an error document
+// is infrastructure, never semantic — on either side, or both.
+func TestJudgeDocumentStatusAxis(t *testing.T) {
+	ran := func(d observe.Document) Outcome { return Outcome{Status: StatusRan, Document: d} }
+	real := ran(observe.OK(nil, []observe.Value{{Kind: "int", GoType: "int", Int: 7}}))
+	errDoc := ran(observe.Errored(observe.ErrTimeout, "deadline"))
+
+	if v, _ := Judge(errDoc, errDoc, observe.PanicExact); v != VerdictBothInfra {
+		t.Fatalf("two error documents judged %s, want both-infra", v)
+	}
+	if v, d := Judge(real, errDoc, observe.PanicExact); v != VerdictCloneInfra {
+		t.Fatalf("clone error document judged %s (%s)", v, d)
+	}
+	if v, _ := Judge(errDoc, real, observe.PanicExact); v != VerdictRefInfra {
+		t.Fatalf("reference error document judged %s, want ref-infra", v)
+	}
+	if v, _ := Judge(real, real, observe.PanicExact); v != VerdictMatch {
+		t.Fatalf("real documents judged %s, want match", v)
+	}
+}
+
+// TestRunBatchAbortsOnCancel (audit L5): a cancelled batch is an error,
+// never a conformance statement full of infra verdicts.
+func TestRunBatchAbortsOnCancel(t *testing.T) {
+	root := t.TempDir()
+	writeCases(t, root, 2, 616100)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ref := &GcAdapter{AdapterName: "ref", Timeout: 5 * time.Second}
+	if _, err := RunBatch(ctx, root, ref, nil, observe.PanicExact, 2); err == nil {
+		t.Fatal("cancelled batch returned a report instead of an error")
+	}
+}
+
 // treeAdapter runs its inner adapter against a parallel tree — the harness
 // for doctored-clone tests.
 type treeAdapter struct {
