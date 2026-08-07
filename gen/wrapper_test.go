@@ -55,6 +55,47 @@ func runCase(t *testing.T, c Case) observe.Document {
 	return doc
 }
 
+// TestMultiAssignEmitted (Phase 4 rung 2, GoLean R2a): the grammar emits
+// multi-target assignment in its three shapes — swap, aliased index, and
+// mixed targets — across a seed sweep.
+func TestMultiAssignEmitted(t *testing.T) {
+	swapLine := regexp.MustCompile(`(?m)^\t+(v\d+), (v\d+) = (v\d+), (v\d+)$`)
+	isSwap := func(src []byte) bool {
+		for _, m := range swapLine.FindAllSubmatch(src, -1) {
+			if string(m[1]) == string(m[4]) && string(m[2]) == string(m[3]) {
+				return true
+			}
+		}
+		return false
+	}
+	alias := regexp.MustCompile(`(?m)^\t+v\d+, v\d+\[int\(v\d+%`)
+	multi := regexp.MustCompile(`(?m)^\t+[^=\n]+, [^=\n]+ = [^\n]+, `)
+	swaps, aliases, tagged := 0, 0, 0
+	for seed := int64(500); seed < 900; seed++ {
+		c, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasFeature(c, "multi_assign") {
+			continue
+		}
+		tagged++
+		if !multi.Match(c.Source) {
+			t.Fatalf("seed %d: multi_assign tagged but no multi-target line\n%s", seed, c.Source)
+		}
+		if isSwap(c.Source) {
+			swaps++
+		}
+		if alias.Match(c.Source) {
+			aliases++
+		}
+	}
+	if tagged == 0 || swaps == 0 || aliases == 0 {
+		t.Fatalf("multi-assign shapes starved: %d tagged, %d swaps, %d aliased", tagged, swaps, aliases)
+	}
+	t.Logf("multi_assign: %d tagged, %d with swaps, %d with aliased indexes", tagged, swaps, aliases)
+}
+
 // TestRecoverWrapperObservesPanics (Phase 4 rung 1, GoLean R1): wrapped
 // subjects return status OK with the panic ENCODED in the trailing int
 // result and partial state in the others — panic identity and

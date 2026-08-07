@@ -33,7 +33,7 @@ func Optional() []string {
 		"slices", "append",
 		"maps", "delete", "comma_ok",
 		"defer", "recover", "linearize", "recover_wrapper",
-		"helpers", "bare_call",
+		"helpers", "bare_call", "multi_assign",
 		"defined_types", "methods",
 		"interfaces", "assertion",
 	}

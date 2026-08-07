@@ -76,6 +76,8 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.callStmt(out) }},
 		{name: "bare-call", weight: 1, ok: g.enabled("helpers", "bare_call") && len(g.helpers) > 0,
 			emit: func() { g.bareCallStmt(out) }},
+		{name: "multi-assign", weight: 3, ok: g.enabled("multi_assign") && len(g.vars) >= 2,
+			emit: func() { g.multiAssign(out) }},
 		{name: "observe", weight: 2, ok: g.enabled("observe_point") && !g.pureMode,
 			emit: func() { g.observePoint(out) }},
 		{name: "early-return", weight: 1, ok: g.enabled("early_return") && !last && !g.pureMode,
@@ -389,9 +391,30 @@ func (g *Generator) commaOk(out *emitter) {
 	m := &g.vars[pick(g.c, g.mapVars(nil))]
 	m.reads++
 	xi, _ := g.pickVar(*m.typ.Elem)
+	target := g.vars[xi].name
+	// Element-target minority (rung 2, R2a's comma-ok forms):
+	// a[i], ok = m[k] — the two-phase semantics apply to the index too.
+	if g.enabled("index", "multi_assign") && g.c.chance(3) {
+		if cands := g.indexableVarsOfElem(*m.typ.Elem); len(cands) > 0 {
+			arr := &g.vars[pick(g.c, cands)]
+			target = fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.indexBound()))
+			g.mark("index", "multi_assign")
+		}
+	}
 	oki, _ := g.pickVar(Bool())
 	g.mark("maps", "comma_ok", "assignment")
-	out.line("%s, %s = %s[%s]", g.vars[xi].name, g.vars[oki].name, m.name, pick(g.c, m.keys))
+	out.line("%s, %s = %s[%s]", target, g.vars[oki].name, m.name, pick(g.c, m.keys))
+}
+
+// indexableVarsOfElem: indexable vars whose element type is exactly t.
+func (g *Generator) indexableVarsOfElem(t Type) []int {
+	var out []int
+	for _, i := range g.indexableVars() {
+		if g.vars[i].typ.Elem.Equal(t) {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // callStmt invokes a helper as a statement, assigning every result: targets
@@ -404,6 +427,16 @@ func (g *Generator) callStmt(out *emitter) {
 	seen := map[int]bool{}
 	for i, rt := range h.results {
 		targets[i] = "_"
+		// Element-target minority (rung 2, R2a's multi-result forms):
+		// v, a[i] = h(...) — mixed targets from one call's results.
+		if g.enabled("index", "multi_assign") && g.c.chance(4) {
+			if cands := g.indexableVarsOfElem(rt); len(cands) > 0 {
+				arr := &g.vars[pick(g.c, cands)]
+				targets[i] = fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.indexBound()))
+				g.mark("index", "multi_assign")
+				continue
+			}
+		}
 		if idx, ok := g.pickVar(rt); ok && !seen[idx] {
 			seen[idx] = true
 			targets[i] = g.vars[idx].name
@@ -429,6 +462,126 @@ func (g *Generator) bareCallStmt(out *emitter) {
 	h := g.helpers[g.c.draw(len(g.helpers))]
 	g.mark("helpers", "bare_call")
 	out.line("%s(%s)", h.name, g.callArgs(h, g.cfg.ExprFuel-1))
+}
+
+// sameTypePair finds two distinct variables of the same type, preferring
+// scalar/string kinds (swap targets).
+func (g *Generator) sameTypePairs() [][2]int {
+	var pairs [][2]int
+	for i := range g.vars {
+		switch g.vars[i].typ.Shape {
+		case ShapeInt, ShapeBool, ShapeString:
+		default:
+			continue
+		}
+		for j := i + 1; j < len(g.vars); j++ {
+			if g.vars[i].typ.Equal(g.vars[j].typ) {
+				pairs = append(pairs, [2]int{i, j})
+			}
+		}
+	}
+	return pairs
+}
+
+// unsignedAliasCandidates: unsigned int vars usable as a self-aliasing
+// index (`u, a[u%N] = ...` — u%N is in range because u is unsigned).
+func (g *Generator) unsignedAliasCandidates() []int {
+	var out []int
+	for i, v := range g.vars {
+		if v.typ.Shape == ShapeInt && v.typ.Unsigned && v.typ.Named == "" {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// multiAssign emits a multi-target assignment (Phase 4 rung 2, GoLean
+// R2a — their most bug-dense corner, 8+ ledger entries): Go's two-phase
+// semantics (index operands and RHS all evaluated first, stores applied
+// left-to-right) are fully specified, so aliased targets are
+// DETERMINISTIC and the final state witnesses the order.
+func (g *Generator) multiAssign(out *emitter) {
+	g.resetRisk()
+	pairs := g.sameTypePairs()
+	aliases := g.unsignedAliasCandidates()
+	g.c.choose("multi-assign", []arm{
+		// a, b = b, a — the canonical phase-order shape: both RHS reads
+		// see OLD values.
+		{name: "swap", weight: 3, ok: len(pairs) > 0, emit: func() {
+			p := pick(g.c, pairs)
+			a, b := &g.vars[p[0]], &g.vars[p[1]]
+			a.reads++
+			b.reads++
+			g.mark("assignment", "multi_assign")
+			out.line("%s, %s = %s, %s", a.name, b.name, b.name, a.name)
+		}},
+		// u, a[u%N] = e1, e2 — the aliased-target shape: the index reads
+		// u in phase ONE, the store to u lands first, and the element
+		// store still uses the OLD u. Unsigned modulo keeps it on the
+		// ok-path; a raw signed index is the hot minority.
+		{name: "alias-index", weight: 3,
+			ok: g.enabled("index") && len(aliases) > 0 && len(g.indexableVars()) > 0, emit: func() {
+				u := &g.vars[pick(g.c, aliases)]
+				arr := &g.vars[pick(g.c, g.indexableVars())]
+				u.reads++ // the index read
+				idx := fmt.Sprintf("int(%s %% %s(%d))", u.name, u.typ.GoName(), arr.indexBound())
+				if g.riskOK() && g.c.chance(4) && g.spendRisk() {
+					// Hot: index by a raw signed int var instead.
+					if iv, ok := g.pickVar(Int(0, false)); ok {
+						u.reads-- // the safe form's read is not taken
+						g.vars[iv].reads++
+						idx = g.vars[iv].name
+						g.note(tagPanicRisk)
+					}
+				}
+				rhs1 := g.expr(u.typ, g.cfg.ExprFuel-1)
+				rhs2 := g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1)
+				if arr.typ.Shape == ShapeSlice {
+					g.mark("slices", "index", "assignment", "multi_assign")
+				} else {
+					g.mark("arrays", "index", "assignment", "multi_assign")
+				}
+				out.line("%s, %s[%s] = %s, %s", u.name, arr.name, idx, rhs1.text, rhs2.text)
+			}},
+		// Mixed plain/element/blank targets with independent right sides —
+		// total (>=2 vars guaranteed by the arm gate).
+		{name: "mixed", weight: 2, ok: true, emit: func() {
+			n := 2 + g.c.draw(2)
+			targets := make([]string, n)
+			rhs := make([]string, n)
+			seen := map[int]bool{}
+			for k := 0; k < n; k++ {
+				g.c.choose("multi-assign-target", []arm{
+					{name: "var", weight: 3, ok: true, emit: func() {
+						vi := g.c.draw(len(g.vars))
+						t := g.vars[vi].typ
+						if seen[vi] || t.Shape == ShapeMap || t.Shape == ShapeSlice {
+							// Duplicate or unassignable-wholesale target:
+							// discard through the blank identifier.
+							targets[k] = "_"
+							rhs[k] = g.expr(Int(0, false), g.cfg.ExprFuel-1).text
+							return
+						}
+						seen[vi] = true
+						targets[k] = g.vars[vi].name
+						rhs[k] = g.expr(t, g.cfg.ExprFuel-1).text
+					}},
+					{name: "elem", weight: 2, ok: g.enabled("index") && len(g.indexableVars()) > 0, emit: func() {
+						arr := &g.vars[pick(g.c, g.indexableVars())]
+						targets[k] = fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.indexBound()))
+						rhs[k] = g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1).text
+						g.mark("index")
+					}},
+					{name: "blank", weight: 1, ok: true, emit: func() {
+						targets[k] = "_"
+						rhs[k] = g.expr(Int(0, false), g.cfg.ExprFuel-1).text
+					}},
+				}).emit()
+			}
+			g.mark("assignment", "multi_assign")
+			out.line("%s = %s", strings.Join(targets, ", "), strings.Join(rhs, ", "))
+		}},
+	}).emit()
 }
 
 // ifaceAssign reassigns an interface variable — dynamic-type churn, which

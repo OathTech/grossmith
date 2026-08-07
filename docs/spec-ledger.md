@@ -38,7 +38,7 @@ their full disposition is the appendix.
 | Area | Status | Tags / witnesses | Notes |
 |---|---|---|---|
 | Declarations, short decls, block scoping | supported | `short_decl`, `block_decl` | Projection rule folds inner decls outward. Shadowing NOT generated — fresh names only; a corner candidate (sx: g14, c33). |
-| Assignment (single-target), compound, inc/dec | supported | `assignment` | Multi-target/aliased/mixed → rung 2 (R2a; sx: g19, c33). |
+| Assignment: single, compound, inc/dec, multi-target | supported | `assignment`, `multi_assign` | Rung 2 (R2a): swaps (`a, b = b, a`), aliased targets (`u, a[u%N] = ...` — phase-1 index evaluation witnessed via final state; raw-index hot minority), mixed plain/element/blank targets, comma-ok and multi-result calls into element targets (sx: g19, c33 covered; `multi-assign/chain-field-over-index` chains through pointers remain deferred(effect discipline)). |
 | `if` / bounded `for` / `range` | supported | `if`, `loops`, `range`, `control_flow` | Literal loop bounds (HALTS). Range-over-int deferred(language-version parity check first) (sx: c30). |
 | `switch` | supported | `switch`, `cases`, `default`, `unreachable_case` | Constant labels, draw-without-replacement. Type switches deferred(rung; sx: c03), fallthrough deferred(low yield — GoLean non-ask adjacent; sx: c28). |
 | `break` / `continue` (unlabeled) | supported | `break`, `continue` | Labeled forms + goto deferred(low yield — GoLean non-ask; sx: g23, c34). |
