@@ -33,6 +33,12 @@ type Config struct {
 	// Constructs, when non-nil, is the exact optional-construct gate: a tag
 	// absent or false is disabled. Nil with Swarm=false enables everything.
 	Constructs map[string]bool
+	// Exclude force-disables optional construct tags on top of whatever
+	// Swarm or Constructs decided — the construct half of an adapter
+	// capability profile (NoObserve is the shape half). Applied AFTER the
+	// swarm mix is drawn, so a seed's draw trace is unchanged by the
+	// profile.
+	Exclude []string
 	// NoObserve lists shapes masked OUT of the observed liveness tier — an
 	// adapter capability profile (e.g. GoLean's harness fails closed on
 	// slices and maps). Generation is unrestricted; only observation is.
@@ -93,18 +99,24 @@ func (c Config) Validate() error {
 	// writing {"assignment": false} would be silently ignored otherwise.
 	// Keys are sorted so the diagnosis is deterministic (map order reached
 	// an artifact — review finding).
-	if c.Constructs != nil {
+	if c.Constructs != nil || len(c.Exclude) > 0 {
 		known := map[string]bool{}
 		for _, tag := range Optional() {
 			known[tag] = true
 		}
 		var bad []string
-		for tag := range c.Constructs {
+		check := func(tag string) {
 			if coreConstructs[tag] {
 				bad = append(bad, tag+" (core, not configurable)")
 			} else if !known[tag] {
 				bad = append(bad, tag)
 			}
+		}
+		for tag := range c.Constructs {
+			check(tag)
+		}
+		for _, tag := range c.Exclude {
+			check(tag)
 		}
 		if len(bad) > 0 {
 			sort.Strings(bad)
@@ -286,6 +298,19 @@ func New(cfg Config) *Generator {
 		}
 	case cfg.Swarm:
 		g.constructs = swarmMix(g.c)
+	}
+	if len(cfg.Exclude) > 0 {
+		if g.constructs == nil {
+			// Everything-enabled becomes an explicit map so the exclusions
+			// have something to subtract from.
+			g.constructs = make(map[string]bool, len(Optional()))
+			for _, tag := range Optional() {
+				g.constructs[tag] = true
+			}
+		}
+		for _, tag := range cfg.Exclude {
+			g.constructs[tag] = false
+		}
 	}
 	g.boundaryBias = 1
 	switch cfg.Corner {
