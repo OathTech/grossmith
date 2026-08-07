@@ -60,6 +60,38 @@ planted defects is the next phase). Ordering here is not commitment.
   range order) as `lane=membership` manifest rows with the mandated
   `why`. Their gate rejects singleton-set membership cases, so the
   generator must guarantee genuine multiplicity.
+- **Mine GoLean's semantic-edges catalogue as a corner/rung
+  specification** (`Corpus/challenges/semantic-edges/manifest.tsv`
+  there): 98 curated "weird Go" edge cases with themes and status
+  (27 active-covered, 3 candidate, 68 future for them). This is a
+  ready-made edge-case inventory for charter #3 ("edge cases are
+  hunted, not hoped for") — classify each entry as generated-today /
+  named-corner candidate / rung-blocked / quotiented-by-design (with
+  the reason) / out-of-scope, and fold the mapping into the Phase 4
+  spec ledger. Their future→active promotions are a standing demand
+  signal for grossmith rungs. Specific nuggets already visible:
+  - **g32 three-index slicing relaxes the cap quotient**: `s[a:b:c]`
+    pins cap, so append reallocation becomes DETERMINISTIC — the
+    shared-backing aliasing family (g03, g25, c18, c21) can be
+    exercised without violating outcome-determinism. Today's "cap
+    never observed, every slice owns its backing" rule is broader than
+    the spec requires.
+  - Deterministic corners over the EXISTING grammar: shadowing
+    depth (g14), wide/negative shift counts (g31), defer-in-loop
+    accumulation (g18), string(int) rune conversion (g30).
+  - Small deterministic rungs grossmith lacks entirely: string
+    indexing/slicing/range (byte-offset semantics — c12/c13/g09),
+    named results with defer mutation (g06/c54), method values
+    copying their receiver (g16/c53), `copy` builtin (g33),
+    uncomparable-dynamic-type interface comparison panics (g11/g17,
+    needs non-comparable payloads first).
+  - Cross-references that land in EXISTING backlog items: nil-vs-empty
+    slice (g13/c22 = our L1 deferral), panic(nil) (c36 = the panic(v)
+    deferral; note GoLean pins GODEBUG=panicnil=0), map iteration
+    order (g34 = membership lane), unused locals (c43 = negative
+    generator), tuple assignment order / labels / type switches /
+    constants / embedding / variadics / generics (= the ledger-driven
+    rung list).
 - **Near-miss negative generator**: GoLean maintains a whole
   compile-negative corpus (`Corpus/coverage/negative/compile/...`) to
   pin frontend REJECTION behavior. grossmith's trap catalogue
