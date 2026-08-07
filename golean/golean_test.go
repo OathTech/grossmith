@@ -227,6 +227,9 @@ func TestGoLeanEndToEnd(t *testing.T) {
 	}
 
 	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	ref := &harness.GcAdapter{AdapterName: "ref", Timeout: 20 * time.Second}
 	var cases []Case

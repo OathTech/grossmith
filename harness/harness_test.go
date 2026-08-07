@@ -14,6 +14,13 @@ import (
 
 func writeCases(t *testing.T, root string, n int, seedBase int64) {
 	t.Helper()
+	// The throwaway module: without it these dirs build only when TMPDIR
+	// happens to sit inside a Go module (GoLean's bug report: the suite
+	// was red on stock machines, masked here by the sandbox's in-repo
+	// TMPDIR).
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < n; i++ {
 		c, err := gen.New(gen.DefaultConfig(seedBase + int64(i))).Generate()
 		if err != nil {

@@ -348,7 +348,15 @@ func runReplay(cfg config) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	for name, content := range map[string][]byte{"subject.go": c.Source, "driver.go": c.Driver} {
+	// The throwaway module, same as the batch path (audit F1: without it
+	// the build only succeeds when the temp dir happens to sit inside a
+	// module — this sandbox's TMPDIR did, every normal machine's does not).
+	files := map[string][]byte{
+		"subject.go": c.Source,
+		"driver.go":  c.Driver,
+		"go.mod":     []byte("module grossmith-cases\n\ngo 1.26\n"),
+	}
+	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
 			return err
 		}
