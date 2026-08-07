@@ -140,21 +140,43 @@ func TestReplayFromArtifacts(t *testing.T) {
 		t.Fatalf("replay of a fresh artifact failed: %v", err)
 	}
 
-	// Tamper with the recorded subject hash: replay must refuse.
+	// Conflicting flags are refused, never silently ignored (audit F5).
+	confl := rcfg
+	confl.explicit = map[string]bool{"replay": true, "n": true}
+	if err := run(confl); err == nil || !strings.Contains(err.Error(), "does not apply") {
+		t.Fatalf("conflicting -n accepted with -replay: %v", err)
+	}
+
 	recPath := filepath.Join(out, "case_00000", "case.json")
-	b, err := os.ReadFile(recPath)
+	orig, err := os.ReadFile(recPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tampered := strings.Replace(string(b), `"subjectSha256": "`, `"subjectSha256": "0000`, 1)
-	if tampered == string(b) {
-		t.Fatal("tamper did not apply")
+	tamper := func(name, old, new string) {
+		t.Helper()
+		tampered := strings.Replace(string(orig), old, new, 1)
+		if tampered == string(orig) {
+			t.Fatalf("%s tamper did not apply", name)
+		}
+		if err := os.WriteFile(recPath, []byte(tampered), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(rcfg); err == nil {
+			t.Fatalf("%s-tampered record accepted", name)
+		}
 	}
+	// Subject hash, the draw trace, and an absent config must each be
+	// refused (audit F8: only the hash was tampered before; F6: the
+	// config-absent error must name the real cause).
+	tamper("hash", `"subjectSha256": "`, `"subjectSha256": "0000`)
+	tamper("trace", `"drawTrace": [`, `"drawTrace": [999999999, `)
+	tampered := strings.Replace(string(orig), `"config"`, `"configGone"`, 1)
 	if err := os.WriteFile(recPath, []byte(tampered), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(rcfg); err == nil || !strings.Contains(err.Error(), "hash") {
-		t.Fatalf("tampered record accepted: %v", err)
+	err = run(rcfg)
+	if err == nil || !strings.Contains(err.Error(), "predates") {
+		t.Fatalf("config-absent record error does not name the cause: %v", err)
 	}
 }
 

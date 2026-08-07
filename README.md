@@ -5,13 +5,16 @@ for differential conformance testing of Go reimplementations ("clones" —
 interpreters, formal semantics, alternative backends) against the reference
 `gc` toolchain.
 
-**Current status (2026-08-07):** Phase 1 of the audit plan
-(`docs/2026-08-06_project-charter-and-engineering-audit.md`) is complete:
+**Current status (2026-08-07):** Phases 1-3 of the audit plan
+(`docs/2026-08-06_project-charter-and-engineering-audit.md`) are complete:
 a portable observation protocol (`observe`), a runtime-adapter harness with
 a closed verdict taxonomy (`harness`), durable per-case and per-batch
-artifacts, and a working first clone integration (GoLean, `golean`).
-Planted-defect positive controls, replay, and the spec-surface ledger are
-the next phases.
+artifacts, a working first clone integration (GoLean, `golean`), measured
+observation sensitivity (per-shape positive controls; planted and
+historical defect campaigns), and draw-trace replay (`gengo -replay`
+reproduces a case byte-identically from its record alone). The
+spec-surface ledger and the ladder resumption (Phase 4, prioritized by
+GoLean's filed requests) are next.
 
 ## What works today
 

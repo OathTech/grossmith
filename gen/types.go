@@ -21,6 +21,11 @@ import (
 )
 
 // Shape is the top-level classification of a generated type.
+//
+// Shape values are a PERSISTED wire format — case.json's NoObserve
+// serializes them numerically — so the constant list below is
+// APPEND-ONLY (audit F10: inserting a constant mid-list would silently
+// reinterpret every existing record).
 type Shape uint8
 
 const (

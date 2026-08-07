@@ -116,8 +116,12 @@ type CaseRecord struct {
 	Seed          int64          `json:"seed"`
 	GeneratorRev  string         `json:"generatorRev"`
 	SubjectSHA256 string         `json:"subjectSha256"`
-	Features      map[string]int `json:"features"`
-	DrawTrace     []int          `json:"drawTrace"`
+	// DriverSHA256 pins the driver too (audit F10; additive — absent in
+	// records written before it existed, and readers treat absence as
+	// "verify via observation only").
+	DriverSHA256 string         `json:"driverSha256,omitempty"`
+	Features     map[string]int `json:"features"`
+	DrawTrace    []int          `json:"drawTrace"`
 	// Config is the generator configuration the case was drawn under
 	// (audit M5: seed alone is not a regeneration key — swarm, corner,
 	// profile exclusions all change the program for a fixed seed). Typed
