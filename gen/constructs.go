@@ -55,6 +55,9 @@ const (
 	tagWidthDependent  = "width_dependent"
 	tagFeederValue     = "feeder_value"
 	tagDeadValue       = "dead_value"
+	// tagAggObserved: a profile-masked container observed through an int
+	// aggregate (rung 4, GoLean R5) instead of demoted to the feeder tier.
+	tagAggObserved = "aggregate_observed"
 )
 
 // enabled reports whether every named construct may be emitted.

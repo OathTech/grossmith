@@ -159,7 +159,11 @@ type binding struct {
 	name     string
 	typ      Type
 	observed bool
-	reads    int
+	// aggObserved (rung 4, GoLean R5): the liveness draw chose observed
+	// but the shape is profile-masked (NoObserve) — observed THROUGH an
+	// int aggregate at function end instead of dropped to the feeder tier.
+	aggObserved bool
+	reads       int
 	// minLen is a slice's guaranteed length lower bound: the initial
 	// composite length. Appends only grow and whole-slice assignment is
 	// never generated, so len >= minLen holds forever — which is what makes
@@ -944,12 +948,20 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		{name: "observed", weight: 4, ok: true},
 		{name: "unobserved", weight: 1, ok: true},
 	}).name == "observed"
+	agg := false
 	for _, shape := range g.cfg.NoObserve {
 		if typ.Shape == shape {
+			// R5 (rung 4): a masked shape the draw wanted observed is
+			// observed through an aggregate instead of silently demoted —
+			// for the range-able shapes, which are the only masked ones in
+			// practice.
+			if observed && (typ.Shape == ShapeSlice || typ.Shape == ShapeMap) {
+				agg = true
+			}
 			observed = false
 		}
 	}
-	b := binding{name: name, typ: typ, observed: observed}
+	b := binding{name: name, typ: typ, observed: observed, aggObserved: agg}
 	if typ.Shape == ShapeInterface {
 		// Never nil: initialized by implicit conversion from a satisfying
 		// concrete value — THE satisfaction corner — so dispatch cannot
@@ -1012,6 +1024,53 @@ func (g *Generator) observe(out *emitter) []binding {
 			g.note(tagFeederValue)
 		}
 	}
+	// Aggregate observation (rung 4, GoLean R5): profile-masked
+	// containers the liveness draw wanted observed are folded into plain
+	// ints at function end — commutative sums for maps (the only
+	// order-safe map observation), position-weighted chains for slices
+	// (order is specified, so the stronger encoding is free). Plain-int
+	// accumulators wrap platform-width: width_dependent, tagged so.
+	aggIdx := 0
+	for i := range g.vars {
+		v := &g.vars[i]
+		if !v.aggObserved {
+			continue
+		}
+		v.reads++
+		name := fmt.Sprintf("agg%d", aggIdx)
+		aggIdx++
+		g.note(tagAggObserved)
+		g.markWidthDep(Int(0, false))
+		out.line("%s := len(%s)", name, v.name)
+		out.open("for _, e := range %s {", v.name)
+		elem := *v.typ.Elem
+		ordered := v.typ.Shape == ShapeSlice
+		switch {
+		case ordered && elem.Shape == ShapeString:
+			out.line("%s = %s*31 + len(e)", name, name)
+		case ordered && elem.Shape == ShapeBool:
+			out.line("%s *= 31", name)
+			out.line("if e {")
+			out.indent++
+			out.line("%s++", name)
+			out.close()
+		case ordered:
+			out.line("%s = %s*31 + int(e)", name, name)
+		case elem.Shape == ShapeString:
+			out.line("%s += len(e)", name)
+		case elem.Shape == ShapeBool:
+			out.line("if e {")
+			out.indent++
+			out.line("%s++", name)
+			out.close()
+		default:
+			out.line("%s += int(e)", name)
+		}
+		out.dedent()
+		out.line("}")
+		observed = append(observed, binding{name: name, typ: Int(0, false)})
+		names = append(names, name)
+	}
 	g.mark("return")
 	if g.wrapped {
 		// The panic-code slot: a synthetic trailing int result, zero on
@@ -1030,9 +1089,18 @@ func (g *Generator) observe(out *emitter) []binding {
 // Capture semantics are the point: the locals are read at RECOVER time.
 func (g *Generator) emitWrapperDefer(out *emitter) {
 	names := g.observedNames()
+	// Aggregate slots (rung 4) sit between the observed locals and the
+	// panic code in the result tuple; on the panic path they stay zero
+	// (the folds only run at normal exit), so only the slot INDEX moves.
+	aggs := 0
+	for _, v := range g.vars {
+		if v.aggObserved {
+			aggs++
+		}
+	}
 	out.open("defer func() {")
 	out.open("if p := recover(); p != nil {")
-	out.line("q%d = fuzzPanicCode(p)", len(names))
+	out.line("q%d = fuzzPanicCode(p)", len(names)+aggs)
 	for i, n := range names {
 		out.line("q%d = %s", i, n)
 	}

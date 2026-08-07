@@ -96,6 +96,48 @@ func TestMultiAssignEmitted(t *testing.T) {
 	t.Logf("multi_assign: %d tagged, %d with swaps, %d with aliased indexes", tagged, swaps, aliases)
 }
 
+// TestAggregateObservation (Phase 4 rung 4, GoLean R5): under a
+// capability profile that masks slices/maps, containers the liveness
+// draw wanted observed are folded into trailing int results — sums for
+// maps (commutative, the only order-safe map observation),
+// position-weighted chains for slices — and the built case runs with
+// those aggregates observed.
+func TestAggregateObservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs binaries")
+	}
+	fold := regexp.MustCompile(`(?m)^\tagg0 := len\(v\d+\)`)
+	seen := false
+	for seed := int64(97000); seed < 97200 && !seen; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.NoObserve = []Shape{ShapeSlice, ShapeMap}
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasFeature(c, "aggregate_observed") {
+			continue
+		}
+		seen = true
+		if !fold.Match(c.Source) {
+			t.Fatalf("seed %d: aggregate tag without a fold\n%s", seed, c.Source)
+		}
+		doc := runCase(t, c)
+		if doc.Status != observe.StatusOK && doc.Status != observe.StatusPanic {
+			t.Fatalf("seed %d: status %s", seed, doc.Status)
+		}
+		if doc.Status == observe.StatusOK {
+			last := doc.Values[len(doc.Values)-1]
+			if last.Kind != "int" {
+				t.Fatalf("seed %d: trailing aggregate is %s, want int", seed, last.Kind)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("no seed in 97000..97200 drew an aggregate-observed container")
+	}
+}
+
 // TestKindsCorner (Phase 4 rung 3, GoLean R3): the kinds corner is
 // conversion-FREE (their constraint: int(x) laundering masks the
 // kind-defaulting bug class), densifies inc/dec and compound sites, and

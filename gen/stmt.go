@@ -94,6 +94,14 @@ func (g *Generator) earlyReturn(out *emitter) {
 	g.mark("early_return", "return")
 	g.note(tagDeadCode)
 	names := g.observedNames()
+	// Aggregate slots (rung 4) are computed only at the final return;
+	// an early exit reports them as zero — path-dependent liveness, the
+	// same honesty as any early return, and deterministic.
+	for _, v := range g.vars {
+		if v.aggObserved {
+			names = append(names, "0")
+		}
+	}
 	if g.wrapped {
 		names = append(names, "0")
 	}
