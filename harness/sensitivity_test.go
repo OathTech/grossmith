@@ -28,9 +28,15 @@ type control struct {
 	requires func(observe.Document) bool
 }
 
+// hasKind checks the RETURN tuple only: the scalar perturbations target
+// _gReflect's serializer arms, which events never pass through (the obs*
+// payload sites spell their fields differently) — an event-only
+// occurrence cannot exercise them (audit finding 3: the string
+// requirement was being satisfied by an event-only case and the control
+// passed on an accidental carrier).
 func hasKind(d observe.Document, kind string) bool {
 	found := false
-	walkValues(d, func(v observe.Value) {
+	walkReturnValues(d, func(v observe.Value) {
 		if v.Kind == kind {
 			found = true
 		}
@@ -38,7 +44,7 @@ func hasKind(d observe.Document, kind string) bool {
 	return found
 }
 
-func walkValues(d observe.Document, f func(observe.Value)) {
+func walkReturnValues(d observe.Document, f func(observe.Value)) {
 	var walk func(v observe.Value)
 	walk = func(v observe.Value) {
 		f(v)
@@ -58,11 +64,6 @@ func walkValues(d observe.Document, f func(observe.Value)) {
 	}
 	for _, v := range d.Values {
 		walk(v)
-	}
-	for _, e := range d.Events {
-		if e.Value != nil {
-			walk(*e.Value)
-		}
 	}
 }
 
@@ -88,7 +89,7 @@ func sensitivityControls() []control {
 		{"map-order", ` < b.`, ` > b.`,
 			func(d observe.Document) bool {
 				ok := false
-				walkValues(d, func(v observe.Value) {
+				walkReturnValues(d, func(v observe.Value) {
 					if v.Kind == "map" && len(v.Entries) >= 2 {
 						ok = true
 					}
@@ -98,7 +99,7 @@ func sensitivityControls() []control {
 		{"dynType", `_gGoType(inner.Type())`, `_gGoType(inner.Type()) + "X"`,
 			func(d observe.Document) bool {
 				ok := false
-				walkValues(d, func(v observe.Value) {
+				walkReturnValues(d, func(v observe.Value) {
 					if v.Kind == "interface" && v.Payload != nil {
 						ok = true
 					}
@@ -109,13 +110,36 @@ func sensitivityControls() []control {
 			`_gEvents = append(_gEvents, map[string]any{"at": at, "value": v})`,
 			`_gEvents = append([]map[string]any{{"at": at, "value": v}}, _gEvents...)`,
 			func(d observe.Document) bool {
-				n := 0
+				// Prepending reverses the value-event sequence, visible
+				// only if it is not a palindrome (audit finding 4: two
+				// identical events reversed are indistinguishable).
+				keys := []string{}
 				for _, e := range d.Events {
 					if e.Value != nil {
-						n++
+						keys = append(keys, fmt.Sprintf("%s|%s|%v|%v|%v|%v",
+							e.At, e.Value.GoType, e.Value.Bool, e.Value.Int, e.Value.Uint, e.Value.Str))
 					}
 				}
-				return n >= 2
+				for i := range keys {
+					if keys[i] != keys[len(keys)-1-i] {
+						return true
+					}
+				}
+				return false
+			}},
+		// Event POSITION identity (audit gap: Event.At was a compared
+		// field with no unequal-state witness): collapse every value
+		// event's at to "point"; a doc with a defer event diverges.
+		{"event-at",
+			`_gEvents = append(_gEvents, map[string]any{"at": at, "value": v})`,
+			`_gEvents = append(_gEvents, map[string]any{"at": "point", "value": v})`,
+			func(d observe.Document) bool {
+				for _, e := range d.Events {
+					if e.Value != nil && e.At == "defer" {
+						return true
+					}
+				}
+				return false
 			}},
 		{"panic-kind", `return "divide"`, `return "other"`,
 			func(d observe.Document) bool {
@@ -128,7 +152,7 @@ func sensitivityControls() []control {
 			`return _gstrings.ReplaceAll(_gstrings.ReplaceAll(t.String(), "main.", ""), "int8", "int16")`,
 			func(d observe.Document) bool {
 				ok := false
-				walkValues(d, func(v observe.Value) {
+				walkReturnValues(d, func(v observe.Value) {
 					if v.GoType == "int8" {
 						ok = true
 					}

@@ -414,15 +414,16 @@ func (g *Generator) callStmt(out *emitter) {
 // previously never emitted. Phase 2's first measured detection gap: GoLean's
 // BUG-012 (bare value-returning calls went stuck) was their own audit's most
 // frequent novel-program failure, and grossmith could not have found it
-// because callStmt always writes targets. Helpers are pure, so the call is
-// dead computation — a tagged legal-but-degenerate minority, exactly the
-// ban/weight taxonomy's territory; its VALUE is the call lowering it forces
-// a clone to perform.
+// because callStmt always writes targets. The RESULTS are dead (helpers are
+// pure) but the statement is not eliminable — the argument list can carry
+// the statement's hot panic site — so it does NOT join the dead_value tier
+// (audit: that tag means `_ = v`, a different phenomenon); bare_call itself
+// is the stratification tag. Its value is the call lowering it forces a
+// clone to perform.
 func (g *Generator) bareCallStmt(out *emitter) {
 	g.resetRisk()
 	h := g.helpers[g.c.draw(len(g.helpers))]
 	g.mark("helpers", "bare_call")
-	g.note("dead_value")
 	out.line("%s(%s)", h.name, g.callArgs(h, g.cfg.ExprFuel-1))
 }
 

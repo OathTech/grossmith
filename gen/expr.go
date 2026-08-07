@@ -544,9 +544,16 @@ func (g *Generator) stringExpr(fuel int) value {
 			// constant string concatenation cannot overflow, so it is safe.
 			varPos := g.c.draw(operands + 1)
 			parts := make([]string, operands)
+			// The variable slot can itself fall back to a literal (pure
+			// helper bodies have no string in scope), making the whole
+			// chain constant — constness must follow the actual operand,
+			// the same class as the len fix (audit finding 6, latent).
+			chainConst := true
 			for i := range parts {
 				if i == varPos {
-					parts[i] = g.variable(Str()).text
+					v := g.variable(Str())
+					parts[i] = v.text
+					chainConst = chainConst && v.constant
 				} else {
 					parts[i] = g.literal(Str()).text
 				}
@@ -554,7 +561,7 @@ func (g *Generator) stringExpr(fuel int) value {
 			g.mark("strings", "concat")
 			out = value{
 				text:     "(" + strings.Join(parts, " + ") + ")",
-				constant: varPos == operands,
+				constant: varPos == operands || chainConst,
 			}
 		}},
 	}).emit()

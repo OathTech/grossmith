@@ -6,6 +6,13 @@ against the pre-fix and post-fix checkouts of a bug's fix commit in a
 scratch clone of GoLean; any per-case verdict change between the two
 runs is attributable to that fix. "Detection" = at least one flip.
 
+Provenance: campaign artifacts live in gitignored `.tmp/phase2/` and
+are not committed; the corpus is anchored to this branch's tip instead
+— the pre-merge audit verified HEAD regenerates the v1 campaigns'
+subjects bit-for-bit (100/100 subject hashes) under
+`golean.Profile(gen.DefaultConfig(seed))`, seeds 42000..42099. The v0
+(pre-bare-call) generator is commit e475e85.
+
 Candidate set: the four fixed, differential-pinned GoLean fidelity bugs
 inside grossmith's generated grammar (of 15 fixed in their ledger).
 
@@ -35,11 +42,16 @@ proven on both sides of the fix.
 - **C→D: 9 verdict flips, all clone-infra→match, all in cases
   containing a bare call** (attribution checked case-by-case: zero
   flips in bare-call-free cases; subject hashes identical across the
-  pair). Cases-to-first-detection: **4**. Of the 18 bare-call cases at
-  the pre-fix rev, 9 flip and 9 stay clone-infra because they
-  independently trip the (then-broader) mismatched-integer-kinds stuck
-  family — consistent, since the fix commit touches only the bare-call
-  lowering.
+  pair). Cases-to-first-detection: **4**. Full accounting of the 18
+  bare-call cases at the pre-fix rev (corrected by the pre-merge
+  audit — the original text conflated "18 clone-infra in C" with "18
+  bare-call cases", equal only by coincidence): 11 were clone-infra,
+  of which 9 flip and 2 stay red for INDEPENDENT reasons (one
+  mismatched-integer-kinds stuck, one short-circuit frontend
+  quarantine); 7 matched even pre-fix — the bare-call shape does not
+  deterministically trigger BUG-012 (their machine goes stuck only on
+  specific lowering paths), which is why detection is probabilistic
+  and cases-to-first-detection is the honest metric.
 
 ## BUG-021 — append-spill capacity envelope (fix 5c08df2)
 
