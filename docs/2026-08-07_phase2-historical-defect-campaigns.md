@@ -61,12 +61,65 @@ adapter writes. Measuring these requires either a legacy-manifest mode
 in the adapter (coupling to retired formats — not worth it) or
 GoLean-side replay of the bugs at a modern rev. Recorded, not pursued.
 
-## Reading
+## Planted defects (the remaining families)
 
-The purpose of slice 2 was never "grossmith detects old bugs" — it was
-to measure sensitivity honestly. Score: one bug detectable only after a
-measured gap was closed (the loop working end to end), one undetectable
-by an explicit design quotient with the relaxation already backlogged,
-two unmeasurable for infrastructure reasons. The defined-type ++/--
-natural control (grossmith's own find) joins this table when GoLean's
-fix lands.
+The historical set left four families unmeasured, so defects were
+PLANTED: one-line semantic breaks in a scratch clone of GoLean HEAD
+(`a38e086`), each built and campaigned with the same 100 subjects (seed
+42000) against the unplanted baseline (91 match / 9 clone-infra).
+Machine-level plants must be made in BOTH layers where the relation and
+stepFn are separate (the control-flow plant initially broke
+`stepFn_sound` — their soundness architecture correctly rejecting an
+inconsistent lie; the consistent two-layer plant builds), and in the
+single shared op where they are not.
+
+| family | plant (one line) | flips vs baseline | first detection |
+|---|---|---|---|
+| width/conversion | signed wrap dropped in `IntKind.normalize` | 78 | case 2 |
+| control flow | `break` steps to `.next` (no-op) | 53 | case 1 |
+| interface dispatch | concrete type assert always fails | 5 | case 19 |
+| map semantics | found-key `delete` is a no-op | 4 | case 11 |
+
+Every flip is match→observation-mismatch (or stuck-class movement) —
+no plant ever leaked into a non-semantic verdict, and the scratch tree
+was verified pristine after each revert. Two plants required
+accompanying edits to keep the build honest rather than silent: the
+control-flow plant had to be made consistently in BOTH the relation and
+stepFn (their `stepFn_sound` correctly refused the one-layer lie), and
+the map plant needed its `StateWf` preservation proof branch adjusted
+to the planted identity semantics. The interface and width plants used
+condition-level breaks (`&& false`) that leave both proof branches
+intact.
+
+Defer/recover is UNMEASURABLE against GoLean under the current profile:
+both grossmith defer forms are obs* events, which the profile excludes
+because their machine has no event model. Evidence for the g06/c54
+(named-results defer) rung in TODO.md — the first non-obs defer
+construct makes this family measurable.
+
+## Reading — Phase 2 done-when, met
+
+The audit's done-when: "every supported observation shape has a
+targeted unequal-state witness (slice 1's eleven-control matrix) and
+the end-to-end production path detects the selected defects" across
+the named families. Final scoreboard, 100 cases per campaign:
+
+| family | defect | flips | first detection |
+|---|---|---|---|
+| call lowering | historical BUG-012 (pre/post fix commit) | 9 | 4 |
+| width/conversion | planted (signed wrap dropped) | 78 | 2 |
+| control flow | planted (break no-op) | 53 | 1 |
+| interface dispatch | planted (assert always fails) | 5 | 19 |
+| map semantics | planted (delete no-op) | 4 | 11 |
+| defer/recover | unmeasurable-by-profile (obs*-based; g06/c54 rung unblocks) | — | — |
+
+Sensitivity ordering is itself information: width and control flow
+saturate the corpus (protocol and grammar are strong there); interface
+and map defects are detected but thinly — the assert/comma-ok and
+delete-then-observe paths are minorities, a weight-tuning datum for the
+ladder. One family became detectable only after a measured generator
+gap was closed (bare calls) — the loop the audit asked Phase 2 to
+prove, demonstrated end to end. The defined-type ++/-- natural control
+(grossmith's own find) joins this table when GoLean's fix lands;
+BUG-021 stands as by-construction evidence for the g32/membership
+backlog items.
