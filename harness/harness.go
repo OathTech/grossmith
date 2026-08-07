@@ -155,8 +155,13 @@ type BatchReport struct {
 	Started           string       `json:"started"`
 	Cases             []CaseResult `json:"cases"`
 	// Aggregates, computed over Cases.
-	Total       int             `json:"total"`
-	Verdicts    map[Verdict]int `json:"verdicts,omitempty"`
+	Total    int             `json:"total"`
+	Verdicts map[Verdict]int `json:"verdicts,omitempty"`
+	// Composition is the per-tag program-presence histogram — the charter
+	// lists it as part of the conformance statement (rung 5 closed the
+	// gap: it was stdout-only). Populated by the producer from generated
+	// features.
+	Composition map[string]int `json:"composition,omitempty"`
 	RefRan      int             `json:"refRan"`
 	PanicPaths  int             `json:"panicPaths"`
 	Recovered   int             `json:"recovered"`

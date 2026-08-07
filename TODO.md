@@ -6,6 +6,13 @@ here is not commitment.
 
 ## Customer-prioritized: GoLean's generation requests (2026-08-07)
 
+STATUS (Phase 4 arc, 2026-08-07): R1, R2a, R3, R5, R4 DELIVERED as
+rungs 1-5 (see docs/spec-ledger.md and the rung commits); the
+composition-histogram and recovered-coverage backlog items were
+absorbed and closed by the same rungs. Remaining from the request set:
+R2b (order witnessing — effect-discipline design) and R6 (embedding
+matrices — blocked on rungs).
+
 `docs/grossmith-requests-2026-08-07.md` — six requests ordered by
 demonstrated yield against their 43-entry bug ledger, filed after their
 2,900-case campaign (grossmith 5b4c5b0 vs GoLean 458386d, zero
@@ -162,12 +169,6 @@ now first-party. Mapping onto this backlog:
   exercise their argument plumbing, and make boundary-value sweeps
   (MinInt, -1, 0, 1, MaxInt over the same body) a manifest concern
   instead of N generated programs.
-- **batch.json lacks the composition histogram** (charter, BRIEF "the
-  conformance statement is the product": reference version, policy, N,
-  rate, *coverage histogram*). Tag counts and per-site choice stats are
-  stdout-only today; a batch report read cold cannot state what the
-  batch covered. Add aggregate tag counts (and optionally site stats)
-  to the report.
 - **GoLean campaigns record no clone observation** (pre-merge audit
   F10 residual): `CaseResult.Clone` stays nil; a mismatch is
   re-examined only through the free-text stage detail. Full fix is

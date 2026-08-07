@@ -41,6 +41,14 @@ type Config struct {
 	// arms are masked, so the full draw trace is NOT profile-invariant
 	// (audit M6 corrected the earlier overclaim).
 	Exclude []string
+	// Include force-ENABLES optional construct tags on top of whatever
+	// Swarm or Constructs decided, applied after Exclude (rung 5, GoLean
+	// R4: the pairwise coverage objective forces a tag PAIR into every
+	// mix while swarm keeps the rest diverse). Enabling a tag arms its
+	// emission sites; realized co-emission still depends on draws and
+	// legality and is measured by the composition histogram, never
+	// assumed.
+	Include []string
 	// NoObserve lists shapes masked OUT of the observed liveness tier — an
 	// adapter capability profile (e.g. GoLean's harness fails closed on
 	// slices and maps). Generation is unrestricted; only observation is.
@@ -101,7 +109,7 @@ func (c Config) Validate() error {
 	// writing {"assignment": false} would be silently ignored otherwise.
 	// Keys are sorted so the diagnosis is deterministic (map order reached
 	// an artifact — review finding).
-	if c.Constructs != nil || len(c.Exclude) > 0 {
+	if c.Constructs != nil || len(c.Exclude) > 0 || len(c.Include) > 0 {
 		known := map[string]bool{}
 		for _, tag := range Optional() {
 			known[tag] = true
@@ -118,6 +126,9 @@ func (c Config) Validate() error {
 			check(tag)
 		}
 		for _, tag := range c.Exclude {
+			check(tag)
+		}
+		for _, tag := range c.Include {
 			check(tag)
 		}
 		if len(bad) > 0 {
@@ -306,6 +317,7 @@ func snapshotConfig(cfg Config) Config {
 		cfg.Constructs = m
 	}
 	cfg.Exclude = append([]string(nil), cfg.Exclude...)
+	cfg.Include = append([]string(nil), cfg.Include...)
 	cfg.NoObserve = append([]Shape(nil), cfg.NoObserve...)
 	return cfg
 }
@@ -365,6 +377,19 @@ func (g *Generator) drawSetup() {
 		}
 		for _, tag := range cfg.Exclude {
 			g.constructs[tag] = false
+		}
+	}
+	if len(cfg.Include) > 0 {
+		if g.constructs == nil {
+			// Everything already enabled — Include is a no-op, but the
+			// map keeps the semantics uniform.
+			g.constructs = make(map[string]bool, len(Optional()))
+			for _, tag := range Optional() {
+				g.constructs[tag] = true
+			}
+		}
+		for _, tag := range cfg.Include {
+			g.constructs[tag] = true
 		}
 	}
 	g.boundaryBias = 1

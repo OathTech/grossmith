@@ -1,11 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"grossmith/gen"
 )
 
 func base(out string) config {
@@ -177,6 +181,66 @@ func TestReplayFromArtifacts(t *testing.T) {
 	err = run(rcfg)
 	if err == nil || !strings.Contains(err.Error(), "predates") {
 		t.Fatalf("config-absent record error does not name the cause: %v", err)
+	}
+}
+
+// TestPairsMode (Phase 4 rung 5, GoLean R4): -pairs generates the full
+// optional-construct pair matrix with each pair force-included, records
+// the pair in the manifest and the include in case.json, and reports
+// realized co-emission honestly.
+func TestPairsMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generates the full pair matrix")
+	}
+	out := filepath.Join(t.TempDir(), "pairs")
+	cfg := base(out)
+	cfg.n = 0
+	cfg.pairs = 1
+	if err := run(cfg); err != nil {
+		t.Fatal(err)
+	}
+	tags := gen.Optional()
+	wantCases := len(tags) * (len(tags) - 1) / 2
+	dirs, err := filepath.Glob(filepath.Join(out, "case_*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != wantCases {
+		t.Fatalf("pairs mode generated %d cases, want %d (one per pair)", len(dirs), wantCases)
+	}
+	// Sampled record honesty: each case.json's config carries its pair.
+	realized := 0
+	for i := 0; i < wantCases; i += 37 {
+		b, err := os.ReadFile(filepath.Join(out, fmt.Sprintf("case_%05d", i), "case.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rec struct {
+			Config struct{ Include []string }
+		}
+		if err := json.Unmarshal(b, &rec); err != nil {
+			t.Fatal(err)
+		}
+		if len(rec.Config.Include) != 2 {
+			t.Fatalf("case %d: include not recorded: %v", i, rec.Config.Include)
+		}
+		var full struct{ Features map[string]int }
+		if err := json.Unmarshal(b, &full); err != nil {
+			t.Fatal(err)
+		}
+		if full.Features[rec.Config.Include[0]] > 0 && full.Features[rec.Config.Include[1]] > 0 {
+			realized++
+		}
+	}
+	if realized == 0 {
+		t.Fatal("no sampled pair realized co-emission — forcing is inert")
+	}
+	// -pairs with explicit -n is refused before writes.
+	confl := base(filepath.Join(t.TempDir(), "x"))
+	confl.pairs = 1
+	confl.explicit = map[string]bool{"n": true}
+	if err := run(confl); err == nil || !strings.Contains(err.Error(), "replaces -n") {
+		t.Fatalf("-pairs with -n accepted: %v", err)
 	}
 }
 

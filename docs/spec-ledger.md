@@ -65,7 +65,7 @@ their full disposition is the appendix.
 | Liveness tiers (observed/feeder/dead) | supported | `dead_code`, `dead_value`, `feeder_value`, plus `aggregate_observed` (rung 4, R5): profile-masked containers the draw wanted observed fold into trailing int results — commutative sums for maps, position-weighted chains for slices (both width_dependent-tagged) — so map/slice machinery reaches capability-limited clones in observed positions. |
 | Observation points | supported | `observe_point` — mid-function obs* events (gc profile; excluded under GoLean's until adapter shape (a)); event order and position are compared fields with sensitivity controls. |
 | Corners | partial | `boundary` (`corner_boundary`: literals/divisors/shifts at type edges) and `kinds` (`corner_kinds`, rung 3/R3: conversion-FREE in-kind sweeps, dense inc/dec+compound sites, defined-type targets weighted up — the BUG-042/043 family's habitat); dead-rich and conversion-truncation remain planned. |
-| Swarm | supported | Per-seed mixes; pairwise coverage objective arrives at rung 5 (R4). |
+| Swarm | supported | Per-seed mixes, plus the pairwise coverage objective (rung 5, R4): `gengo -pairs n` forces every optional-construct pair into otherwise ordinary mixes (`Config.Include`), records the pair per case, and reports realized co-emission — unrealized pairs are the printed coverage signal. batch.json carries the composition histogram. |
 
 ## Out of scope (deliberate, both roadmaps)
 

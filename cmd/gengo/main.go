@@ -49,6 +49,10 @@ type config struct {
 	// replay: path to a case directory containing case.json; regenerate
 	// the case from its record and verify byte and observation identity.
 	replay string
+	// pairs: pairwise-coverage mode (rung 5, GoLean R4) — generate this
+	// many cases per PAIR of optional constructs, each pair force-included
+	// into an otherwise ordinary swarm mix. Replaces -n.
+	pairs int
 	// explicit records which flags the user actually set (audit F5:
 	// -replay must refuse generation flags rather than ignore them).
 	explicit map[string]bool
@@ -68,6 +72,7 @@ func main() {
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-case run timeout")
 	flag.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "parallel build/run workers")
 	flag.StringVar(&cfg.replay, "replay", "", "case directory to REPLAY from its case.json record (verifies byte + observation identity; ignores generation flags)")
+	flag.IntVar(&cfg.pairs, "pairs", 0, "pairwise-coverage mode: generate this many cases per optional-construct PAIR (replaces -n)")
 	flag.Parse()
 	cfg.explicit = map[string]bool{}
 	flag.Visit(func(f *flag.Flag) {
@@ -88,7 +93,11 @@ func main() {
 func (c config) validate() (observe.PanicPolicy, string, error) {
 	var policy observe.PanicPolicy
 	switch {
-	case c.n < 1:
+	case c.pairs < 0:
+		return "", "", fmt.Errorf("-pairs %d: must be non-negative", c.pairs)
+	case c.pairs > 0 && c.explicit["n"]:
+		return "", "", fmt.Errorf("-pairs replaces -n; give one or the other")
+	case c.pairs == 0 && c.n < 1:
 		return "", "", fmt.Errorf("-n %d: need at least one case", c.n)
 	case c.out == "":
 		return "", "", fmt.Errorf("-out: empty path")
@@ -176,7 +185,7 @@ func run(cfg config) error {
 	// generation loop meant an interrupted run left a dir every future run
 	// refused. The header-only file is overwritten with the real manifest
 	// below.
-	if err := os.WriteFile(filepath.Join(cfg.out, "manifest.tsv"), []byte("id\tseed\tfeatures\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.out, "manifest.tsv"), []byte("id\tseed\tfeatures\tpair\n"), 0o644); err != nil {
 		return err
 	}
 	// And a previous run's report must not survive next to regenerated
@@ -187,20 +196,46 @@ func run(cfg config) error {
 		return err
 	}
 
+	// The case plan: plain (-n sequential seeds) or pairwise (rung 5,
+	// GoLean R4 — every optional-construct pair force-included into an
+	// otherwise ordinary swarm mix, cfg.pairs cases each).
+	type caseSpec struct {
+		seed    int64
+		include []string
+	}
+	var specs []caseSpec
+	if cfg.pairs > 0 {
+		tags := gen.Optional()
+		idx := 0
+		for i := 0; i < len(tags); i++ {
+			for j := i + 1; j < len(tags); j++ {
+				for k := 0; k < cfg.pairs; k++ {
+					specs = append(specs, caseSpec{cfg.seed + int64(idx), []string{tags[i], tags[j]}})
+					idx++
+				}
+			}
+		}
+	} else {
+		for i := 0; i < cfg.n; i++ {
+			specs = append(specs, caseSpec{cfg.seed + int64(i), nil})
+		}
+	}
+
 	tagCount := map[string]int{}
 	siteStats := map[string]*gen.SiteStats{}
 	featuresByID := map[string][]string{}
 	liveDirs := map[string]bool{}
 	var manifest strings.Builder
-	manifest.WriteString("id\tseed\tfeatures\n")
+	manifest.WriteString("id\tseed\tfeatures\tpair\n")
 
-	for i := 0; i < cfg.n; i++ {
-		caseSeed := cfg.seed + int64(i)
+	for i, spec := range specs {
+		caseSeed := spec.seed
 		gcfg := gen.DefaultConfig(caseSeed)
 		gcfg.Swarm = cfg.swarm
 		if checkout != "" {
 			gcfg = golean.Profile(gcfg)
 		}
+		gcfg.Include = spec.include
 		c, err := gen.New(gcfg).Generate()
 		if err != nil {
 			return fmt.Errorf("seed %d: %w", caseSeed, err)
@@ -231,7 +266,11 @@ func run(cfg config) error {
 		for fi, f := range c.Features {
 			counted[fi] = fmt.Sprintf("%s=%d", f, c.FeatureCounts[f])
 		}
-		fmt.Fprintf(&manifest, "%s\t%d\t%s\n", id, caseSeed, strings.Join(counted, ","))
+		pairCol := "-"
+		if len(spec.include) == 2 {
+			pairCol = spec.include[0] + "+" + spec.include[1]
+		}
+		fmt.Fprintf(&manifest, "%s\t%d\t%s\t%s\n", id, caseSeed, strings.Join(counted, ","), pairCol)
 		featuresByID[id] = c.Features
 		liveDirs[dir] = true
 		for _, t := range c.Features {
@@ -267,10 +306,50 @@ func run(cfg config) error {
 			}
 		}
 	}
-	fmt.Printf("generated %d cases in %s (seeds %d..%d)\n", cfg.n, cfg.out, cfg.seed, cfg.seed+int64(cfg.n)-1)
+	fmt.Printf("generated %d cases in %s (seeds %d..%d)\n", len(specs), cfg.out, cfg.seed, cfg.seed+int64(len(specs))-1)
+	if cfg.pairs > 0 {
+		// Realized co-emission per forced pair: enabling a pair arms its
+		// sites but emission depends on draws and legality — unrealized
+		// pairs are the coverage signal, printed, never hidden (no silent
+		// caps).
+		perPair := map[string]int{}
+		for i, spec := range specs {
+			if len(spec.include) != 2 {
+				continue
+			}
+			key := spec.include[0] + "+" + spec.include[1]
+			if _, ok := perPair[key]; !ok {
+				perPair[key] = 0
+			}
+			has := map[string]bool{}
+			for _, f := range featuresByID[fmt.Sprintf("case_%05d", i)] {
+				has[f] = true
+			}
+			if has[spec.include[0]] && has[spec.include[1]] {
+				perPair[key]++
+			}
+		}
+		realized, zeroPairs := 0, []string{}
+		for key, n := range perPair {
+			if n > 0 {
+				realized++
+			} else {
+				zeroPairs = append(zeroPairs, key)
+			}
+		}
+		sort.Strings(zeroPairs)
+		fmt.Printf("\npair coverage: %d/%d pairs realized at least once\n", realized, len(perPair))
+		for i, p := range zeroPairs {
+			if i == 15 {
+				fmt.Printf("  ... and %d more unrealized pairs\n", len(zeroPairs)-15)
+				break
+			}
+			fmt.Printf("  unrealized: %s\n", p)
+		}
+	}
 
 	fmt.Println("\ncomposition (tag histogram):")
-	printHistogram(tagCount, cfg.n)
+	printHistogram(tagCount, len(specs))
 	if cfg.stats {
 		fmt.Println("\nchoice frequency (site/arm: valid -> chosen):")
 		printSiteStats(siteStats)
@@ -290,7 +369,8 @@ func run(cfg config) error {
 		return err
 	}
 	rep.GeneratorRev = rev
-	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(cfg.n) - 1}
+	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(len(specs)) - 1}
+	rep.Composition = tagCount
 
 	if checkout != "" {
 		if err := runGoLean(ctx, &rep, cfg, checkout, featuresByID); err != nil {

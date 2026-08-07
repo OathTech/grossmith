@@ -96,6 +96,27 @@ func TestMultiAssignEmitted(t *testing.T) {
 	t.Logf("multi_assign: %d tagged, %d with swaps, %d with aliased indexes", tagged, swaps, aliases)
 }
 
+// TestIncludeForcesTags (Phase 4 rung 5, GoLean R4): Include force-
+// enables tags in every mix, after Exclude, without disturbing draws.
+func TestIncludeForcesTags(t *testing.T) {
+	for seed := int64(7000); seed < 7040; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Include = []string{"maps", "recover_wrapper"}
+		cfg.Exclude = []string{"maps"} // Include wins, applied after
+		g := New(cfg)
+		g.drawSetup()
+		if !g.constructs["maps"] || !g.constructs["recover_wrapper"] {
+			t.Fatalf("seed %d: Include not applied: maps=%v wrapper=%v",
+				seed, g.constructs["maps"], g.constructs["recover_wrapper"])
+		}
+	}
+	bad := DefaultConfig(1)
+	bad.Include = []string{"quaternions"}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("unknown Include tag validated")
+	}
+}
+
 // TestAggregateObservation (Phase 4 rung 4, GoLean R5): under a
 // capability profile that masks slices/maps, containers the liveness
 // draw wanted observed are folded into trailing int results — sums for
