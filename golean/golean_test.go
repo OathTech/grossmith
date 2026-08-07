@@ -201,13 +201,21 @@ func TestStuckIsInfraNotMismatch(t *testing.T) {
 	if stuck.Verdict != harness.VerdictCloneInfra {
 		t.Fatalf("stuck judged %s", stuck.Verdict)
 	}
+	unsupported, err := judge("FAIL", "lean-observation",
+		`expected status ok, got {"message":"interface satisfaction for $runtime.Error: ...","schema":"golean-observation-v1","status":"unsupported"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsupported.Verdict != harness.VerdictCloneInfra {
+		t.Fatalf("machine-level unsupported judged %s", unsupported.Verdict)
+	}
 	wrong, err := judge("FAIL", "lean-observation",
 		`expected status ok, got {"schema":"golean-observation-v1","status":"panic","message":"x"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if wrong.Verdict != harness.VerdictMismatch {
-		t.Fatalf("non-stuck lean-observation judged %s", wrong.Verdict)
+		t.Fatalf("non-refusal lean-observation judged %s", wrong.Verdict)
 	}
 }
 

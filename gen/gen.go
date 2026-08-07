@@ -214,6 +214,12 @@ type Generator struct {
 	// into len*2^len executed statements — the second review's charter
 	// violation, found live in the corpus (case_00934: len 3->6->12->24).
 	rangedSlices []int
+	// wrapped: this subject carries the recover-observation wrapper
+	// (GoLean R1): named results, a deferred recover encoding the panic
+	// kind into a dedicated int result and snapshotting the observed
+	// locals — panic identity AND store-before-panic partial state become
+	// ordinary observed values, with no obs* events (profile-safe).
+	wrapped bool
 	// guardBias raises the hot-arm odds inside a guarded IIFE, so the
 	// recover path is actually exercised.
 	guardBias bool
@@ -409,6 +415,13 @@ func (g *Generator) Generate() (c Case, err error) {
 	if g.corner != "" {
 		g.note("corner_" + g.corner)
 	}
+	// The recover-observation wrapper (GoLean R1) is a per-seed draw: a
+	// minority of subjects get named results plus a deferred recover, so
+	// panic identity and partial state are observed with zero events.
+	if g.enabled("recover_wrapper") && g.c.chance(3) {
+		g.wrapped = true
+		g.mark("recover_wrapper")
+	}
 	g.generateHelpers()
 	g.createDefinedTypes()
 	g.generateMethods()
@@ -416,9 +429,17 @@ func (g *Generator) Generate() (c Case, err error) {
 	g.declare(body)
 	g.mark("functions", "short_decl", "literals", "return")
 
+	if g.wrapped {
+		g.emitWrapperDefer(body)
+		// The wrapper exists to CATCH panics: bias the hot arms up for the
+		// whole body (same lever as the guarded statement), or most
+		// wrapped subjects would return on the boring path.
+		g.guardBias = true
+	}
 	for i := 0; i < g.cfg.Stmts; i++ {
 		g.stmt(body, g.cfg.Depth)
 	}
+	g.guardBias = false
 	observed := g.observe(body)
 	resultTypes := make([]string, len(observed))
 	for i, b := range observed {
@@ -432,6 +453,9 @@ func (g *Generator) Generate() (c Case, err error) {
 	}
 	for _, h := range g.helpers {
 		out.WriteString(h.src)
+	}
+	if g.wrapped {
+		out.WriteString(panicCodeHelper)
 	}
 	for _, dt := range g.defined {
 		fmt.Fprintf(&out, "type %s %s\n\n", dt.typ.Named, dt.typ.underlyingName())
@@ -451,7 +475,17 @@ func (g *Generator) Generate() (c Case, err error) {
 		}
 		out.WriteString("}\n\n")
 	}
-	fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
+	if g.wrapped {
+		// Named results: the wrapper's deferred recover writes them
+		// directly, so a caught panic returns partial state + the code.
+		named := make([]string, len(observed))
+		for i, b := range observed {
+			named[i] = fmt.Sprintf("q%d %s", i, b.typ.GoName())
+		}
+		fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(named, ", "))
+	} else {
+		fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
+	}
 	out.WriteString(body.buf.String())
 	out.WriteString("}\n")
 
@@ -973,9 +1007,59 @@ func (g *Generator) observe(out *emitter) []binding {
 		}
 	}
 	g.mark("return")
+	if g.wrapped {
+		// The panic-code slot: a synthetic trailing int result, zero on
+		// the normal path, written by the wrapper's recover on the panic
+		// path. The binding gives the driver its arity and type.
+		observed = append(observed, binding{name: "qP", typ: Int(0, false)})
+		names = append(names, "0")
+	}
 	out.line("return %s", strings.Join(names, ", "))
 	return observed
 }
+
+// emitWrapperDefer emits the R1 recover-observation prologue: on panic,
+// encode the panic into the trailing result and snapshot every observed
+// local — store-before-panic partial state as ordinary observed values.
+// Capture semantics are the point: the locals are read at RECOVER time.
+func (g *Generator) emitWrapperDefer(out *emitter) {
+	names := g.observedNames()
+	out.open("defer func() {")
+	out.open("if p := recover(); p != nil {")
+	out.line("q%d = fuzzPanicCode(p)", len(names))
+	for i, n := range names {
+		out.line("q%d = %s", i, n)
+	}
+	out.close()
+	out.dedent()
+	out.line("}()")
+}
+
+// panicCodeHelper is the wrapper's import-free panic-to-int table
+// (GoLean R1: "the panic value/message encodes to int by table"): 0
+// never-panicked, 1 unknown, then the deterministic gc message prefixes.
+const panicCodeHelper = `func fuzzPanicCode(p any) int {
+	e, ok := p.(error)
+	if !ok {
+		return 1
+	}
+	m := e.Error()
+	if len(m) >= 22 && m[:22] == "runtime error: integer" {
+		return 2
+	}
+	if len(m) >= 20 && m[:20] == "runtime error: index" {
+		return 3
+	}
+	if len(m) >= 27 && m[:27] == "runtime error: slice bounds" {
+		return 4
+	}
+	if len(m) >= 21 && m[:21] == "interface conversion:" {
+		return 5
+	}
+	return 1
+}
+
+`
 
 // pickVar returns the index of a variable of exactly type t. The one-per-type
 // floor makes this total for every pool type.

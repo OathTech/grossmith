@@ -582,7 +582,20 @@ func (g *Generator) unSelf(left, right value, t Type) value {
 			break
 		}
 	}
-	return g.literal(t)
+	lit := g.literal(t)
+	if lit.text != left.text {
+		return lit
+	}
+	// The replacement literal collided too (small alphabets make
+	// literal-vs-literal collisions real — latent until the wrapper's
+	// bias shifted draw paths, seed 321). Constructively different, never
+	// a redraw: xor-1 for integers (in-range for every kind, unlike +1
+	// which overflows at boundary literals), a suffix for strings. Both
+	// call-site domains are exactly these shapes (intTypes and Str).
+	if t.Shape == ShapeString {
+		return value{text: "(" + left.text + ` + "x")`, constant: true}
+	}
+	return value{text: "(" + left.text + " ^ 1)", constant: true}
 }
 
 func (g *Generator) boolExpr(fuel int) value {

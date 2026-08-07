@@ -89,7 +89,11 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 func (g *Generator) earlyReturn(out *emitter) {
 	g.mark("early_return", "return")
 	g.note(tagDeadCode)
-	out.line("return %s", strings.Join(g.observedNames(), ", "))
+	names := g.observedNames()
+	if g.wrapped {
+		names = append(names, "0")
+	}
+	out.line("return %s", strings.Join(names, ", "))
 }
 
 // observePoint prints one scalar/string variable mid-execution — an
@@ -499,8 +503,11 @@ func (g *Generator) guardedStmt(out *emitter) {
 	// inner statement panicked in 0.7% of guards (second review) — the
 	// statement-level-catch semantics were effectively untested. Bias the
 	// hot arms up inside the guard.
+	// Save/restore, not set/clear: under the recover wrapper the bias is
+	// already on for the whole body and must survive a nested guard.
+	prev := g.guardBias
 	g.guardBias = true
-	defer func() { g.guardBias = false }()
+	defer func() { g.guardBias = prev }()
 	out.open("func() {")
 	out.open("defer func() {")
 	out.open("if r := recover(); r != nil {")

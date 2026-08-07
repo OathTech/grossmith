@@ -49,6 +49,10 @@ type Config struct {
 // constructs are excluded. Everything else generates unchanged.
 func Profile(cfg gen.Config) gen.Config {
 	cfg.NoObserve = []gen.Shape{gen.ShapeSlice, gen.ShapeMap}
+	// recover_wrapper is deliberately NOT excluded (Phase 4 rung 1, their
+	// R1 request): the wrapper observes panics through named results —
+	// pure Go, no obs* events — so defer/recover semantics reach their
+	// machine despite the event exclusions below.
 	cfg.Exclude = []string{"observe_point", "defer", "recover"}
 	return cfg
 }
@@ -365,14 +369,16 @@ func judge(result, stage, detail string) (Result, error) {
 	switch stage {
 	case "differential", "lean-observation", "nondet":
 		res.Verdict = harness.VerdictMismatch
-		// A machine that got STUCK produced no observation at all — the
-		// interpreter analogue of the frontend-quarantined gap, and the
-		// same side of the infra/semantics line (audit F6: a stuck case
-		// was inflating observation-mismatch, the metric that is supposed
-		// to mean "the clone computed a different answer"). The detail
-		// carries their observation JSON verbatim, which is the only
-		// channel that distinguishes stuck from a wrong value.
-		if stage == "lean-observation" && strings.Contains(detail, `"status":"stuck"`) {
+		// A machine that got STUCK or refused as UNSUPPORTED produced no
+		// observation at all — the interpreter analogue of the
+		// frontend-quarantined gap, and the same side of the
+		// infra/semantics line (audit F6 for stuck; rung 1 added
+		// unsupported when wrapped subjects' p.(error) asserts hit their
+		// machine-level $runtime.Error refusal). The detail carries their
+		// observation JSON verbatim, which is the only channel that
+		// distinguishes a refusal from a wrong value.
+		if stage == "lean-observation" &&
+			(strings.Contains(detail, `"status":"stuck"`) || strings.Contains(detail, `"status":"unsupported"`)) {
 			res.Verdict = harness.VerdictCloneInfra
 		}
 	case "frontend-export", "lean-run", "harness":
