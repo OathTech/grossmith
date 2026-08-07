@@ -72,10 +72,10 @@ now first-party. Mapping onto this backlog:
   smoke, replay smoke — every step proven locally verbatim) and tier 2
   `golean-nightly` (private checkout + elan/lake cached + n=300
   campaign; fails on harness-error/ref-infra/mismatch, allows and
-  archives clone-infra gap counts). PENDING ON MIKE: create the
-  `GOLEAN_CHECKOUT_TOKEN` secret (fine-grained PAT, contents:read on
-  OathTech/golean) — the nightly fails loudly with instructions until
-  then; first green runs happen on GitHub after push.
+  archives clone-infra gap counts). PENDING ON MIKE: add a read-only
+  deploy key on OathTech/golean and store its private half as the
+  `GOLEAN_DEPLOY_KEY` secret on grossmith (setup steps in the workflow
+  header) — the nightly fails loudly with instructions until then; first green runs happen on GitHub after push.
 - **Recovered-event coverage rung** (audit deferral, measured 1/120
   cases): force a hot statement form inside guarded statements so
   statement-level catch is exercised end to end; re-measure, then

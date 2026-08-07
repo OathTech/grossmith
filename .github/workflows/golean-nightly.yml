@@ -3,8 +3,16 @@
 # from the per-push gate: it needs a private-repo checkout and a Lean
 # toolchain, and its verdicts are findings to triage, not build health.
 #
-# REQUIRED SECRET: GOLEAN_CHECKOUT_TOKEN — a fine-grained PAT (or GitHub
-# App token) with contents:read on OathTech/golean.
+# REQUIRED SECRET: GOLEAN_DEPLOY_KEY — the private half of a deploy key
+# on OathTech/golean. Setup (once):
+#   ssh-keygen -t ed25519 -N "" -f golean-deploy -C grossmith-nightly
+#   golean repo  -> Settings -> Deploy keys -> add golean-deploy.pub
+#                  (leave "Allow write access" UNCHECKED)
+#   grossmith    -> Settings -> Secrets and variables -> Actions ->
+#                  new secret GOLEAN_DEPLOY_KEY = contents of golean-deploy
+# A deploy key is repo-scoped, read-only, and identity-free — the right
+# shape for a clone-only cross-repo link (a PAT is person-bound and
+# expires; a GitHub App is the step up if more repo pairs ever need this).
 #
 # Failure policy (mirrors the verdict taxonomy's meaning):
 #   harness-error / reference-infra-failure  -> FAIL (our side broke)
@@ -29,18 +37,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      HAVE_TOKEN: ${{ secrets.GOLEAN_CHECKOUT_TOKEN != '' }}
+      HAVE_KEY: ${{ secrets.GOLEAN_DEPLOY_KEY != '' }}
     steps:
-      - name: require token
-        if: env.HAVE_TOKEN != 'true'
+      - name: require deploy key
+        if: env.HAVE_KEY != 'true'
         run: |
-          echo "GOLEAN_CHECKOUT_TOKEN is not configured; see the header comment." >&2
+          echo "GOLEAN_DEPLOY_KEY is not configured; see the header comment for one-time setup." >&2
           exit 1
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
           repository: OathTech/golean
-          token: ${{ secrets.GOLEAN_CHECKOUT_TOKEN }}
+          ssh-key: ${{ secrets.GOLEAN_DEPLOY_KEY }}
           path: deps/golean
       - uses: actions/setup-go@v5
         with:
