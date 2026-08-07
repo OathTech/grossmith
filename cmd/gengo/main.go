@@ -1,49 +1,132 @@
-// gengo generates a batch of small, deterministic Go programs and optionally
-// runs the conformance and cross-arch discrimination checks.
+// gengo generates a batch of small, outcome-deterministic Go programs and
+// judges them against a clone through the harness verdict taxonomy.
 //
-//	gengo -n 1000 -seed 1 -out out [-conformance] [-cross-arch 386]
+//	gengo -n 1000 -seed 1 -out out                 # generate only
+//	gengo -n 1000 -seed 1 -out out -judge          # + gc reference pass
+//	gengo -n 1000 -seed 1 -out out -clone gc-386   # + degenerate clone (cross-arch)
+//	gengo -n 1000 -seed 1 -out out -clone golean   # + GoLean campaign (deps/golean)
+//
+// The durable output of record is out/batch.json (grossmith-batch-v1);
+// stdout is a view of it.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
 
-	"grossmith/conform"
 	"grossmith/gen"
+	"grossmith/golean"
+	"grossmith/harness"
+	"grossmith/observe"
 )
 
+type config struct {
+	n       int
+	seed    int64
+	out     string
+	swarm   bool
+	stats   bool
+	judge   bool
+	clone   string // "", "gc-386", "golean", "golean:<checkout>"
+	goBin   string
+	policy  string
+	timeout time.Duration
+	workers int
+}
+
 func main() {
-	n := flag.Int("n", 100, "number of programs to generate")
-	seed := flag.Int64("seed", 1, "base seed; case i uses seed+i")
-	out := flag.String("out", "out", "output directory")
-	swarm := flag.Bool("swarm", true, "draw a per-seed construct mix")
-	conformance := flag.Bool("conformance", false, "build+run every case against the pinned toolchain")
-	crossArch := flag.String("cross-arch", "", "also run under this GOARCH (e.g. 386) and diff observations")
-	timeout := flag.Duration("timeout", 10*time.Second, "per-case run timeout")
-	workers := flag.Int("workers", runtime.NumCPU(), "parallel build/run workers")
-	stats := flag.Bool("stats", false, "print the choice-frequency report (valid vs chosen per site)")
+	var cfg config
+	flag.IntVar(&cfg.n, "n", 100, "number of programs to generate")
+	flag.Int64Var(&cfg.seed, "seed", 1, "base seed; case i uses seed+i")
+	flag.StringVar(&cfg.out, "out", "out", "output directory (empty, or a previous gengo batch)")
+	flag.BoolVar(&cfg.swarm, "swarm", true, "draw a per-seed construct mix")
+	flag.BoolVar(&cfg.stats, "stats", false, "print the choice-frequency report (valid vs chosen per site)")
+	flag.BoolVar(&cfg.judge, "judge", false, "run the gc reference pass over the batch")
+	flag.StringVar(&cfg.clone, "clone", "", "clone to judge against: gc-386, golean, or golean:<checkout> (implies -judge)")
+	flag.StringVar(&cfg.goBin, "go", "", "pinned go toolchain binary (default: resolve go from PATH)")
+	flag.StringVar(&cfg.policy, "panic-policy", "exact", "panic equivalence: exact (message bytes) or kind (taxonomy only)")
+	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-case run timeout")
+	flag.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "parallel build/run workers")
 	flag.Parse()
 
-	if err := run(*n, *seed, *out, *swarm, *conformance, *crossArch, *timeout, *workers, *stats); err != nil {
+	if err := run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "gengo:", err)
 		os.Exit(1)
 	}
 }
 
-func run(n int, seed int64, out string, swarm, conformance bool, crossArch string, timeout time.Duration, workers int, stats bool) error {
-	if err := os.MkdirAll(out, 0o755); err != nil {
+// validate rejects a bad invocation BEFORE anything is written (audit H5):
+// a refused run leaves the filesystem exactly as it found it.
+func (c config) validate() (observe.PanicPolicy, string, error) {
+	var policy observe.PanicPolicy
+	switch {
+	case c.n < 1:
+		return "", "", fmt.Errorf("-n %d: need at least one case", c.n)
+	case c.timeout <= 0:
+		return "", "", fmt.Errorf("-timeout %s: must be positive", c.timeout)
+	case c.workers < 1:
+		return "", "", fmt.Errorf("-workers %d: need at least one", c.workers)
+	}
+	switch c.policy {
+	case "exact":
+		policy = observe.PanicExact
+	case "kind":
+		policy = observe.PanicKindOnly
+	default:
+		return "", "", fmt.Errorf("-panic-policy %q: use exact or kind", c.policy)
+	}
+	checkout := ""
+	switch {
+	case c.clone == "" || c.clone == "gc-386":
+	case c.clone == "golean":
+		checkout = filepath.Join("deps", "golean")
+	case strings.HasPrefix(c.clone, "golean:"):
+		checkout = strings.TrimPrefix(c.clone, "golean:")
+		if checkout == "" {
+			return "", "", fmt.Errorf("-clone golean: empty checkout path")
+		}
+	default:
+		return "", "", fmt.Errorf("-clone %q: use gc-386, golean, or golean:<checkout>", c.clone)
+	}
+	// The out dir must be ours: empty/absent, or a previous batch
+	// (manifest.tsv present). Refusing foreign directories keeps the
+	// stale-case cleanup from ever deleting someone else's files.
+	entries, err := os.ReadDir(c.out)
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		return "", "", err
+	case len(entries) > 0:
+		if _, err := os.Stat(filepath.Join(c.out, "manifest.tsv")); err != nil {
+			return "", "", fmt.Errorf("out dir %s is non-empty and not a gengo batch (no manifest.tsv) — refusing to touch it", c.out)
+		}
+	}
+	return policy, checkout, nil
+}
+
+func run(cfg config) error {
+	policy, checkout, err := cfg.validate()
+	if err != nil {
+		return err
+	}
+	judging := cfg.judge || cfg.clone != ""
+	rev := generatorRev()
+
+	if err := os.MkdirAll(cfg.out, 0o755); err != nil {
 		return err
 	}
 	// The batch root is its own throwaway module so `go test ./...` in the
 	// repo never vets generated programs (vet's style checks — redundant
 	// `v || v` and friends — legitimately fire on random code).
-	modfile := filepath.Join(out, "go.mod")
+	modfile := filepath.Join(cfg.out, "go.mod")
 	if _, err := os.Stat(modfile); os.IsNotExist(err) {
 		if err := os.WriteFile(modfile, []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
 			return err
@@ -51,22 +134,25 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 	}
 
 	tagCount := map[string]int{}
-	pairCount := map[string]int{}
 	siteStats := map[string]*gen.SiteStats{}
-	tagsByDir := map[string][]string{}
+	featuresByID := map[string][]string{}
+	liveDirs := map[string]bool{}
 	var manifest strings.Builder
 	manifest.WriteString("id\tseed\tfeatures\n")
 
-	for i := 0; i < n; i++ {
-		caseSeed := seed + int64(i)
-		cfg := gen.DefaultConfig(caseSeed)
-		cfg.Swarm = swarm
-		c, err := gen.New(cfg).Generate()
+	for i := 0; i < cfg.n; i++ {
+		caseSeed := cfg.seed + int64(i)
+		gcfg := gen.DefaultConfig(caseSeed)
+		gcfg.Swarm = cfg.swarm
+		if checkout != "" {
+			gcfg = golean.Profile(gcfg)
+		}
+		c, err := gen.New(gcfg).Generate()
 		if err != nil {
 			return fmt.Errorf("seed %d: %w", caseSeed, err)
 		}
 		id := fmt.Sprintf("case_%05d", i)
-		dir := filepath.Join(out, id)
+		dir := filepath.Join(cfg.out, id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -76,6 +162,13 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 		if err := os.WriteFile(filepath.Join(dir, "driver.go"), c.Driver, 0o644); err != nil {
 			return err
 		}
+		if err := harness.WriteCaseRecord(dir, harness.CaseRecord{
+			Schema: harness.CaseSchema, ID: id, Seed: caseSeed, GeneratorRev: rev,
+			SubjectSHA256: harness.SubjectHash(c.Source),
+			Features:      c.FeatureCounts, DrawTrace: c.Tape,
+		}); err != nil {
+			return err
+		}
 		// Features carry per-program COUNTS (tag=N): presence saturates for
 		// common tags; counts keep them stratifiable.
 		counted := make([]string, len(c.Features))
@@ -83,14 +176,10 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 			counted[fi] = fmt.Sprintf("%s=%d", f, c.FeatureCounts[f])
 		}
 		fmt.Fprintf(&manifest, "%s\t%d\t%s\n", id, caseSeed, strings.Join(counted, ","))
-		tagsByDir[dir] = c.Features
+		featuresByID[id] = c.Features
+		liveDirs[dir] = true
 		for _, t := range c.Features {
 			tagCount[t]++
-		}
-		for ai, a := range c.Features {
-			for _, b := range c.Features[ai+1:] {
-				pairCount[a+"+"+b]++
-			}
 		}
 		for site, s := range c.Stats {
 			agg := siteStats[site]
@@ -106,93 +195,182 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 			}
 		}
 	}
-	if err := os.WriteFile(filepath.Join(out, "manifest.tsv"), []byte(manifest.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.out, "manifest.tsv"), []byte(manifest.String()), 0o644); err != nil {
 		return err
 	}
 	// Remove stale case dirs from a previous larger batch in the same out
-	// dir: the conformance glob would otherwise mix two batches' verdicts
-	// (review finding).
-	stale, err := filepath.Glob(filepath.Join(out, "case_*"))
+	// dir: the batch glob would otherwise mix two batches' verdicts.
+	stale, err := filepath.Glob(filepath.Join(cfg.out, "case_*"))
 	if err != nil {
 		return err
 	}
 	for _, dir := range stale {
-		if _, live := tagsByDir[dir]; !live {
+		if !liveDirs[dir] {
 			if err := os.RemoveAll(dir); err != nil {
 				return err
 			}
 		}
 	}
-	fmt.Printf("generated %d cases in %s (seeds %d..%d)\n", n, out, seed, seed+int64(n)-1)
+	fmt.Printf("generated %d cases in %s (seeds %d..%d)\n", cfg.n, cfg.out, cfg.seed, cfg.seed+int64(cfg.n)-1)
 
 	fmt.Println("\ncomposition (tag histogram):")
-	printHistogram(tagCount, n)
-
-	if stats {
+	printHistogram(tagCount, cfg.n)
+	if cfg.stats {
 		fmt.Println("\nchoice frequency (site/arm: valid -> chosen):")
 		printSiteStats(siteStats)
-		fmt.Println("\ntop tag co-occurrence pairs:")
-		printTopPairs(pairCount, 15)
 	}
-
-	if !conformance && crossArch == "" {
+	if !judging {
 		return nil
 	}
 
-	host := conform.Runtime{Name: "host"}
-	rep, err := conform.Run(out, host, timeout, workers)
+	ctx := context.Background()
+	ref := &harness.GcAdapter{GoBin: cfg.goBin, Timeout: cfg.timeout, AdapterName: "gc"}
+	var cloneAd harness.Adapter
+	if cfg.clone == "gc-386" {
+		cloneAd = &harness.GcAdapter{GoBin: cfg.goBin, GOARCH: "386", Timeout: cfg.timeout, AdapterName: "gc-386"}
+	}
+	rep, err := harness.RunBatch(ctx, cfg.out, ref, cloneAd, policy, cfg.workers)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nconformance statement:\n")
-	fmt.Printf("  reference: %s GOARCH=%s\n", rep.GoVersion, runtime.GOARCH)
-	fmt.Printf("  equivalence: byte equality of observations\n")
-	fmt.Printf("  cases: %d  built: %d  ran: %d  timeouts: %d  panic-paths: %d  recovered: %d\n",
-		rep.Total, rep.Built, rep.Ran, rep.TimedOut, rep.PanicPaths, rep.Recovered)
-	fmt.Printf("  conformance rate: %.2f%%\n", 100*rep.Rate())
-	for i, f := range rep.Failures {
-		if i == 5 {
-			fmt.Printf("  ... and %d more failures\n", len(rep.Failures)-5)
-			break
-		}
-		fmt.Printf("  FAIL %s: %s\n", f.Dir, firstLine(f.Detail))
-	}
+	rep.GeneratorRev = rev
+	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(cfg.n) - 1}
 
-	if crossArch != "" {
-		alt := conform.Runtime{Name: crossArch, GOARCH: crossArch}
-		altRep, err := conform.Run(out, alt, timeout, workers)
-		if err != nil {
+	if checkout != "" {
+		if err := runGoLean(ctx, &rep, cfg, checkout, featuresByID); err != nil {
 			return err
 		}
-		divs := conform.Diff(rep, altRep)
-		fmt.Printf("\ncross-arch discrimination (host vs GOARCH=%s):\n", crossArch)
-		fmt.Printf("  divergent cases: %d / %d\n", len(divs), rep.Total)
+	}
+	if err := harness.WriteBatch(cfg.out, rep); err != nil {
+		return err
+	}
+	printReport(rep, cfg, featuresByID, tagCount)
+	return nil
+}
+
+// runGoLean judges the batch's reference outcomes through GoLean's harness
+// and folds the verdicts into the report.
+func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, checkout string, featuresByID map[string][]string) error {
+	identity, err := golean.Identity(ctx, checkout)
+	if err != nil {
+		return err
+	}
+	rep.CloneName, rep.CloneIdentity = "golean", identity
+	cases := make([]golean.Case, len(rep.Cases))
+	for i, cr := range rep.Cases {
+		cases[i] = golean.Case{ID: cr.ID, Dir: filepath.Join(cfg.out, cr.ID),
+			Features: featuresByID[cr.ID], Reference: cr.Reference}
+	}
+	results, err := golean.Run(ctx, filepath.Join(cfg.out, "golean-work"), cases, golean.Config{
+		Checkout: checkout, Jobs: cfg.workers,
+	})
+	if err != nil {
+		return err
+	}
+	rep.Verdicts = map[harness.Verdict]int{}
+	for i := range rep.Cases {
+		res, ok := results[rep.Cases[i].ID]
+		if !ok {
+			return fmt.Errorf("golean returned no verdict for %s", rep.Cases[i].ID)
+		}
+		rep.Cases[i].Verdict = res.Verdict
+		rep.Cases[i].Detail = res.Detail
+		if res.Stage != "" {
+			rep.Cases[i].Detail = "stage " + res.Stage + ": " + res.Detail
+		}
+		rep.Verdicts[res.Verdict]++
+	}
+	return nil
+}
+
+func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]string, tagCount map[string]int) {
+	fmt.Printf("\nconformance statement (out/batch.json is the record):\n")
+	fmt.Printf("  reference: %s\n", rep.ReferenceIdentity)
+	if rep.CloneName != "" {
+		fmt.Printf("  clone:     %s (%s)\n", rep.CloneName, rep.CloneIdentity)
+	}
+	fmt.Printf("  policy: panic-%s   cases: %d   ref-ran: %d   panic-paths: %d   recovered: %d\n",
+		rep.PanicPolicy, rep.Total, rep.RefRan, rep.PanicPaths, rep.Recovered)
+	fmt.Printf("  subject bytes min/mean/max: %d/%d/%d\n",
+		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax)
+	if len(rep.Verdicts) > 0 {
+		fmt.Println("  verdicts:")
+		keys := make([]string, 0, len(rep.Verdicts))
+		for v := range rep.Verdicts {
+			keys = append(keys, string(v))
+		}
+		sort.Strings(keys)
+		for _, v := range keys {
+			fmt.Printf("    %-24s %5d\n", v, rep.Verdicts[harness.Verdict(v)])
+		}
+	}
+	shown := 0
+	for _, cr := range rep.Cases {
+		interesting := cr.Verdict == harness.VerdictMismatch ||
+			cr.Verdict == harness.VerdictHarnessError ||
+			(cr.Verdict == "" && cr.Reference.Status != harness.StatusRan)
+		if !interesting {
+			continue
+		}
+		if shown == 8 {
+			fmt.Println("  ...")
+			break
+		}
+		detail := cr.Detail
+		if detail == "" {
+			detail = string(cr.Reference.Status) + ": " + cr.Reference.Detail
+		}
+		fmt.Printf("  %s %s: %s\n", cr.ID, cr.Verdict, firstLine(detail))
+		shown++
+	}
+	// Cross-arch discrimination: divergences must fall inside the declared
+	// width_dependent quotient (tag honesty).
+	if cfg.clone == "gc-386" {
 		inTag, offTag := 0, 0
-		for _, d := range divs {
-			if hasTag(tagsByDir[d.Dir], "width_dependent") {
+		for _, cr := range rep.Cases {
+			if cr.Verdict != harness.VerdictMismatch {
+				continue
+			}
+			if hasTag(featuresByID[cr.ID], "width_dependent") {
 				inTag++
 			} else {
 				offTag++
-				fmt.Printf("  UNTAGGED divergence in %s (tag honesty violation)\n", d.Dir)
+				fmt.Printf("  UNTAGGED divergence in %s (tag honesty violation)\n", cr.ID)
 			}
 		}
 		widthTagged := tagCount["width_dependent"]
-		fmt.Printf("  width_dependent-tagged cases: %d; divergences inside the tag: %d, outside: %d\n",
-			widthTagged, inTag, offTag)
+		fmt.Printf("\ncross-arch discrimination: divergences in-tag %d, off-tag %d; width_dependent-tagged %d\n",
+			inTag, offTag, widthTagged)
 		if widthTagged > 0 {
-			// The yield makes over-application visible: a tag on 90% of
-			// cases with a 15% hit rate is honest but weak.
 			fmt.Printf("  width_dependent yield: %d/%d (%.1f%%)\n",
 				inTag, widthTagged, 100*float64(inTag)/float64(widthTagged))
 		}
-		switch {
-		case len(divs) == 0:
-			fmt.Println("  WARNING: no divergences — the observation may be blind, or all cases width-independent")
-		case offTag == 0:
-			fmt.Println("  discrimination proof: divergences exist and all fall inside the declared quotient")
+	}
+}
+
+// generatorRev is the generator's own identity in every artifact: VCS
+// revision from build info, "-dirty" when the build had local changes.
+func generatorRev() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	rev, dirty := "", false
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
 		}
 	}
-	return nil
+	if rev == "" {
+		return "unknown"
+	}
+	if dirty {
+		rev += "-dirty"
+	}
+	return rev
 }
 
 func hasTag(tags []string, want string) bool {
@@ -244,24 +422,5 @@ func printSiteStats(stats map[string]*gen.SiteStats) {
 		for _, a := range arms {
 			fmt.Printf("    %-14s %7d -> %7d\n", a, s.Valid[a], s.Chosen[a])
 		}
-	}
-}
-
-func printTopPairs(pairs map[string]int, top int) {
-	keys := make([]string, 0, len(pairs))
-	for k := range pairs {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if pairs[keys[i]] != pairs[keys[j]] {
-			return pairs[keys[i]] > pairs[keys[j]]
-		}
-		return keys[i] < keys[j]
-	})
-	for i, k := range keys {
-		if i == top {
-			break
-		}
-		fmt.Printf("  %-40s %d\n", k, pairs[k])
 	}
 }
