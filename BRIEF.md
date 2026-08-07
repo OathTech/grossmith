@@ -36,21 +36,24 @@ implementation. That shapes everything:
 
 - **The oracle is asymmetric.** A `gc` toolchain is the reference; the
   clone must match. Any divergence is a clone bug, a declared quotient, or
-  our generator bug — no voting, no trusted-reference problem. PLANNED: a
-  symmetric runtime-adapter seam (two implementations in, verdict out).
-  TODAY: `conform.Runtime` hard-codes the host `go` toolchain (identity
-  RECORDED per run, not pinned) and varies only GOARCH — a gc
-  cross-architecture experiment, not a clone harness.
+  our generator bug — no voting, no trusted-reference problem. TODAY
+  (Phase 1): `harness.Adapter` is that seam — pinned identity in, per-case
+  verdict out of a closed taxonomy (match / observation-mismatch / three
+  infra failures / harness-error), with the gc reference adapter, the
+  gc-386 degenerate clone, and the GoLean campaign adapter (`golean`)
+  implemented.
 - **The conformance equivalence is byte equality of observations.** Programs
   are outcome-deterministic by construction, so no fuzzy matching is ever
   needed. Only two declared quotients exist: platform width (pin `GOARCH` or
-  declare the dependency) and panic identity (PLANNED policy knob: match
-  panic *kind* or full `gc` message text — the prose is implementation
-  detail a legitimate clone may not reproduce; TODAY only full byte
-  equality is implemented). TODAY the observation channel itself is
-  `println`, which the Go spec leaves implementation-specific — a
-  gc-compatible debug channel, not a conformance protocol; the portable
-  versioned protocol is the product MVP's first deliverable.
+  declare the dependency) and panic identity (TODAY a policy knob:
+  `-panic-policy exact` matches full `gc` message text, `kind` matches only
+  the closed panic taxonomy — the prose is implementation detail a
+  legitimate clone may not reproduce). TODAY the observation channel is the
+  versioned `grossmith-observation-v2` document (typed values with
+  width-preserving `goType`, ordered events, fail-closed parsing); adapters
+  with narrower channels get a declared capability profile (GoLean:
+  slices/maps unobserved, event constructs excluded) rather than silent
+  blindness.
 - **"Cover the interesting behaviors" is a measured claim.** PLANNED: the
   Go spec surface enumerated as a ledger (supported / partial /
   deferred-with-reason / out-of-scope) so the uncovered remainder is the
@@ -279,9 +282,11 @@ rate watched (expect a dip, fix by construction).
 ```
 BRIEF.md        this file
 gen/            the generator (salvaged core: deps/grossmith-proto/internal/gen)
-conform/        build + run + compare against the pinned reference
-cmd/gengo/      CLI: gengo -n N -seed S -out DIR [-conformance]
-deps/           read-only reference checkouts (gitignored): grossmith-proto, xsmith
+observe/        grossmith-observation-v2: document, equality, panic taxonomy
+harness/        adapters, verdict taxonomy, batch running, durable artifacts
+golean/         the quarantined GoLean campaign adapter
+cmd/gengo/      CLI: gengo -n N -seed S -out DIR [-judge] [-clone gc-386|golean]
+deps/           read-only reference checkouts (gitignored): grossmith-proto, xsmith, golean
 ```
 
 MVP acceptance, mechanically checkable: `go test ./...` green (witness
