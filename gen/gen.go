@@ -74,8 +74,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: ExprFuel %d must be >= 1", c.ExprFuel)
 	case c.LoopCap < 1:
 		return fmt.Errorf("config: LoopCap %d must be >= 1 — every loop draws a trip count in [1,LoopCap]", c.LoopCap)
-	case c.Corner != "" && c.Corner != "none" && c.Corner != "boundary":
-		return fmt.Errorf("config: unknown corner %q", c.Corner)
+	case c.Corner != "" && c.Corner != "none" && c.Corner != "boundary" && c.Corner != "kinds":
+		return fmt.Errorf("config: unknown corner %q (use none, boundary, or kinds)", c.Corner)
 	case c.Vars > 128:
 		return fmt.Errorf("config: Vars %d exceeds 128", c.Vars)
 	case c.ExprFuel > 12:
@@ -368,16 +368,22 @@ func (g *Generator) drawSetup() {
 	case "boundary":
 		g.corner = "boundary"
 		g.boundaryBias = cornerBoundaryBias
+	case "kinds":
+		g.corner = "kinds"
 	case "none":
 		g.boundaryBias = 0
 	case "":
 		if cfg.Swarm {
-			if g.c.choose("corner", []arm{
-				{name: "plain", weight: 7, ok: true},
+			switch g.c.choose("corner", []arm{
+				{name: "plain", weight: 6, ok: true},
 				{name: "boundary", weight: 1, ok: true},
-			}).name == "boundary" {
+				{name: "kinds", weight: 1, ok: true},
+			}).name {
+			case "boundary":
 				g.corner = "boundary"
 				g.boundaryBias = cornerBoundaryBias
+			case "kinds":
+				g.corner = "kinds"
 			}
 		}
 	}

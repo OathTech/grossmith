@@ -96,6 +96,40 @@ func TestMultiAssignEmitted(t *testing.T) {
 	t.Logf("multi_assign: %d tagged, %d with swaps, %d with aliased indexes", tagged, swaps, aliases)
 }
 
+// TestKindsCorner (Phase 4 rung 3, GoLean R3): the kinds corner is
+// conversion-FREE (their constraint: int(x) laundering masks the
+// kind-defaulting bug class), densifies inc/dec and compound sites, and
+// reaches defined-type targets — the BUG-042/043 family's habitat.
+func TestKindsCorner(t *testing.T) {
+	incdec := regexp.MustCompile(`(?m)^\t+v\d+(\+\+|--)$`)
+	sites, definedTyped := 0, 0
+	for seed := int64(4000); seed < 4060; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Corner = "kinds"
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasFeature(c, "corner_kinds") {
+			t.Fatalf("seed %d: kinds corner not noted", seed)
+		}
+		if hasFeature(c, "conversions") {
+			t.Fatalf("seed %d: conversions tagged inside the kinds corner\n%s", seed, c.Source)
+		}
+		sites += len(incdec.FindAll(c.Source, -1))
+		if hasFeature(c, "defined_types") && incdec.Match(c.Source) {
+			definedTyped++
+		}
+	}
+	if sites < 60 {
+		t.Fatalf("kinds corner emitted only %d inc/dec sites over 60 seeds — density lever broken", sites)
+	}
+	if definedTyped == 0 {
+		t.Fatal("no kinds-corner case combines defined types with inc/dec sites")
+	}
+	t.Logf("kinds corner: %d inc/dec sites over 60 seeds, %d cases with defined types present", sites, definedTyped)
+}
+
 // TestRecoverWrapperObservesPanics (Phase 4 rung 1, GoLean R1): wrapped
 // subjects return status OK with the panic ENCODED in the trailing int
 // result and partial state in the others — panic identity and

@@ -33,8 +33,10 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 	}
 	g.c.choose("stmt", []arm{
 		{name: "assign", weight: 4, ok: true, emit: func() { g.assign(out) }},
-		{name: "compound", weight: 2, ok: true, emit: func() { g.compoundAssign(out) }},
-		{name: "incdec", weight: 2, ok: true, emit: func() { g.incDec(out) }},
+		{name: "compound", weight: 2 + 3*boolToInt(g.corner == "kinds"), ok: true,
+			emit: func() { g.compoundAssign(out) }},
+		{name: "incdec", weight: 2 + 3*boolToInt(g.corner == "kinds"), ok: true,
+			emit: func() { g.incDec(out) }},
 		{name: "elem-assign", weight: 3, ok: g.enabled("index") && len(g.indexableVars()) > 0,
 			emit: func() { g.elemAssign(out) }},
 		{name: "append", weight: 3, ok: g.enabled("slices", "append") && len(g.appendableSlices()) > 0,
@@ -202,7 +204,7 @@ func (g *Generator) projectInner(out *emitter, w binding) {
 		}
 		out.line("%s = %s", o.name, w.name)
 	default:
-		if g.enabled("conversions") {
+		if g.enabled("conversions") && g.corner != "kinds" {
 			t := pick(g.c, intTypes())
 			o := &g.vars[g.pickOuter(t)]
 			o.reads++
@@ -259,6 +261,11 @@ func (g *Generator) compoundAssign(out *emitter) {
 	for i, v := range g.vars {
 		if v.typ.Shape != ShapeSlice && v.typ.Shape != ShapeMap {
 			all = append(all, i)
+			// Kinds corner: defined-type compound targets weighted up
+			// (see incDec).
+			if g.corner == "kinds" && v.typ.Shape == ShapeInt && v.typ.Named != "" {
+				all = append(all, i, i)
+			}
 		}
 	}
 	target := &g.vars[g.pickTarget(all)]
@@ -315,6 +322,13 @@ func (g *Generator) incDec(out *emitter) {
 	for i, v := range g.vars {
 		if v.typ.Shape == ShapeInt {
 			numeric = append(numeric, i)
+			// The kinds corner (rung 3, GoLean R3): weight DEFINED-type
+			// targets up — the synthetic-literal kind-defaulting family
+			// (their BUG-042/043, started by our seed 559) lives exactly
+			// where a defaulted literal meets a defined kind.
+			if g.corner == "kinds" && v.typ.Named != "" {
+				numeric = append(numeric, i, i)
+			}
 		}
 	}
 	target := &g.vars[g.pickTarget(numeric)]
@@ -834,7 +848,7 @@ func (g *Generator) forStmt(out *emitter, depth int) {
 // needs the conversions construct; when that is disabled the target is the
 // plain-int variable the declaration floor guarantees.
 func (g *Generator) consumeIndex(out *emitter, index string) {
-	if g.enabled("conversions") {
+	if g.enabled("conversions") && g.corner != "kinds" {
 		t := pick(g.c, intTypes())
 		if i, ok := g.pickVar(t); ok {
 			target := &g.vars[i]

@@ -235,7 +235,7 @@ func (g *Generator) indexExpr(bound int) string {
 		{name: "const", weight: 4, ok: true, emit: func() {
 			out = fmt.Sprintf("%d", g.c.draw(bound))
 		}},
-		{name: "mod", weight: 3, ok: g.enabled("conversions", "modulo"), emit: func() {
+		{name: "mod", weight: 3, ok: g.enabled("conversions", "modulo") && g.corner != "kinds", emit: func() {
 			// Unsigned % bound is always in range — a safe NON-CONSTANT
 			// index (signed % can be negative and would panic).
 			u := g.variable(Int(8, true))
@@ -339,7 +339,10 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			}
 			out = value{text: fmt.Sprintf("(%s %s %d)", left.text, op, count)}
 		}},
-		{name: "conversion", weight: 2, ok: g.enabled("conversions"), emit: func() {
+		// The kinds corner SUPPRESSES conversions (GoLean R3's constraint:
+		// `int(x)` laundering masks the kind-defaulting bug class — their
+		// range/int-kind-arith vs range-int-typed lesson).
+		{name: "conversion", weight: 2, ok: g.enabled("conversions") && g.corner != "kinds", emit: func() {
 			// The operand must be non-constant, and more sharply than for
 			// arithmetic: converting a CONSTANT the target cannot represent
 			// is a compile error, so a signed literal reaching `uint16(-10)`

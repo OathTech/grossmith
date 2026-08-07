@@ -64,7 +64,7 @@ their full disposition is the appendix.
 |---|---|---|
 | Liveness tiers (observed/feeder/dead) | supported | `dead_code`, `dead_value`, `feeder_value`; aggregate observation of maps/slices under capability profiles arrives at rung 4 (R5). |
 | Observation points | supported | `observe_point` — mid-function obs* events (gc profile; excluded under GoLean's until adapter shape (a)); event order and position are compared fields with sensitivity controls. |
-| Corners | partial | `boundary` only (`corner_boundary` info tag); R3 kind matrix is next; dead-rich, conversion-truncation remain planned. |
+| Corners | partial | `boundary` (`corner_boundary`: literals/divisors/shifts at type edges) and `kinds` (`corner_kinds`, rung 3/R3: conversion-FREE in-kind sweeps, dense inc/dec+compound sites, defined-type targets weighted up — the BUG-042/043 family's habitat); dead-rich and conversion-truncation remain planned. |
 | Swarm | supported | Per-seed mixes; pairwise coverage objective arrives at rung 5 (R4). |
 
 ## Out of scope (deliberate, both roadmaps)
