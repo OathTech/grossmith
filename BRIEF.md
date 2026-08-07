@@ -186,8 +186,11 @@ convention. The trace buys, in order of adoption:
    the *choice sequence* and re-decode — every candidate is
    valid/halting/deterministic by construction or a fail-closed rejected
    decode (witnessed: mutated traces either decode to type-checking
-   programs or return *ReplayError, measured 200 valid / 70 rejected over
-   a mutation sweep). Built when the first real finding needs minimizing,
+   programs or return *ReplayError — 291 valid / 249 rejected over a
+   sweep that includes the rejection-heavy trace head, per the Phase 3
+   audit; a bad draw BOUND stays a loud generator bug, never disguised
+   as a trace violation). Built when the first real finding needs
+   minimizing,
    per the audit — not before. (Literature: "Test-Case Reduction via
    Test-Case Generation" — the Hypothesis reducer; Xsmith's Clotho.)
 3. **Coverage-guided search over tapes** (if blind generation ever

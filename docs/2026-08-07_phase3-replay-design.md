@@ -45,8 +45,14 @@ tampered-record refusal.
   profile, explicit construct set).
 - Each violation class → its typed error with position.
 - **The shrinking precondition**, measured: single-draw mutations either
-  decode to type-checking programs or fail closed (200 valid / 70
-  rejected over the sweep); no third outcome exists.
+  decode to type-checking programs or fail closed (291 valid / 249
+  rejected once the audit added the rejection-heavy trace HEAD to the
+  sweep — position 0 is the swarm mix and rejects ~99%; the audit's
+  independent 37,178-decode sweep observed zero third outcomes). The
+  remaining third-outcome mechanism the audit found — a non-positive
+  draw bound reported as a trace violation, inverting blame onto the
+  trace — is closed by a guard: a bad bound panics as a generator bug
+  in every mode.
 
 ## Deliberately not built
 

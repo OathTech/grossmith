@@ -3,6 +3,9 @@ package gen
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -49,8 +52,65 @@ func TestReplayRoundTrip(t *testing.T) {
 					t.Fatalf("seed %d cfg %d: trace diverges at %d", seed, ci, i)
 				}
 			}
+			// Metadata identity too (audit F8: the comment claimed features
+			// were compared; now they are — and stats).
+			if !reflect.DeepEqual(orig.Features, rep.Features) {
+				t.Fatalf("seed %d cfg %d: features differ", seed, ci)
+			}
+			if !reflect.DeepEqual(orig.FeatureCounts, rep.FeatureCounts) {
+				t.Fatalf("seed %d cfg %d: feature counts differ", seed, ci)
+			}
+			if !reflect.DeepEqual(orig.Stats, rep.Stats) {
+				t.Fatalf("seed %d cfg %d: site stats differ", seed, ci)
+			}
 		}
 	}
+}
+
+// TestConfigMutationAfterNewIsInert (audit F2): the no-mutation-window
+// promise is kept at CONSTRUCTION — mutating the caller's Constructs map
+// or Exclude slice between New and Generate must not change program
+// bytes.
+func TestConfigMutationAfterNewIsInert(t *testing.T) {
+	cfg := DefaultConfig(777)
+	cfg.Swarm = false
+	cfg.Constructs = map[string]bool{"loops": true, "division": true}
+	cfg.Exclude = []string{"defer"}
+	clean, err := New(cfg).Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := New(cfg)
+	cfg.Constructs["division"] = false
+	cfg.Constructs["maps"] = true
+	cfg.Exclude[0] = "loops"
+	mutated, err := g.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(clean.Source, mutated.Source) {
+		t.Fatal("config mutation between New and Generate changed program bytes")
+	}
+}
+
+// TestNonPositiveBoundIsGeneratorBug (audit F3): a bad draw bound must
+// stay a loud generator bug in replay mode, never a *ReplayError — blame
+// inversion would let a shrinker walk past a real defect.
+func TestNonPositiveBoundIsGeneratorBug(t *testing.T) {
+	c := newReplayChooser([]int{5})
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("draw(0) did not panic")
+		}
+		if _, isReplay := r.(*ReplayError); isReplay {
+			t.Fatal("draw(0) reported a trace violation instead of a generator bug")
+		}
+		if !strings.Contains(fmt.Sprint(r), "generator bug") {
+			t.Fatalf("draw(0) panic does not name the generator: %v", r)
+		}
+	}()
+	c.draw(0)
 }
 
 // TestReplayFailsClosed: exhaustion, out-of-range, and surplus are typed
@@ -100,10 +160,13 @@ func TestReplayMutationIsValidByConstruction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Mutate a spread of positions; values drawn small (most bounds
-		// are small, so small values are the interesting decodes).
-		for _, frac := range []int{7, 3, 2} {
-			pos := len(orig.Tape) / frac
+		// Mutate a spread of positions INCLUDING the head (audit F8: the
+		// swarm-mix draws at position 0 behave nothing like mid-trace —
+		// measured far more rejection-heavy — and the shrinking-health
+		// evidence must not be sampled only where it looks best). Values
+		// drawn small (most bounds are small, so small values are the
+		// interesting decodes).
+		for _, pos := range []int{0, 1, 2, len(orig.Tape) / 7, len(orig.Tape) / 3, len(orig.Tape) / 2} {
 			for delta := 0; delta < 3; delta++ {
 				tr := append([]int(nil), orig.Tape...)
 				tr[pos] = delta

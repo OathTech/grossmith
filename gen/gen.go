@@ -144,9 +144,10 @@ type Case struct {
 	// of programs while a 19% minority per draw); counts keep the tag
 	// informative for stratification.
 	FeatureCounts map[string]int
-	// Tape is the recorded DRAW TRACE — a log of every draw, in order. No
-	// replay source exists yet (no exhaustion or out-of-range policy), so
-	// this is provenance and a future seam, not a decoder input (audit H1).
+	// Tape is the recorded DRAW TRACE — a log of every draw, in order,
+	// and a DECODER input: NewReplay(config, tape) regenerates the case
+	// byte-for-byte, with trace/generator disagreements surfacing as
+	// typed *ReplayError (audit Phase 3; H1 resolved).
 	Tape []int
 	// Stats is the per-site realized choice distribution.
 	Stats map[string]*SiteStats
@@ -281,13 +282,31 @@ func (g *Generator) spendRisk() bool {
 
 const cornerBoundaryBias = 5
 
+// snapshotConfig deep-copies the caller-owned reference fields so a
+// mutation between New and Generate cannot change program bytes for the
+// same seed (review finding; the Phase 3 audit found the window REOPENED
+// when the setup draws moved into Generate, because the copy moved with
+// them — it now happens at construction, where the promise is made).
+func snapshotConfig(cfg Config) Config {
+	if cfg.Constructs != nil {
+		m := make(map[string]bool, len(cfg.Constructs))
+		for k, v := range cfg.Constructs {
+			m[k] = v
+		}
+		cfg.Constructs = m
+	}
+	cfg.Exclude = append([]string(nil), cfg.Exclude...)
+	cfg.NoObserve = append([]Shape(nil), cfg.NoObserve...)
+	return cfg
+}
+
 // New builds a seeded Generator. The per-seed setup draws (swarm mix,
 // corner) happen at the START of Generate — through the chooser, so they
 // are on the tape and inside Generate's single recovery point.
 func New(cfg Config) *Generator {
 	return &Generator{
 		c:    newChooser(cfg.Seed),
-		cfg:  cfg,
+		cfg:  snapshotConfig(cfg),
 		used: map[string]int{},
 	}
 }
@@ -303,7 +322,7 @@ func New(cfg Config) *Generator {
 func NewReplay(cfg Config, trace []int) *Generator {
 	return &Generator{
 		c:    newReplayChooser(trace),
-		cfg:  cfg,
+		cfg:  snapshotConfig(cfg),
 		used: map[string]int{},
 	}
 }
@@ -314,9 +333,10 @@ func (g *Generator) drawSetup() {
 	cfg := g.cfg
 	switch {
 	case cfg.Constructs != nil:
-		// Copied, not aliased: the caller's map was the one non-tape input
-		// into generation (review finding — a mutation between New and
-		// Generate changed program bytes for the same seed).
+		// g.cfg's map is already OUR copy (snapshotConfig at construction
+		// — that is where the no-mutation-window promise is kept); this
+		// second copy just keeps g.constructs free to absorb Exclude below
+		// without touching the recorded config.
 		g.constructs = make(map[string]bool, len(cfg.Constructs))
 		for k, v := range cfg.Constructs {
 			g.constructs[k] = v

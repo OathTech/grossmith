@@ -40,10 +40,14 @@ func (s *seededSource) draw(n int) int { return s.rng.Intn(n) }
 // recorded it (or a shrinker mutated the trace into an invalid decode,
 // which is an ordinary rejected candidate, not a bug).
 type ReplayError struct {
-	// Pos is the draw index at which replay failed (== len(trace) for
-	// surplus, where the failure is that generation ENDED there).
+	// Pos is the number of draws consumed when replay failed — the index
+	// of the failing draw for exhausted/out-of-range, and the index of
+	// the FIRST UNCONSUMED trace value for surplus (audit F4: the doc
+	// previously disagreed with the constructors; the shrinker-facing
+	// contract is this one).
 	Pos int
-	// Bound is the bound the generator requested (0 for surplus).
+	// Bound is the bound the generator requested for exhausted and
+	// out-of-range; for surplus it is the COUNT of unconsumed draws.
 	Bound int
 	// Value is the offending trace value (-1 for exhaustion; the first
 	// unconsumed value for surplus).
@@ -110,6 +114,14 @@ func newReplayChooser(trace []int) *chooser {
 
 // draw returns an int in [0,n) from the source, recorded on the tape.
 func (c *chooser) draw(n int) int {
+	// A non-positive bound is a GENERATOR bug (empty pick, missing total
+	// leaf), and must stay one in replay mode too — without this guard the
+	// replay source reported it as a trace violation, inverting blame onto
+	// the trace and letting a shrinker silently walk past a real defect
+	// (audit F3: the disguised third outcome).
+	if n <= 0 {
+		panic(fmt.Sprintf("gen: draw with non-positive bound %d — generator bug, not a trace violation", n))
+	}
 	v := c.src.draw(n)
 	c.tape = append(c.tape, v)
 	return v
