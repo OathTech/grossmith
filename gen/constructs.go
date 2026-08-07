@@ -37,7 +37,7 @@ func Optional() []string {
 		"defined_types", "methods",
 		"interfaces", "assertion",
 		"string_index", "string_slice", "string_range",
-		"slice_triple",
+		"slice_triple", "type_switch",
 	}
 }
 

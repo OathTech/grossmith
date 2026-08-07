@@ -51,6 +51,13 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.assertOk(out) }},
 		{name: "iface-assign", weight: 2, ok: g.enabled("interfaces") && len(g.ifaceVars()) > 0,
 			emit: func() { g.ifaceAssign(out) }},
+		{name: "type-switch", weight: 2,
+			// The concrete arms read the binding through int(w) — a
+			// conversion, so the arm is conversion-gated and masked under
+			// the kinds corner like every laundering site.
+			ok: g.enabled("interfaces", "type_switch", "switch", "conversions") &&
+				g.corner != "kinds" && len(g.ifaceVars()) > 0,
+			emit: func() { g.typeSwitchStmt(out) }},
 		{name: "defer", weight: 2, ok: g.enabled("defer") && !g.pureMode,
 			emit: func() { g.deferPrint(out) }},
 		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0 && !g.pureMode,
@@ -638,6 +645,68 @@ func (g *Generator) ifaceAssign(out *emitter) {
 	}
 	g.mark("interfaces", "assignment")
 	out.line("%s = %s", iv.name, rhs.text)
+}
+
+// typeSwitchStmt emits `switch w := v.(type)` over an interface variable
+// (sx c03). Case types are drawn WITHOUT REPLACEMENT from the interface's
+// legal implementers only — naming a type that provably lacks the
+// interface's methods is a COMPILE error (the impossible-assertion trap),
+// and duplicate case types are compile errors too. The dynamic type at the
+// switch is a deterministic runtime value, so dispatch is deterministic; the
+// nil-interface case is impossible by construction (interface values are
+// never nil). The per-arm binding w is typed PER ARM — the concrete type in
+// a one-type case, the interface type in default — and is READ in every arm
+// (the fold in concrete arms, a discharge in default) so the unused-variable
+// rule holds under every clause interpretation.
+//
+// Reachability is knowledge-as-data where it is PROVABLE: a derived
+// interface has exactly one satisfier (globally-unique method names), so its
+// dynamic type is statically the source type and the default arm is dead —
+// noted unreachable_case. Empty-interface arms depend on dynamic-type churn
+// the generator does not track, so no reachability claim is recorded there.
+func (g *Generator) typeSwitchStmt(out *emitter) {
+	g.resetRisk()
+	iv := &g.vars[pick(g.c, g.ifaceVars())]
+	iv.reads++
+	info := g.ifaceByName(iv.typ.Name)
+	impls := g.implementers(info)
+	w := fmt.Sprintf("w%d", g.innerSeq)
+	g.innerSeq++
+	g.mark("interfaces", "type_switch", "switch", "control_flow", "cases", "default", "short_decl")
+	out.open("switch %s := %s.(type) {", w, iv.name)
+	count := 1 + g.c.draw(len(impls))
+	cands := append([]int(nil), impls...)
+	for k := 0; k < count; k++ {
+		j := g.c.draw(len(cands))
+		dt := g.defined[cands[j]].typ
+		cands = append(cands[:j], cands[j+1:]...)
+		out.dedent()
+		out.line("case %s:", dt.Named)
+		out.indent++
+		// Use w AT ITS ARM TYPE: fold it into the guaranteed plain-int
+		// variable. int(w) from any defined int kind is a conversion to
+		// platform width — width-dependent, like the += wrap.
+		ai, _ := g.pickVar(Int(0, false))
+		acc := &g.vars[ai]
+		acc.reads++
+		g.mark("assignment", "conversions")
+		g.markWidthDep(acc.typ)
+		out.line("%s += int(%s)", acc.name, w)
+	}
+	out.dedent()
+	out.line("default:")
+	out.indent++
+	// In default w has the INTERFACE type; the blank read discharges the
+	// binding without observing the payload twice.
+	out.line("_ = %s", w)
+	out.dedent()
+	out.line("}")
+	if len(info.methods) > 0 {
+		// Derived interface: the single-satisfier construction makes the
+		// source type the only possible dynamic type, so the default arm
+		// is provably dead.
+		g.note(tagUnreachableCase)
+	}
 }
 
 // assertOk is the two-result type assertion: x, ok = iv.(T) — never panics,

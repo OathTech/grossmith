@@ -71,7 +71,12 @@ func TestMultiAssignEmitted(t *testing.T) {
 		return false
 	}
 	alias := regexp.MustCompile(`(?m)^\t+v\d+, v\d+\[int\(v\d+%`)
-	multi := regexp.MustCompile(`(?m)^\t+[^=\n]+, [^=\n]+ = [^\n]+, `)
+	// A multi-TARGET line: two-plus targets before one `=`. The RHS may be
+	// a single multi-result call (`a[i], v = h(x)` — callStmt's
+	// element-target minority marks multi_assign with no RHS comma), so
+	// the witness pins the target side only (latent until the strings/
+	// slices/type-switch rungs shifted draw streams and surfaced it).
+	multi := regexp.MustCompile(`(?m)^\t+[^=\n]+, [^=\n]+ = `)
 	swaps, aliases, tagged := 0, 0, 0
 	for seed := int64(500); seed < 900; seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()
@@ -370,6 +375,54 @@ func fuzzSubject() (int, int, int) {
 	return v0, v1[2], v1[3]
 }
 `, 20*31+99, 30, 40)
+}
+
+// TestTypeSwitchEmitted (type-switch rung; sx c03): the grammar emits
+// `switch w := v.(type)` over interface vars, every switch carries a
+// default arm and reads the binding in every clause, and the population
+// contains both the derived form (single satisfier — default provably
+// dead, noted unreachable_case) and multi-case empty-interface forms.
+// Case-type legality is witnessed by the typecheck sweeps: an impossible
+// case type would fail to compile.
+func TestTypeSwitchEmitted(t *testing.T) {
+	head := regexp.MustCompile(`(?m)^\t+switch (w\d+) := v\d+\.\(type\) \{`)
+	caseLine := regexp.MustCompile(`(?m)^\t+case T\d+:`)
+	tagged, multiCase := 0, 0
+	for seed := int64(40000); seed < 40400; seed++ {
+		c, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasFeature(c, "type_switch") {
+			continue
+		}
+		tagged++
+		m := head.FindSubmatch(c.Source)
+		if m == nil {
+			t.Fatalf("seed %d: type_switch tagged but no type-switch head\n%s", seed, c.Source)
+		}
+		if !caseLine.Match(c.Source) {
+			t.Fatalf("seed %d: type switch without a concrete case\n%s", seed, c.Source)
+		}
+		if !bytes.Contains(c.Source, []byte("default:")) {
+			t.Fatalf("seed %d: type switch without a default arm\n%s", seed, c.Source)
+		}
+		// The binding is read in the default arm (the discharge) — the
+		// unused-binding rule holds under every clause interpretation.
+		if !bytes.Contains(c.Source, append([]byte("_ = "), m[1]...)) {
+			t.Fatalf("seed %d: type-switch binding %s not discharged in default\n%s", seed, m[1], c.Source)
+		}
+		if len(caseLine.FindAll(c.Source, -1)) > 1 {
+			multiCase++
+		}
+	}
+	if tagged == 0 {
+		t.Fatal("no seed in 40000..40400 drew a type switch — arm starved")
+	}
+	if multiCase == 0 {
+		t.Fatal("no multi-case (empty-interface) type switch in the sweep")
+	}
+	t.Logf("type switches in %d cases, %d with multiple concrete arms", tagged, multiCase)
 }
 
 // TestRecoverWrapperObservesPanics (Phase 4 rung 1, GoLean R1): wrapped
