@@ -17,14 +17,29 @@ func base(out string) config {
 // leaves the filesystem untouched.
 func TestValidationRefusesBeforeWrites(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "batch")
+	// A structurally valid checkout, for mutations that must fail on OTHER
+	// grounds than the checkout stat.
+	fake := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(fake, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fake, "scripts", "diff-coverage"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	mutate := []func(*config){
 		func(c *config) { c.n = 0 },
 		func(c *config) { c.n = -5 },
+		func(c *config) { c.out = "" },
 		func(c *config) { c.timeout = 0 },
 		func(c *config) { c.workers = 0 },
 		func(c *config) { c.policy = "fuzzy" },
 		func(c *config) { c.clone = "gcc" },
 		func(c *config) { c.clone = "golean:" },
+		// A missing checkout refuses BEFORE generation (audit F9)...
+		func(c *config) { c.clone = "golean:/nonexistent/checkout" },
+		// ...and an explicit -panic-policy with golean is refused rather
+		// than recorded-but-unapplied (audit F5).
+		func(c *config) { c.clone = "golean:" + fake; c.policySet = true },
 	}
 	for i, m := range mutate {
 		cfg := base(out)
@@ -78,6 +93,26 @@ func TestStaleBatchShrinks(t *testing.T) {
 	// Each surviving case carries its replay record.
 	if _, err := os.Stat(filepath.Join(dirs[0], "case.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestStaleBatchReportRemoved (audit F4): a previous run's batch.json must
+// not survive next to regenerated cases — with index-based IDs it is
+// structurally consistent with the new dirs and nothing rechecks hashes.
+func TestStaleBatchReportRemoved(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "batch")
+	if err := run(base(out)); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(out, "batch.json")
+	if err := os.WriteFile(stale, []byte(`{"schema":"grossmith-batch-v1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(base(out)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("stale batch.json survived regeneration")
 	}
 }
 

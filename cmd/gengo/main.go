@@ -38,8 +38,12 @@ type config struct {
 	clone   string // "", "gc-386", "golean", "golean:<checkout>"
 	goBin   string
 	policy  string
-	timeout time.Duration
-	workers int
+	// policySet: -panic-policy was given explicitly (vs defaulted) — the
+	// golean campaign does not apply it, so an explicit value there is a
+	// refused misconfiguration rather than a silently ignored flag.
+	policySet bool
+	timeout   time.Duration
+	workers   int
 }
 
 func main() {
@@ -56,6 +60,11 @@ func main() {
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-case run timeout")
 	flag.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "parallel build/run workers")
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "panic-policy" {
+			cfg.policySet = true
+		}
+	})
 
 	if err := run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "gengo:", err)
@@ -70,6 +79,8 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 	switch {
 	case c.n < 1:
 		return "", "", fmt.Errorf("-n %d: need at least one case", c.n)
+	case c.out == "":
+		return "", "", fmt.Errorf("-out: empty path")
 	case c.timeout <= 0:
 		return "", "", fmt.Errorf("-timeout %s: must be positive", c.timeout)
 	case c.workers < 1:
@@ -95,6 +106,20 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 		}
 	default:
 		return "", "", fmt.Errorf("-clone %q: use gc-386, golean, or golean:<checkout>", c.clone)
+	}
+	if checkout != "" {
+		// Refuse BEFORE the generation and reference pass (audit F9): a
+		// typo'd checkout or a run from outside the repo root previously
+		// failed only after minutes of judged cases.
+		if _, err := os.Stat(filepath.Join(checkout, "scripts", "diff-coverage")); err != nil {
+			return "", "", fmt.Errorf("golean checkout: %w (run from the repo root, or pass -clone golean:<path>)", err)
+		}
+		// GoLean's harness applies its own panic equivalence (expected
+		// status + exact panic message); -panic-policy would be recorded
+		// but never used (audit F5) — refuse rather than misrecord.
+		if c.policySet {
+			return "", "", fmt.Errorf("-panic-policy is not applied by the golean campaign (GoLean pins exact panic messages); omit it")
+		}
 	}
 	// The out dir must be ours: empty/absent, or a previous batch
 	// (manifest.tsv present). Refusing foreign directories keeps the
@@ -131,6 +156,21 @@ func run(cfg config) error {
 		if err := os.WriteFile(modfile, []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
 			return err
 		}
+	}
+	// Mark the dir as ours IMMEDIATELY (audit F3): manifest.tsv is the
+	// ownership token validate() checks, and writing it only after the full
+	// generation loop meant an interrupted run left a dir every future run
+	// refused. The header-only file is overwritten with the real manifest
+	// below.
+	if err := os.WriteFile(filepath.Join(cfg.out, "manifest.tsv"), []byte("id\tseed\tfeatures\n"), 0o644); err != nil {
+		return err
+	}
+	// And a previous run's report must not survive next to regenerated
+	// cases (audit F4): with index-based IDs a stale batch.json is
+	// structurally consistent with the new dirs — only the subject hashes
+	// disagree, and nothing rechecks them.
+	if err := os.Remove(filepath.Join(cfg.out, "batch.json")); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 
 	tagCount := map[string]int{}
@@ -256,6 +296,9 @@ func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, checko
 		return err
 	}
 	rep.CloneName, rep.CloneIdentity = "golean", identity
+	// The record states the equivalence actually applied — GoLean's, not
+	// the -panic-policy default (audit F5).
+	rep.PanicPolicy = "golean-harness (expected status + exact panic message)"
 	cases := make([]golean.Case, len(rep.Cases))
 	for i, cr := range rep.Cases {
 		cases[i] = golean.Case{ID: cr.ID, Dir: filepath.Join(cfg.out, cr.ID),
@@ -306,8 +349,10 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 	}
 	shown := 0
 	for _, cr := range rep.Cases {
-		interesting := cr.Verdict == harness.VerdictMismatch ||
-			cr.Verdict == harness.VerdictHarnessError ||
+		// Every non-match is worth a line (audit F10: infra failures were
+		// visible only as a count, hiding e.g. WHICH construct a clone's
+		// frontend lacks).
+		interesting := (cr.Verdict != "" && cr.Verdict != harness.VerdictMatch) ||
 			(cr.Verdict == "" && cr.Reference.Status != harness.StatusRan)
 		if !interesting {
 			continue
