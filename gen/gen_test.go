@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/printer"
 	"go/token"
@@ -20,6 +21,29 @@ func generate(t *testing.T, seed int64) Case {
 		t.Fatalf("seed %d: %v", seed, err)
 	}
 	return c
+}
+
+// typecheckCase checks SUBJECT+DRIVER together (the subject calls the
+// driver-provided obs* API, so it does not typecheck alone) under optional
+// Sizes, returning the fileset, subject AST, and types.Info over both.
+func typecheckCase(t *testing.T, c Case, seed int64, sizes types.Sizes) (*token.FileSet, *ast.File, *types.Info) {
+	t.Helper()
+	fset := token.NewFileSet()
+	subject, err := parser.ParseFile(fset, "subject.go", c.Source, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("seed %d: parse subject: %v", seed, err)
+	}
+	driver, err := parser.ParseFile(fset, "driver.go", c.Driver, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("seed %d: parse driver: %v", seed, err)
+	}
+	imp := importer.Default()
+	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
+	conf := types.Config{Sizes: sizes, Importer: imp}
+	if _, err := conf.Check("main", fset, []*ast.File{subject, driver}, info); err != nil {
+		t.Fatalf("seed %d does not typecheck: %v\n%s", seed, err, c.Source)
+	}
+	return fset, subject, info
 }
 
 func parseCase(t *testing.T, src []byte, seed int64) (*token.FileSet, *ast.File) {
@@ -39,11 +63,7 @@ func parseCase(t *testing.T, src []byte, seed int64) (*token.FileSet, *ast.File)
 func TestGeneratedProgramsTypecheck(t *testing.T) {
 	for seed := int64(1); seed <= 300; seed++ {
 		c := generate(t, seed)
-		fset, file := parseCase(t, c.Source, seed)
-		conf := types.Config{}
-		if _, err := conf.Check("main", fset, []*ast.File{file}, nil); err != nil {
-			t.Fatalf("seed %d does not typecheck: %v\n%s", seed, err, c.Source)
-		}
+		typecheckCase(t, c, seed, nil)
 	}
 }
 
@@ -156,7 +176,7 @@ func TestArraysArePresentAndObserved(t *testing.T) {
 				break
 			}
 		}
-		if strings.Contains(string(c.Source), "]") && strings.Contains(string(c.Source), "println(r") {
+		{
 			_, file := parseCase(t, c.Source, seed)
 			for _, decl := range file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
@@ -197,8 +217,17 @@ func TestStructsArePresentAndObserved(t *testing.T) {
 		}
 		withStructs++
 		src := string(c.Source)
-		if regexp.MustCompile(`println\(r\d+\.f\d+\)`).MatchString(src) {
-			observedStructs++
+		_, file := parseCase(t, c.Source, seed)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != Subject || fn.Type.Results == nil {
+				continue
+			}
+			for _, res := range fn.Type.Results.List {
+				if id, ok := res.Type.(*ast.Ident); ok && strings.HasPrefix(id.Name, "S") {
+					observedStructs++
+				}
+			}
 		}
 		if strings.Contains(src, "== S") || strings.Contains(src, "!= S") {
 			equality++
@@ -375,11 +404,7 @@ func TestStringGrowthIsLinearByConstruction(t *testing.T) {
 	chains := 0
 	for seed := int64(1); seed <= 300; seed++ {
 		c := generate(t, seed)
-		fset, file := parseCase(t, c.Source, seed)
-		info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
-		if _, err := (&types.Config{}).Check("main", fset, []*ast.File{file}, info); err != nil {
-			t.Fatalf("seed %d: typecheck: %v", seed, err)
-		}
+		_, file, info := typecheckCase(t, c, seed, nil)
 		isString := func(e ast.Expr) bool {
 			tv, ok := info.Types[e]
 			if !ok {
@@ -468,10 +493,7 @@ func TestBoundaryCornerIsSafeAndReaches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed %d: %v", seed, err)
 		}
-		fset, file := parseCase(t, c.Source, seed)
-		if _, err := (&types.Config{}).Check("main", fset, []*ast.File{file}, nil); err != nil {
-			t.Fatalf("seed %d (boundary corner) does not typecheck: %v\n%s", seed, err, c.Source)
-		}
+		typecheckCase(t, c, seed, nil)
 		for _, f := range c.Features {
 			if f == tagBoundary {
 				reached++
@@ -607,11 +629,7 @@ func TestPlatformDivisionByMinusOneIsWidthTagged(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed %d: %v", seed, err)
 		}
-		fset, file := parseCase(t, c.Source, seed)
-		info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
-		if _, err := (&types.Config{}).Check("main", fset, []*ast.File{file}, info); err != nil {
-			t.Fatalf("seed %d: typecheck: %v", seed, err)
-		}
+		_, file, info := typecheckCase(t, c, seed, nil)
 		divides := false
 		ast.Inspect(file, func(n ast.Node) bool {
 			e, ok := n.(*ast.BinaryExpr)
@@ -809,11 +827,7 @@ func TestObservationPointsArePresent(t *testing.T) {
 	points := 0
 	for seed := int64(1); seed <= 200; seed++ {
 		c := generate(t, seed)
-		src := string(c.Source)
-		if i := strings.Index(src, "func main"); i >= 0 {
-			src = src[:i]
-		}
-		points += strings.Count(src, "println(")
+		points += strings.Count(string(c.Source), `("point"`)
 	}
 	if points == 0 {
 		t.Fatal("no observation points in 200 seeds")
@@ -1005,8 +1019,16 @@ func TestMapsAreDeterministicByConstruction(t *testing.T) {
 			}
 			return true
 		})
-		if regexp.MustCompile(`println\(r\d+\[`).MatchString(string(c.Source)) {
-			observed++
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != Subject || fn.Type.Results == nil {
+				continue
+			}
+			for _, res := range fn.Type.Results.List {
+				if _, ok := res.Type.(*ast.MapType); ok {
+					observed++
+				}
+			}
 		}
 	}
 	if withMaps == 0 {
@@ -1026,11 +1048,8 @@ func TestDeferAndRecoverArePresent(t *testing.T) {
 	for seed := int64(1); seed <= 300; seed++ {
 		c := generate(t, seed)
 		src := string(c.Source)
-		if i := strings.Index(src, "func main"); i >= 0 {
-			src = src[:i]
-		}
-		defers += strings.Count(src, "defer println(")
-		guards += strings.Count(src, "recovered:")
+		defers += strings.Count(src, "defer obs")
+		guards += strings.Count(src, "obsRecovered(")
 		_, file := parseCase(t, c.Source, seed)
 		ast.Inspect(file, func(n ast.Node) bool {
 			lit, ok := n.(*ast.FuncLit)
@@ -1226,19 +1245,25 @@ func TestDefinedTypesAreDistinctAndObserved(t *testing.T) {
 		}
 		withTypes++
 		subject := src
-		if i := strings.Index(subject, "func main"); i >= 0 {
-			subject = subject[:i]
-		}
 		calls += strings.Count(subject, ".m")
-		if regexp.MustCompile(`println\((?:int|uint)\d*\(r\d+\)\)`).MatchString(src) {
-			observedNamed++
+		_, file := parseCase(t, c.Source, seed)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != Subject || fn.Type.Results == nil {
+				continue
+			}
+			for _, res := range fn.Type.Results.List {
+				if id, ok := res.Type.(*ast.Ident); ok && strings.HasPrefix(id.Name, "T") {
+					observedNamed++
+				}
+			}
 		}
 	}
 	if withTypes == 0 {
 		t.Fatal("no defined types in 300 seeds")
 	}
 	if observedNamed == 0 {
-		t.Fatal("no observed named value goes through an underlying conversion")
+		t.Fatal("no defined-type value reaches the observed tuple")
 	}
 	t.Logf("defined types in %d/300, %d method-call sites, %d underlying-converted observations",
 		withTypes, calls, observedNamed)
@@ -1391,11 +1416,7 @@ func TestGeneratedProgramsTypecheck386(t *testing.T) {
 			if err != nil {
 				t.Fatalf("seed %d corner %q: %v", seed, corner, err)
 			}
-			fset, file := parseCase(t, c.Source, seed)
-			conf := types.Config{Sizes: sizes}
-			if _, err := conf.Check("main", fset, []*ast.File{file}, nil); err != nil {
-				t.Fatalf("seed %d corner %q does not typecheck at 386 sizes: %v\n%s", seed, corner, err, c.Source)
-			}
+			typecheckCase(t, c, seed, sizes)
 		}
 	}
 }

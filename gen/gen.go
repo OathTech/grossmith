@@ -33,6 +33,10 @@ type Config struct {
 	// Constructs, when non-nil, is the exact optional-construct gate: a tag
 	// absent or false is disabled. Nil with Swarm=false enables everything.
 	Constructs map[string]bool
+	// NoObserve lists shapes masked OUT of the observed liveness tier — an
+	// adapter capability profile (e.g. GoLean's harness fails closed on
+	// slices and maps). Generation is unrestricted; only observation is.
+	NoObserve []Shape
 	// Corner selects a named-corner sub-config (BRIEF: edge cases are
 	// hunted, not hoped for). "" draws one per seed when Swarm is on;
 	// "none" disables corners; "boundary" biases literals, divisors, and
@@ -112,7 +116,12 @@ func (c Config) Validate() error {
 
 // Case is one generated program: self-contained, import-free, go-run-able.
 type Case struct {
+	// Source is the SUBJECT file: import-free, no main, observation via the
+	// obs* protocol API the driver provides.
 	Source []byte
+	// Driver is the generated gc reference driver: implements obs*, calls
+	// the subject, emits a grossmith-observation-v2 document on stdout.
+	Driver []byte
 	// Features are all tags recorded at emission — constructs used plus info
 	// tags (knowledge-as-data). Sorted.
 	Features []string
@@ -360,12 +369,15 @@ func (g *Generator) Generate() (Case, error) {
 	}
 	fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
 	out.WriteString(body.buf.String())
-	out.WriteString("}\n\n")
-	g.driver(&out, observed)
+	out.WriteString("}\n")
 
 	source, err := format.Source([]byte(out.String()))
 	if err != nil {
-		return Case{}, fmt.Errorf("generated source does not parse (generator bug): %w\n%s", err, out.String())
+		return Case{}, fmt.Errorf("generated subject does not parse (generator bug): %w\n%s", err, out.String())
+	}
+	driver, err := format.Source([]byte(g.driverSource(observed)))
+	if err != nil {
+		return Case{}, fmt.Errorf("generated driver does not parse (generator bug): %w", err)
 	}
 
 	features := make([]string, 0, len(g.used))
@@ -390,7 +402,7 @@ func (g *Generator) Generate() (Case, error) {
 		}
 		stats[site] = cp
 	}
-	return Case{Source: source, Features: features, FeatureCounts: counts, Tape: tape, Stats: stats}, nil
+	return Case{Source: source, Driver: driver, Features: features, FeatureCounts: counts, Tape: tape, Stats: stats}, nil
 }
 
 // pickTarget draws a write target from candidates, biased 3:1 toward
@@ -776,7 +788,21 @@ func (g *Generator) declare(out *emitter) {
 		}
 	}
 	if !anyObserved {
-		g.vars[g.c.draw(len(g.vars))].observed = true
+		var candidates []int
+		for i, v := range g.vars {
+			allowed := true
+			for _, shape := range g.cfg.NoObserve {
+				if v.typ.Shape == shape {
+					allowed = false
+				}
+			}
+			if allowed {
+				candidates = append(candidates, i)
+			}
+		}
+		// Scalars are never in a NoObserve profile, so candidates is
+		// non-empty for every profile we define.
+		g.vars[pick(g.c, candidates)].observed = true
 	}
 }
 
@@ -786,6 +812,11 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		{name: "observed", weight: 4, ok: true},
 		{name: "unobserved", weight: 1, ok: true},
 	}).name == "observed"
+	for _, shape := range g.cfg.NoObserve {
+		if typ.Shape == shape {
+			observed = false
+		}
+	}
 	b := binding{name: name, typ: typ, observed: observed}
 	if typ.Shape == ShapeInterface {
 		// Never nil: initialized by implicit conversion from a satisfying
@@ -852,80 +883,6 @@ func (g *Generator) observe(out *emitter) []binding {
 	g.mark("return")
 	out.line("return %s", strings.Join(names, ", "))
 	return observed
-}
-
-// driver emits func main: call the subject, print every observed value on its
-// own line, and turn any panic into an ordinary observation ("panic: <msg>")
-// with exit status 0 — panic paths are comparable outcomes, not failures.
-// println needs no imports and prints ints, uints, and bools deterministically.
-func (g *Generator) driver(out *strings.Builder, observed []binding) {
-	rs := make([]string, len(observed))
-	for i := range observed {
-		rs[i] = fmt.Sprintf("r%d", i)
-	}
-	out.WriteString("func main() {\n")
-	out.WriteString("\tdefer func() {\n")
-	out.WriteString("\t\tif r := recover(); r != nil {\n")
-	out.WriteString("\t\t\tif err, ok := r.(error); ok {\n")
-	out.WriteString("\t\t\t\tprintln(\"panic:\", err.Error())\n")
-	out.WriteString("\t\t\t} else {\n")
-	out.WriteString("\t\t\t\tprintln(\"panic\")\n")
-	out.WriteString("\t\t\t}\n")
-	out.WriteString("\t\t}\n")
-	out.WriteString("\t}()\n")
-	fmt.Fprintf(out, "\t%s := %s()\n", strings.Join(rs, ", "), Subject)
-	for i, r := range rs {
-		// println takes scalars only; an observed array is printed
-		// element-wise, so the whole value stays injectively visible.
-		switch observed[i].typ.Shape {
-		case ShapeArray:
-			for j := 0; j < observed[i].typ.Len; j++ {
-				fmt.Fprintf(out, "\tprintln(%s[%d])\n", r, j)
-			}
-			continue
-		case ShapeStruct:
-			for _, f := range observed[i].typ.Fields {
-				fmt.Fprintf(out, "\tprintln(%s.%s)\n", r, f.Name)
-			}
-			continue
-		case ShapeMap:
-			// len plus the value at every alphabet key (missing keys print
-			// their zero value) — deterministic and injective over the only
-			// keys the program can ever have touched. Never a map range.
-			fmt.Fprintf(out, "\tprintln(len(%s))\n", r)
-			for _, k := range observed[i].keys {
-				fmt.Fprintf(out, "\tprintln(%s[%s])\n", r, k)
-			}
-			continue
-		case ShapeSlice:
-			// Dynamic length: print it, then every element in order — the
-			// whole value stays injectively visible. cap is NEVER observed
-			// (unspecified after append).
-			fmt.Fprintf(out, "\tprintln(len(%s))\n", r)
-			fmt.Fprintf(out, "\tfor _, e := range %s {\n\t\tprintln(e)\n\t}\n", r)
-			continue
-		}
-		if observed[i].typ.Shape == ShapeInterface {
-			// Dynamic-type identity probes over the LEGAL assertion targets
-			// (comma-ok never panics; asserting a provable non-implementer
-			// would not even compile).
-			info := g.ifaceByName(observed[i].typ.Name)
-			for _, di := range g.implementers(info) {
-				fmt.Fprintf(out, "\t_, o%d_%d := %s.(%s)\n", i, di, r, g.defined[di].typ.Named)
-				fmt.Fprintf(out, "\tprintln(o%d_%d)\n", i, di)
-			}
-			continue
-		}
-		if observed[i].typ.Named != "" {
-			// Named scalars are observed through an explicit underlying
-			// conversion: println's treatment of defined types is not a
-			// contract any clone should be held to.
-			fmt.Fprintf(out, "\tprintln(%s(%s))\n", observed[i].typ.underlyingName(), r)
-			continue
-		}
-		fmt.Fprintf(out, "\tprintln(%s)\n", r)
-	}
-	out.WriteString("}\n")
 }
 
 // pickVar returns the index of a variable of exactly type t. The one-per-type

@@ -70,7 +70,10 @@ func run(n int, seed int64, out string, swarm, conformance bool, crossArch strin
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, "main.go"), c.Source, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "subject.go"), c.Source, 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "driver.go"), c.Driver, 0o644); err != nil {
 			return err
 		}
 		// Features carry per-program COUNTS (tag=N): presence saturates for

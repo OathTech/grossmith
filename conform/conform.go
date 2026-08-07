@@ -45,7 +45,7 @@ func Check(dir string, rt Runtime, timeout time.Duration) CaseResult {
 	if rt.GOARCH != "" {
 		bin = "case-" + rt.GOARCH + ".bin"
 	}
-	build := exec.Command("go", "build", "-o", bin, "main.go")
+	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Dir = dir
 	build.Env = buildEnv(rt)
 	if out, err := build.CombinedOutput(); err != nil {
@@ -80,8 +80,8 @@ func Check(dir string, rt Runtime, timeout time.Duration) CaseResult {
 		// panic, which is the point — the panic line can sit anywhere. The
 		// generated string alphabet cannot produce the words "panic" or
 		// "recovered".
-		res.PanicPath = strings.Contains(res.Output, "panic")
-		res.Recovered = strings.Contains(res.Output, "recovered")
+		res.PanicPath = strings.Contains(res.Output, `"status":"panic"`)
+		res.Recovered = strings.Contains(res.Output, `"at":"recovered"`)
 	}
 	return res
 }
@@ -110,7 +110,7 @@ func (r Report) Rate() float64 {
 
 // CaseDirs lists the case directories under root, sorted.
 func CaseDirs(root string) ([]string, error) {
-	matches, err := filepath.Glob(filepath.Join(root, "*", "main.go"))
+	matches, err := filepath.Glob(filepath.Join(root, "*", "subject.go"))
 	if err != nil {
 		return nil, err
 	}

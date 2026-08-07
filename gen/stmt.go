@@ -106,7 +106,24 @@ func (g *Generator) observePoint(out *emitter) {
 	v := &g.vars[pick(g.c, cands)]
 	v.reads++
 	g.mark("observe_point")
-	out.line("println(%s)", v.name)
+	out.line("%s", g.obsCall("point", v))
+}
+
+// obsCall renders one obs* protocol call for a scalar/string variable: the
+// goType spelling plus a widening conversion, so the event carries width
+// and named-type identity (protocol §3).
+func (g *Generator) obsCall(at string, v *binding) string {
+	t := v.typ
+	switch {
+	case t.Shape == ShapeBool:
+		return fmt.Sprintf("obsBool(%q, %q, %s)", at, "bool", v.name)
+	case t.Shape == ShapeString:
+		return fmt.Sprintf("obsStr(%q, %q, %s)", at, "string", v.name)
+	case t.Unsigned:
+		return fmt.Sprintf("obsUint(%q, %q, uint64(%s))", at, t.GoName(), v.name)
+	default:
+		return fmt.Sprintf("obsInt(%q, %q, int64(%s))", at, t.GoName(), v.name)
+	}
 }
 
 // block emits a nested body, optionally opening a BLOCK-SCOPED declaration.
@@ -442,7 +459,10 @@ func (g *Generator) deferPrint(out *emitter) {
 	v := &g.vars[pick(g.c, cands)]
 	v.reads++
 	g.mark("defer")
-	out.line("defer println(%s)", v.name)
+	// The obs* argument is evaluated AT DEFER TIME — the semantics this
+	// construct exists to exercise — because defer evaluates call arguments
+	// immediately.
+	out.line("defer %s", g.obsCall("defer", v))
 }
 
 // guardedStmt wraps ONE statement in an immediately-invoked function literal
@@ -465,11 +485,11 @@ func (g *Generator) guardedStmt(out *emitter) {
 	out.open("defer func() {")
 	out.open("if r := recover(); r != nil {")
 	out.open("if err, ok := r.(error); ok {")
-	out.line("println(%q, err.Error())", "recovered:")
+	out.line("obsRecovered(err.Error())")
 	out.dedent()
 	out.line("} else {")
 	out.indent++
-	out.line("println(%q)", "recovered")
+	out.line("obsRecovered(%q)", "")
 	out.close()
 	out.close()
 	out.dedent()
