@@ -2,6 +2,8 @@ package gen
 
 import (
 	"bytes"
+	"go/ast"
+	"go/types"
 	"fmt"
 	"os"
 	"os/exec"
@@ -224,11 +226,35 @@ func TestStringFamilyEmitted(t *testing.T) {
 	litSlice := regexp.MustCompile(`"[^"]*"\[\d+:\d+\]`)
 	hotSlice := regexp.MustCompile(`"[^"]*"\[v\d+:\]`)
 	fold := regexp.MustCompile(`(?m)^\t+for i\d+, r\d+ := range \w+ \{\n\t+\w+ \+= i\d+\*31 \+ int\(r\d+\)`)
-	indexed, sliced, hotSliced, folds := 0, 0, 0, 0
+	indexed, sliced, hotSliced, folds, hotIndexed := 0, 0, 0, 0, 0
 	for seed := int64(20000); seed < 20400; seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Typed walk (audit finding 3: the regex \bv\d+\[v\d+\] also
+		// matches array/slice indexing, and the pass gate never required
+		// the runtime-meaningful variable forms at all): count an
+		// occurrence only when the indexed operand IS a string.
+		if hasFeature(c, "string_index") || hasFeature(c, "string_slice") {
+			fset, file, info := typecheckCase(t, c, seed, nil)
+			_ = fset
+			ast.Inspect(file, func(n ast.Node) bool {
+				ie, ok := n.(*ast.IndexExpr)
+				if !ok {
+					return true
+				}
+				tv, ok := info.Types[ie.X]
+				if !ok {
+					return true
+				}
+				if b, ok := tv.Type.Underlying().(*types.Basic); ok && b.Kind() == types.String {
+					if _, isVar := ie.Index.(*ast.Ident); isVar {
+						hotIndexed++
+					}
+				}
+				return true
+			})
 		}
 		if hasFeature(c, "string_index") {
 			if !litIndex.Match(c.Source) && !varIndex.Match(c.Source) {
@@ -256,11 +282,12 @@ func TestStringFamilyEmitted(t *testing.T) {
 			folds++
 		}
 	}
-	if indexed == 0 || sliced == 0 || hotSliced == 0 || folds == 0 {
-		t.Fatalf("string family starved over 400 seeds: %d literal-indexed, %d const-sliced, %d hot-sliced, %d folds",
-			indexed, sliced, hotSliced, folds)
+	if indexed == 0 || sliced == 0 || hotSliced == 0 || folds == 0 || hotIndexed == 0 {
+		t.Fatalf("string family starved over 400 seeds: %d literal-indexed, %d string-var hot-indexed, %d const-sliced, %d hot-sliced, %d folds",
+			indexed, hotIndexed, sliced, hotSliced, folds)
 	}
-	t.Logf("string family: %d literal-indexed, %d const-sliced, %d hot-sliced, %d range folds", indexed, sliced, hotSliced, folds)
+	t.Logf("string family: %d literal-indexed, %d string-var hot-indexed (typed count), %d const-sliced, %d hot-sliced, %d range folds",
+		indexed, hotIndexed, sliced, hotSliced, folds)
 }
 
 // TestSliceTripleEmitted (three-index rung; sx g32/g03/c18/c21): the
@@ -273,7 +300,13 @@ func TestSliceTripleEmitted(t *testing.T) {
 	declLen := regexp.MustCompile(`(?m)^\t+(v\d+) := \[\]\w+\{([^}]*)\}`)
 	tagged, shared, realloc := 0, 0, 0
 	for seed := int64(30000); seed < 30400; seed++ {
-		c, err := New(DefaultConfig(seed)).Generate()
+		// Force-include the rung's gate tags (audit finding 6: the
+		// swarm-drawn window left a 3-instance margin on the reallocating
+		// regime — dense forcing makes both regimes' counts robust to
+		// draw-stream shifts).
+		cfg := DefaultConfig(seed)
+		cfg.Include = []string{"slices", "slice_triple", "append", "range", "conversions"}
+		c, err := New(cfg).Generate()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -404,15 +437,43 @@ func TestTypeSwitchEmitted(t *testing.T) {
 		if !caseLine.Match(c.Source) {
 			t.Fatalf("seed %d: type switch without a concrete case\n%s", seed, c.Source)
 		}
-		if !bytes.Contains(c.Source, []byte("default:")) {
-			t.Fatalf("seed %d: type switch without a default arm\n%s", seed, c.Source)
-		}
 		// The binding is read in the default arm (the discharge) — the
 		// unused-binding rule holds under every clause interpretation.
 		if !bytes.Contains(c.Source, append([]byte("_ = "), m[1]...)) {
 			t.Fatalf("seed %d: type-switch binding %s not discharged in default\n%s", seed, m[1], c.Source)
 		}
-		if len(caseLine.FindAll(c.Source, -1)) > 1 {
+		// Per-SWITCH structure via the AST (audit: the old global regex
+		// count was ~80% vacuous — programs routinely carry several
+		// single-arm switches, and a value switch's default satisfied
+		// the default check).
+		_, file := parseCase(t, c.Source, seed)
+		sawMulti := false
+		ast.Inspect(file, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSwitchStmt)
+			if !ok {
+				return true
+			}
+			concrete, hasDefault := 0, false
+			for _, cl := range ts.Body.List {
+				cc := cl.(*ast.CaseClause)
+				if cc.List == nil {
+					hasDefault = true
+				} else {
+					concrete += len(cc.List)
+				}
+			}
+			if concrete == 0 {
+				t.Fatalf("seed %d: a type switch has no concrete arm", seed)
+			}
+			if !hasDefault {
+				t.Fatalf("seed %d: a type switch has no default arm", seed)
+			}
+			if concrete > 1 {
+				sawMulti = true
+			}
+			return true
+		})
+		if sawMulti {
 			multiCase++
 		}
 	}
@@ -422,7 +483,7 @@ func TestTypeSwitchEmitted(t *testing.T) {
 	if multiCase == 0 {
 		t.Fatal("no multi-case (empty-interface) type switch in the sweep")
 	}
-	t.Logf("type switches in %d cases, %d with multiple concrete arms", tagged, multiCase)
+	t.Logf("type switches in %d cases, %d with a genuinely multi-arm switch", tagged, multiCase)
 }
 
 // TestRecoverWrapperObservesPanics (Phase 4 rung 1, GoLean R1): wrapped

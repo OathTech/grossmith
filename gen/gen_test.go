@@ -601,6 +601,16 @@ func riskSites(n ast.Node) int {
 			if _, ok := e.Index.(*ast.Ident); ok {
 				count++
 			}
+		case *ast.SliceExpr:
+			// Variable slice bounds are the strings rung's hot family
+			// (slice-bounds panics) — the audit found this counter blind
+			// to them (277 uncounted hot statements over 4000 seeds).
+			if _, ok := e.Low.(*ast.Ident); ok {
+				count++
+			}
+			if _, ok := e.High.(*ast.Ident); ok {
+				count++
+			}
 		}
 		return true
 	})

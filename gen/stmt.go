@@ -869,7 +869,17 @@ func (g *Generator) intElemSliceVars() []int {
 // shows. cap itself remains UNOBSERVED (that quotient stands).
 func (g *Generator) sliceTripleStmt(out *emitter) {
 	g.resetRisk()
-	s := &g.vars[pick(g.c, g.intElemSliceVars())]
+	// Base pick biased 3:1 toward observed/aggregate-observed slices
+	// (audit finding 5: only ~17% of emissions put the discriminating
+	// shared-write where the observation could see it).
+	cands := g.intElemSliceVars()
+	weighted := append([]int(nil), cands...)
+	for _, i := range cands {
+		if g.vars[i].observed || g.vars[i].aggObserved {
+			weighted = append(weighted, i, i)
+		}
+	}
+	s := &g.vars[pick(g.c, weighted)]
 	s.reads++
 	// 0 <= a <= b <= c <= minLen, with cap = c-a >= 1 so the shared case is
 	// reachable; minLen >= 2 for every slice declaration.
