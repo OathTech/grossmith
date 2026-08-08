@@ -117,10 +117,16 @@ jobs:
       - name: judge the verdicts
         run: |
           B="$RUNNER_TEMP/campaign/batch.json"
-          jq '{clone: .cloneIdentity, verdicts: .verdicts, wrapperCaught: .wrapperCaught}' "$B"
+          jq '{clone: .cloneIdentity, verdicts: .verdicts, wrapperCaught: .wrapperCaught, wrapperJudged: .wrapperJudged}' "$B"
+          # Non-vacuity added per the 2026-08-08 hunt (F7): a frontend
+          # regression turning EVERY case clone-infra previously passed
+          # green, and a regression back to caught-without-judged (the
+          # G1 state) was invisible.
           jq -e '(.verdicts["harness-error"] // 0) == 0
              and (.verdicts["reference-infra-failure"] // 0) == 0
-             and (.verdicts["observation-mismatch"] // 0) == 0' "$B"
+             and (.verdicts["observation-mismatch"] // 0) == 0
+             and ((.verdicts["clone-infra-failure"] // 0) < .total)
+             and ((.wrapperJudged // -1) == (.wrapperCaught // 0))' "$B"
       - name: archive the conformance statement
         if: always()
         uses: actions/upload-artifact@v4

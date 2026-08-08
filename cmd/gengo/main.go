@@ -134,6 +134,11 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 		if _, err := os.Stat(filepath.Join(checkout, "scripts", "diff-coverage")); err != nil {
 			return "", "", fmt.Errorf("golean checkout: %w (run from the repo root, or pass -clone golean:<path>)", err)
 		}
+		// git is needed for the clone identity — refuse now, not after the
+		// full reference pass (hunt F5: F9's guarantee was incomplete).
+		if _, err := exec.LookPath("git"); err != nil {
+			return "", "", fmt.Errorf("golean campaigns need git for the clone identity: %w", err)
+		}
 		// GoLean's harness applies its own panic equivalence (expected
 		// status + exact panic message); -panic-policy would be recorded
 		// but never used (audit F5) — refuse rather than misrecord.
@@ -400,6 +405,7 @@ func run(cfg config) error {
 	// draft ran before runGoLean and judged against empty verdicts —
 	// exactly the generated-vs-judged conflation G3 warns about, in the
 	// metric meant to fix it).
+	judgedWrapped := 0
 	for _, cr := range rep.Cases {
 		if !hasTag(featuresByID[cr.ID], "recover_wrapper") || cr.Reference.Status != harness.StatusRan {
 			continue
@@ -409,11 +415,28 @@ func run(cfg config) error {
 			if last := doc.Values[len(doc.Values)-1]; last.Kind == "int" && last.Int != 0 {
 				rep.WrapperCaught++
 				if cr.Verdict == harness.VerdictMatch || cr.Verdict == harness.VerdictMismatch {
-					rep.WrapperJudged++
+					judgedWrapped++
 				}
 			}
 		}
 	}
+	if rep.CloneName != "" {
+		// Judged is meaningful only when a clone judged; null in the
+		// artifact otherwise (hunt F6: an unconditional zero reproduced
+		// the exact caught-without-judged signature on clone-less runs).
+		rep.WrapperJudged = &judgedWrapped
+		judgedComp := map[string]int{}
+		for _, cr := range rep.Cases {
+			if cr.Verdict != harness.VerdictMatch && cr.Verdict != harness.VerdictMismatch {
+				continue
+			}
+			for _, tag := range featuresByID[cr.ID] {
+				judgedComp[tag]++
+			}
+		}
+		rep.CompositionJudged = judgedComp
+	}
+	rep.Pairs = cfg.pairs
 	if err := harness.WriteBatch(cfg.out, rep); err != nil {
 		return err
 	}
@@ -610,8 +633,12 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 	if rep.CloneName != "" {
 		fmt.Printf("  clone:     %s (%s)\n", rep.CloneName, rep.CloneIdentity)
 	}
-	fmt.Printf("  policy: panic-%s   cases: %d   ref-ran: %d   panic-paths: %d   recovered-events: %d   wrapper-caught: %d   wrapper-JUDGED: %d\n",
-		rep.PanicPolicy, rep.Total, rep.RefRan, rep.PanicPaths, rep.Recovered, rep.WrapperCaught, rep.WrapperJudged)
+	judgedStr := "n/a (no clone)"
+	if rep.WrapperJudged != nil {
+		judgedStr = fmt.Sprintf("%d", *rep.WrapperJudged)
+	}
+	fmt.Printf("  policy: panic-%s   cases: %d   ref-ran: %d   panic-paths: %d   recovered-events: %d   wrapper-caught: %d   wrapper-JUDGED: %s\n",
+		rep.PanicPolicy, rep.Total, rep.RefRan, rep.PanicPaths, rep.Recovered, rep.WrapperCaught, judgedStr)
 	fmt.Printf("  subject bytes min/mean/max: %d/%d/%d\n",
 		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax)
 	if len(rep.Verdicts) > 0 {
@@ -694,12 +721,24 @@ func generatorRev() string {
 		}
 		return rev
 	}
-	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	gitEnv := []string{}
+	for _, key := range []string{"PATH", "HOME"} {
+		if v := os.Getenv(key); v != "" {
+			gitEnv = append(gitEnv, key+"="+v)
+		}
+	}
+	revCmd := exec.Command("git", "rev-parse", "HEAD")
+	revCmd.Env = gitEnv // hunt F4: an ambient GIT_DIR recorded a FOREIGN repo's HEAD here
+	out, err := revCmd.Output()
 	if err != nil {
 		return "unknown"
 	}
 	rev = "cwd-git:" + strings.TrimSpace(string(out))
-	if s, err := exec.Command("git", "status", "--porcelain").Output(); err == nil && len(strings.TrimSpace(string(s))) > 0 {
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Env = gitEnv
+	if s, err := statusCmd.Output(); err != nil {
+		rev += "-dirty-unknown" // a failed check must not read as clean
+	} else if len(strings.TrimSpace(string(s))) > 0 {
 		rev += "-dirty"
 	}
 	return rev

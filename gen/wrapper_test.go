@@ -40,7 +40,7 @@ func runCase(t *testing.T, c Case) observe.Document {
 			t.Fatal(err)
 		}
 	}
-	build := exec.Command("go", "build", "-o", "case.bin", ".")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", "case.bin", ".")
 	build.Dir = dir
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
@@ -484,6 +484,53 @@ func TestTypeSwitchEmitted(t *testing.T) {
 		t.Fatal("no multi-case (empty-interface) type switch in the sweep")
 	}
 	t.Logf("type switches in %d cases, %d with a genuinely multi-arm switch", tagged, multiCase)
+}
+
+// siteSubject is a HANDCRAFTED wrapped subject: panic at statement 3 of
+// 4, with v0's partial state 2 at the panic point. Pins the site
+// semantics deterministically (tight audit F3: the generated witness
+// only bounds-checked the site; an in-range off-by-one passed).
+const siteSubject = `package main
+
+func fuzzSubject() (q0 int, qP int) {
+	v0 := 0
+	psite := 0
+	defer func() {
+		if recover() != nil {
+			qP = psite
+			q0 = v0
+		}
+	}()
+	psite = 1
+	v0 = 1
+	psite = 2
+	v0 = 2
+	psite = 3
+	v0 = v0 / (v0 - v0)
+	psite = 4
+	v0 = 4
+	return v0, 0
+}
+`
+
+// TestSiteEncodingPinsTheStatement: the handcrafted case must report
+// site 3 (the dividing statement) with partial state v0 == 2.
+func TestSiteEncodingPinsTheStatement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs a binary")
+	}
+	var g Generator
+	c := Case{Source: []byte(siteSubject), Driver: []byte(g.driverSource(make([]binding, 2)))}
+	doc := runCase(t, c)
+	if doc.Status != observe.StatusOK {
+		t.Fatalf("status %s", doc.Status)
+	}
+	if got := doc.Values[1].Int; got != 3 {
+		t.Fatalf("site = %d, want 3", got)
+	}
+	if got := doc.Values[0].Int; got != 2 {
+		t.Fatalf("partial state = %d, want 2", got)
+	}
 }
 
 // TestRecoverWrapperObservesPanics (Phase 4 rung 1, GoLean R1): wrapped

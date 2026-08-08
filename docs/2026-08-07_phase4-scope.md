@@ -17,7 +17,10 @@ discipline) in the ledger; rung 4 delivered len+key-weighted-sum for
 maps and position-weighted chains for slices, not the note's "min/max
 folds, membership bits"; rung 1's coverage claim is delivered as the
 batch report's wrapperCaught field, while the separate GUARDED-
-statement recovered-event rung in TODO.md remains open.)*
+statement recovered-event rung in TODO.md remains open. Further
+post-arc: rung 1's panic observation was re-encoded 2026-08-08 from
+the message table to SITE encoding — see the semantic-divergence
+review G1 and the ledger's defer/recover row.)*
 
 ## Rungs, in order
 

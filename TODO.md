@@ -9,8 +9,8 @@ here is not commitment.
 STATUS (Phase 4 arc, 2026-08-07): R1, R2a, R3, R5, R4 DELIVERED as
 rungs 1-5 (see docs/spec-ledger.md and the rung commits); the
 composition-histogram backlog item was absorbed and closed by rung 5.
-The recover WRAPPER observes panics at function level (wrapperCaught
-in batch.json); the guarded-STATEMENT recovered-event rung below
+The recover WRAPPER observes panics at function level — SITE-encoded
+since 2026-08-08 (wrapperCaught + wrapperJudged in batch.json); the guarded-STATEMENT recovered-event rung below
 remains open — a different mechanism, not absorbed. Remaining from the request set:
 R2b (order witnessing — effect-discipline design) and R6 (embedding
 matrices — blocked on rungs).
@@ -76,6 +76,32 @@ now first-party. Mapping onto this backlog:
   deploy key on OathTech/golean and store its private half as the
   `GOLEAN_DEPLOY_KEY` secret on grossmith (setup steps in the workflow
   header) — the nightly fails loudly with instructions until then; first green runs happen on GitHub after push.
+- **width_dependent precision rung** (2026-08-08 hunt F10): the tag
+  saturates at ~98% of programs, so the cross-arch tag-honesty proof
+  is near-vacuous — almost any divergence is in-tag by construction.
+  markWidthDep fires on every plain-int touch; precision means firing
+  only where a value can actually differ across widths. Until then the
+  yield number is coverage, not specificity (noted in the ledger).
+- **Guarded-statement observation portability** (hunt F12): guardedStmt
+  still uses the p.(error)+Error() pattern the wrapper dropped — fine
+  for gc (its only profile today, by exclusion), but the site-encoding
+  trick applies there too the day any clone gains obs events; and
+  recovered-events is structurally 0 in every golean campaign, which
+  the artifact does not say.
+- **Element-inclusive range folds** (hunt F14 residual): range-over-
+  slice bodies fold only the INDEX (consumeIndex), so a changed
+  element value is invisible to that path — slice_triple's shared
+  write was judged match through an element-blind observation in 2 of
+  5 shared emissions. Folding elements where the elem type allows
+  closes it; interacts with the wrapper arity discipline (no mid-body
+  aggObserved flips), so it needs the declare-time route.
+- **GoLean channel width erasure** (hunt F15, recorded not fixable
+  here): their observation encoder collapses every integer kind to one
+  tag and drops defined-type identity except for structs/interfaces —
+  kind-defaulting bugs that land on the right VALUE are invisible on
+  that channel, while our composition reports widths/defined_types as
+  coverage. Ledger row notes it; the durable fix is their encoder
+  (adapter shape (a) territory) — worth passing to their team.
 - **Tuple-forwarded call arguments rung** (2026-08-08 review §1): the
   shape `sink(pair())` — a multi-result call forwarded as the argument
   list, incl. variadic and mixed fixed/variadic destinations with

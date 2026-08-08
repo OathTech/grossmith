@@ -31,7 +31,7 @@ func TestDriverFailsClosedOnDriverPanic(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	build := exec.Command("go", "build", "-o", "case.bin", ".")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", "case.bin", ".")
 	build.Dir = dir
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)

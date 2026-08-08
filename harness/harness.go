@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -168,8 +169,21 @@ type BatchReport struct {
 	// SEMANTIC verdict (match/mismatch) — the 2026-08-08 review's G3:
 	// generated, caught, and judged are three different numbers, and
 	// conflating them let a profile incompatibility look like tested
-	// coverage (19 caught, 0 judged went unnoticed).
-	WrapperJudged int `json:"wrapperJudged,omitempty"`
+	// coverage (19 caught, 0 judged went unnoticed). A POINTER: null in
+	// the artifact when no clone judged (hunt F6 — an unconditional zero
+	// on clone-less runs reproduced the exact signature the field was
+	// added to detect), never omitted when a clone ran.
+	WrapperJudged *int `json:"wrapperJudged"`
+	// CompositionJudged is Composition restricted to cases that reached a
+	// semantic verdict (hunt F8: the G3 generated-vs-judged remedy applied
+	// to every tag, not just the wrapper — the ratio per tag is the
+	// judged-coverage rate campaign readers previously had to compute by
+	// joining case.json files by hand). Nil when no clone judged.
+	CompositionJudged map[string]int `json:"compositionJudged,omitempty"`
+	// Pairs marks a pairs-mode batch (cases per construct pair); 0 for a
+	// natural-population batch (hunt F11: the artifact was previously
+	// indistinguishable from a plain batch).
+	Pairs int `json:"pairsPerCombo,omitempty"`
 	// Composition is the per-tag program-presence histogram — the charter
 	// lists it as part of the conformance statement (rung 5 closed the
 	// gap: it was stdout-only). Populated by the producer from generated
@@ -249,14 +263,32 @@ func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%s version: %w", bin, err)
 	}
 	id := strings.TrimSpace(string(out)) + " (" + bin
-	if a.GOARCH != "" {
-		id += ", GOARCH=" + a.GOARCH
+	// The EFFECTIVE arch, always — Identity previously named it only for
+	// explicit cross-arch adapters, so an env-poisoned reference (hunt
+	// F1) carried an identity that could not falsify the poison.
+	arch := a.GOARCH
+	if arch == "" {
+		arch = runtime.GOARCH
 	}
+	id += ", GOARCH=" + arch
 	return id + ")", nil
 }
 
 func (a *GcAdapter) buildEnv() []string {
-	env := []string{"GOTOOLCHAIN=local", "CGO_ENABLED=0"}
+	// PINNED, not passed through (2026-08-08 hunt, F1 — the worst class
+	// of defect a conformance tool can have): HOME passthrough let
+	// $HOME/.config/go/env silently set GOARCH/GOFLAGS for the
+	// REFERENCE build while Identity() recorded the host defaults — a
+	// user-level `go env -w GOARCH=386` fabricated observation-mismatch
+	// verdicts against a correct clone, unfalsifiably. GOENV=off closes
+	// the file; the explicit pins close the ambient-variable route; and
+	// GOWORK=off keeps a go.work above the out dir from capturing the
+	// build (F2 — the throwaway go.mod fences modules, not workspaces).
+	env := []string{
+		"GOTOOLCHAIN=local", "CGO_ENABLED=0",
+		"GOENV=off", "GOWORK=off", "GOFLAGS=-buildvcs=false", "GOEXPERIMENT=",
+		"GOOS=" + runtime.GOOS,
+	}
 	for _, key := range []string{"PATH", "HOME", "TMPDIR", "GOCACHE", "GOPATH", "GOMODCACHE"} {
 		if v := os.Getenv(key); v != "" {
 			env = append(env, key+"="+v)
@@ -264,6 +296,8 @@ func (a *GcAdapter) buildEnv() []string {
 	}
 	if a.GOARCH != "" {
 		env = append(env, "GOARCH="+a.GOARCH)
+	} else {
+		env = append(env, "GOARCH="+runtime.GOARCH)
 	}
 	return env
 }
@@ -401,8 +435,9 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 			}
 			for _, e := range cr.Reference.Document.Events {
 				if e.At == "recovered" {
+					// Count EVENTS, not cases (hunt F9: the old break
+					// undercounted while the label said events).
 					rep.Recovered++
-					break
 				}
 			}
 		}
@@ -417,7 +452,9 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 			}
 		}
 	}
-	if rep.Total > 0 {
+	if rep.Total > 0 && sizeMax > 0 {
+		// sizeMax == 0 means every stat failed; the 1<<31 min sentinel
+		// must not escape into the artifact (hunt F11).
 		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax = sizeMin, sizeSum/rep.Total, sizeMax
 	}
 	return rep, nil

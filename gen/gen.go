@@ -490,6 +490,15 @@ func (g *Generator) Generate() (c Case, err error) {
 		g.stmt(body, g.cfg.Depth)
 	}
 	g.guardBias = false
+	if g.wrapped {
+		// Sentinel for the final observation region (tight audit F4): the
+		// folds below are panic-free by construction TODAY, but a future
+		// hot fold would otherwise report the LAST statement's site with
+		// no tell. Stmts+1 is out of the witness's accepted range, so the
+		// day a fold can panic, the witness fails loudly instead of the
+		// site lying quietly.
+		body.line("psite = %d", g.cfg.Stmts+1)
+	}
 	observed := g.observe(body)
 	resultTypes := make([]string, len(observed))
 	for i, b := range observed {
@@ -995,8 +1004,18 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 			// capability-profile contract, handing range/len/conversions
 			// to mixes that declared them off).
 			if observed && (typ.Shape == ShapeSlice || typ.Shape == ShapeMap) &&
-				g.enabled("range", "len", "conversions") {
-				agg = true
+				g.enabled("range", "len") {
+				// conversions is required only when the fold actually
+				// EMITS int() — integer elements, or integer map keys
+				// (hunt F13: demanding it unconditionally suppressed
+				// observation of bool/string containers for a construct
+				// their folds never use, leaving 92% of masked container
+				// state unobserved).
+				needsConv := typ.Elem.Shape == ShapeInt ||
+					(typ.Shape == ShapeMap && typ.Key.Shape == ShapeInt)
+				if !needsConv || g.enabled("conversions") {
+					agg = true
+				}
 			}
 			observed = false
 		}

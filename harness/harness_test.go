@@ -131,6 +131,32 @@ func TestVerdictTaxonomy(t *testing.T) {
 	}
 }
 
+// TestBuildSurvivesHostileGit (2026-08-08 review G2 + tight audit F1):
+// a corrupt repository above a case dir must not break the reference
+// build — case binaries carry no VCS stamp by policy.
+func TestBuildSurvivesHostileGit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds binaries")
+	}
+	root := t.TempDir()
+	writeCases(t, root, 1, 717000)
+	dir := filepath.Join(root, "case_000a")
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A .git dir whose HEAD is garbage: `git status` exits 128, which
+	// Go 1.26's auto VCS stamping turns into a build failure without
+	// -buildvcs=false.
+	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("garbage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := &GcAdapter{AdapterName: "ref", Timeout: 20 * time.Second}
+	out := ref.Run(context.Background(), dir)
+	if out.Status != StatusRan {
+		t.Fatalf("hostile git broke the build: %s: %s", out.Status, out.Detail)
+	}
+}
+
 // TestJudgeDocumentStatusAxis (audit H2): StatusRan with an error document
 // is infrastructure, never semantic — on either side, or both.
 func TestJudgeDocumentStatusAxis(t *testing.T) {

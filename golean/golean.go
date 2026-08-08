@@ -74,17 +74,52 @@ type Result struct {
 	Detail  string
 }
 
+// gitEnv is the sanitized environment for identity queries (hunt F3: an
+// ambient GIT_DIR overrides -C discovery entirely, and a non-repo
+// checkout lets git walk UP — both fabricated the pinned provenance).
+func gitEnv() []string {
+	env := []string{}
+	for _, key := range []string{"PATH", "HOME"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	return env
+}
+
 // Identity is the checkout's pinned identity: git commit, with a -dirty
-// suffix when the working tree differs.
+// suffix when the working tree differs (and -dirty-unknown when the
+// dirtiness check itself failed — a failed check must not read as clean).
 func Identity(ctx context.Context, checkout string) (string, error) {
-	rev := exec.CommandContext(ctx, "git", "-C", checkout, "rev-parse", "HEAD")
+	absC, err := filepath.Abs(checkout)
+	if err != nil {
+		return "", err
+	}
+	// The checkout must BE a repository root (or linked worktree root) —
+	// otherwise git resolves some ancestor repo (measured: grossmith's
+	// own HEAD recorded as the GoLean clone identity, err == nil).
+	top := exec.CommandContext(ctx, "git", "-C", absC, "rev-parse", "--show-toplevel")
+	top.Env = gitEnv()
+	topOut, err := top.Output()
+	if err != nil {
+		return "", fmt.Errorf("golean identity: %s is not a git checkout: %w", absC, err)
+	}
+	if filepath.Clean(strings.TrimSpace(string(topOut))) != filepath.Clean(absC) {
+		return "", fmt.Errorf("golean identity: %s is not a repository root (git resolves %s)",
+			absC, strings.TrimSpace(string(topOut)))
+	}
+	rev := exec.CommandContext(ctx, "git", "-C", absC, "rev-parse", "HEAD")
+	rev.Env = gitEnv()
 	out, err := rev.Output()
 	if err != nil {
 		return "", fmt.Errorf("golean identity: %w", err)
 	}
 	id := "golean@" + strings.TrimSpace(string(out))
-	status := exec.CommandContext(ctx, "git", "-C", checkout, "status", "--porcelain")
-	if s, err := status.Output(); err == nil && len(bytes.TrimSpace(s)) > 0 {
+	status := exec.CommandContext(ctx, "git", "-C", absC, "status", "--porcelain")
+	status.Env = gitEnv()
+	if s, err := status.Output(); err != nil {
+		id += "-dirty-unknown"
+	} else if len(bytes.TrimSpace(s)) > 0 {
 		id += "-dirty"
 	}
 	return id, nil
@@ -255,6 +290,10 @@ func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPat
 		"GOLEAN_COVERAGE_META=" + metaPath,
 		fmt.Sprintf("LAKE_BUILD_TIMEOUT_SECONDS=%d", int(lakeBudget.Seconds())),
 		"GOTOOLCHAIN=local", "CGO_ENABLED=0",
+		// Pin the go environment for THEIR go-run oracle too (hunt F1:
+		// a $HOME/.config/go/env GOARCH/GOFLAGS poisons both sides
+		// identically through the HOME passthrough).
+		"GOENV=off", "GOWORK=off",
 	}
 	if cfg.Jobs > 0 {
 		env = append(env, fmt.Sprintf("GOLEAN_COVERAGE_JOBS=%d", cfg.Jobs))

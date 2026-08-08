@@ -706,6 +706,12 @@ func (g *Generator) typeSwitchStmt(out *emitter) {
 		// source type the only possible dynamic type, so the default arm
 		// is provably dead.
 		g.note(tagUnreachableCase)
+	} else if count == len(impls) {
+		// Empty interface whose case list covers EVERY defined type: the
+		// default is equally provably dead — dynamic-type churn can only
+		// move among defined types (hunt F16: the knowledge-as-data rule
+		// was applied to one of the two provable cases).
+		g.note(tagUnreachableCase)
 	}
 }
 
