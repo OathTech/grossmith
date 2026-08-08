@@ -3,3 +3,4 @@ deps/*
 /out*/
 case*.bin
 .tmp/
+/.claude/

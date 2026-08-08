@@ -217,6 +217,14 @@ func TestGcCrossArchStillJudges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Vacuity guard: a host that cannot execute 32-bit binaries (seen
+	// live 2026-08-08 — a sandbox seccomp policy SIGTRAPs every 386 ELF)
+	// yields 100% clone-infra, and a witness that passes while proving
+	// nothing is a defect of its own. Skip honestly; the gc-386
+	// discrimination proof runs in CI where ia32 executes.
+	if rep.Verdicts[VerdictCloneInfra] == rep.Total {
+		t.Skipf("every 386 outcome was infrastructure (%v) — this host cannot execute 32-bit binaries; witness vacuous here", rep.Verdicts)
+	}
 	for v := range rep.Verdicts {
 		switch v {
 		case VerdictMatch, VerdictMismatch, VerdictCloneInfra:

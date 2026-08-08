@@ -33,6 +33,48 @@ on:
         default: "300"
 
 jobs:
+  # The gc-386 discrimination proof: divergences must exist AND all fall
+  # inside the declared width_dependent quotient. Runs here rather than
+  # per-push (it is a nightly proof, not build health) and here rather
+  # than locally (a 2026-08-08 sandbox change SIGTRAPs 386 ELF on the
+  # dev host; runners execute ia32 fine). Needs no secrets.
+  cross-arch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 32-bit execution sanity
+        run: |
+          mkdir -p "$RUNNER_TEMP/m" && cd "$RUNNER_TEMP/m"
+          printf 'package main\nfunc main(){println(42)}\n' > main.go
+          printf 'module m\n\ngo 1.26\n' > go.mod
+          GOARCH=386 go build -o m386 . && ./m386
+      - name: discrimination campaign
+        run: |
+          go run ./cmd/gengo -n 300 -seed "$(date -u +%Y%m%d)" \
+            -out "$RUNNER_TEMP/x386" -clone gc-386 | tee "$RUNNER_TEMP/x386.log"
+          B="$RUNNER_TEMP/x386/batch.json"
+          jq '{verdicts: .verdicts}' "$B"
+          # Tag honesty: any untagged divergence breaks the proof.
+          ! grep -q "UNTAGGED divergence" "$RUNNER_TEMP/x386.log"
+          # Not vacuous (the clone actually ran), nothing broke on our
+          # side, and divergences EXIST — a zero would mean the
+          # observation went blind to width.
+          jq -e '(.verdicts["harness-error"] // 0) == 0
+             and (.verdicts["reference-infra-failure"] // 0) == 0
+             and ((.verdicts["clone-infra-failure"] // 0) < .total)
+             and ((.verdicts["observation-mismatch"] // 0) > 0)' "$B"
+      - name: archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-arch-${{ github.run_id }}
+          path: ${{ runner.temp }}/x386/batch.json
+          if-no-files-found: warn
+
   campaign:
     runs-on: ubuntu-latest
     timeout-minutes: 90
