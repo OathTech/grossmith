@@ -496,7 +496,7 @@ func TestRecoverWrapperObservesPanics(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs binaries")
 	}
-	shape := regexp.MustCompile(`(?s)defer func\(\) \{\n\s*if p := recover\(\); p != nil \{`)
+	shape := regexp.MustCompile(`(?s)defer func\(\) \{\n\s*if recover\(\) != nil \{`)
 	caught, clean, wrapped := 0, 0, 0
 	for seed := int64(95000); seed < 95400 && (caught == 0 || clean == 0); seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()
@@ -525,8 +525,10 @@ func TestRecoverWrapperObservesPanics(t *testing.T) {
 		}
 		if code.Int != 0 {
 			caught++
-			if code.Int < 1 || code.Int > 5 {
-				t.Fatalf("seed %d: panic code %d outside the table", seed, code.Int)
+			// Site encoding (G1): the trailing slot names the top-level
+			// statement that panicked.
+			if code.Int < 1 || code.Int > int64(DefaultConfig(seed).Stmts) {
+				t.Fatalf("seed %d: panic site %d outside [1,Stmts]", seed, code.Int)
 			}
 		} else {
 			clean++

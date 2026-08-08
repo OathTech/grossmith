@@ -390,9 +390,16 @@ func run(cfg config) error {
 	rep.GeneratorRev = rev
 	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(len(specs)) - 1}
 	rep.Composition = tagCount
-	// Wrapper catches (audit F2): a wrapped subject that caught a panic
-	// returns status ok with a nonzero trailing code — invisible to
-	// PanicPaths, counted here from features + reference documents.
+
+	if checkout != "" {
+		if err := runGoLean(ctx, &rep, cfg, checkout, featuresByID); err != nil {
+			return err
+		}
+	}
+	// Wrapper catches, counted AFTER the clone verdicts exist (the first
+	// draft ran before runGoLean and judged against empty verdicts —
+	// exactly the generated-vs-judged conflation G3 warns about, in the
+	// metric meant to fix it).
 	for _, cr := range rep.Cases {
 		if !hasTag(featuresByID[cr.ID], "recover_wrapper") || cr.Reference.Status != harness.StatusRan {
 			continue
@@ -401,13 +408,10 @@ func run(cfg config) error {
 		if doc.Status == observe.StatusOK && len(doc.Values) > 0 {
 			if last := doc.Values[len(doc.Values)-1]; last.Kind == "int" && last.Int != 0 {
 				rep.WrapperCaught++
+				if cr.Verdict == harness.VerdictMatch || cr.Verdict == harness.VerdictMismatch {
+					rep.WrapperJudged++
+				}
 			}
-		}
-	}
-
-	if checkout != "" {
-		if err := runGoLean(ctx, &rep, cfg, checkout, featuresByID); err != nil {
-			return err
 		}
 	}
 	if err := harness.WriteBatch(cfg.out, rep); err != nil {
@@ -606,8 +610,8 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 	if rep.CloneName != "" {
 		fmt.Printf("  clone:     %s (%s)\n", rep.CloneName, rep.CloneIdentity)
 	}
-	fmt.Printf("  policy: panic-%s   cases: %d   ref-ran: %d   panic-paths: %d   recovered-events: %d   wrapper-caught: %d\n",
-		rep.PanicPolicy, rep.Total, rep.RefRan, rep.PanicPaths, rep.Recovered, rep.WrapperCaught)
+	fmt.Printf("  policy: panic-%s   cases: %d   ref-ran: %d   panic-paths: %d   recovered-events: %d   wrapper-caught: %d   wrapper-JUDGED: %d\n",
+		rep.PanicPolicy, rep.Total, rep.RefRan, rep.PanicPaths, rep.Recovered, rep.WrapperCaught, rep.WrapperJudged)
 	fmt.Printf("  subject bytes min/mean/max: %d/%d/%d\n",
 		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax)
 	if len(rep.Verdicts) > 0 {

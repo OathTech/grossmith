@@ -164,6 +164,12 @@ type BatchReport struct {
 	// wrong way with the catch invisible). Populated by the producer,
 	// which knows the per-case features.
 	WrapperCaught int `json:"wrapperCaught,omitempty"`
+	// WrapperJudged counts the subset of WrapperCaught that reached a
+	// SEMANTIC verdict (match/mismatch) — the 2026-08-08 review's G3:
+	// generated, caught, and judged are three different numbers, and
+	// conflating them let a profile incompatibility look like tested
+	// coverage (19 caught, 0 judged went unnoticed).
+	WrapperJudged int `json:"wrapperJudged,omitempty"`
 	// Composition is the per-tag program-presence histogram — the charter
 	// lists it as part of the conformance statement (rung 5 closed the
 	// gap: it was stdout-only). Populated by the producer from generated
@@ -268,7 +274,12 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
 	}
 	exe := "case-" + a.Name() + ".bin"
-	build := exec.CommandContext(ctx, bin, "build", "-o", exe, ".")
+	// -buildvcs=false (2026-08-08 review, G2): case binaries never need
+	// VCS stamps, and Go 1.26's auto stamping runs git — which fails
+	// (exit 128) under scratch HOMEs, foreign-owned checkouts, or
+	// corrupted repos above the case dir, killing the build for reasons
+	// that have nothing to do with the case.
+	build := exec.CommandContext(ctx, bin, "build", "-buildvcs=false", "-o", exe, ".")
 	build.Dir = caseDir
 	build.Env = a.buildEnv()
 	if out, err := build.CombinedOutput(); err != nil {

@@ -465,6 +465,18 @@ func (g *Generator) Generate() (c Case, err error) {
 	g.mark("functions", "short_decl", "literals", "return")
 
 	if g.wrapped {
+		// SITE encoding (2026-08-08 review, G1): the old message-prefix
+		// table required p.(error) + Error(), which hits GoLean's open
+		// $runtime.Error method-set gap — every caught panic became
+		// clone-infra and R1's surface was generated-but-never-judged.
+		// psite tracks the top-level statement being executed; on a catch
+		// the trailing slot reports WHICH statement panicked — sharper
+		// ordering discrimination than kind (R1's stated purpose), each
+		// site's kind is statically known to the generator, and the
+		// kind/message cross-check stays covered by the unwrapped panic
+		// paths through the clone harness's expected_reason comparison.
+		// No dispatch, no assertions: portable to any clone.
+		body.line("psite := 0")
 		g.emitWrapperDefer(body)
 		// The wrapper exists to CATCH panics: bias the hot arms up for the
 		// whole body (same lever as the guarded statement), or most
@@ -472,6 +484,9 @@ func (g *Generator) Generate() (c Case, err error) {
 		g.guardBias = true
 	}
 	for i := 0; i < g.cfg.Stmts; i++ {
+		if g.wrapped {
+			body.line("psite = %d", i+1)
+		}
 		g.stmt(body, g.cfg.Depth)
 	}
 	g.guardBias = false
@@ -488,9 +503,6 @@ func (g *Generator) Generate() (c Case, err error) {
 	}
 	for _, h := range g.helpers {
 		out.WriteString(h.src)
-	}
-	if g.wrapped {
-		out.WriteString(panicCodeHelper)
 	}
 	for _, dt := range g.defined {
 		fmt.Fprintf(&out, "type %s %s\n\n", dt.typ.Named, dt.typ.underlyingName())
@@ -1155,8 +1167,8 @@ func (g *Generator) emitWrapperDefer(out *emitter) {
 		}
 	}
 	out.open("defer func() {")
-	out.open("if p := recover(); p != nil {")
-	out.line("q%d = fuzzPanicCode(p)", len(names)+aggs)
+	out.open("if recover() != nil {")
+	out.line("q%d = psite", len(names)+aggs)
 	for i, n := range names {
 		out.line("q%d = %s", i, n)
 	}
@@ -1164,32 +1176,6 @@ func (g *Generator) emitWrapperDefer(out *emitter) {
 	out.dedent()
 	out.line("}()")
 }
-
-// panicCodeHelper is the wrapper's import-free panic-to-int table
-// (GoLean R1: "the panic value/message encodes to int by table"): 0
-// never-panicked, 1 unknown, then the deterministic gc message prefixes.
-const panicCodeHelper = `func fuzzPanicCode(p any) int {
-	e, ok := p.(error)
-	if !ok {
-		return 1
-	}
-	m := e.Error()
-	if len(m) >= 22 && m[:22] == "runtime error: integer" {
-		return 2
-	}
-	if len(m) >= 20 && m[:20] == "runtime error: index" {
-		return 3
-	}
-	if len(m) >= 27 && m[:27] == "runtime error: slice bounds" {
-		return 4
-	}
-	if len(m) >= 21 && m[:21] == "interface conversion:" {
-		return 5
-	}
-	return 1
-}
-
-`
 
 // pickVar returns the index of a variable of exactly type t. The one-per-type
 // floor makes this total for every pool type.

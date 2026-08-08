@@ -76,6 +76,13 @@ now first-party. Mapping onto this backlog:
   deploy key on OathTech/golean and store its private half as the
   `GOLEAN_DEPLOY_KEY` secret on grossmith (setup steps in the workflow
   header) — the nightly fails loudly with instructions until then; first green runs happen on GitHub after push.
+- **Tuple-forwarded call arguments rung** (2026-08-08 review §1): the
+  shape `sink(pair())` — a multi-result call forwarded as the argument
+  list, incl. variadic and mixed fixed/variadic destinations with
+  interface parameters — is ungenerated today, and the review found a
+  real GoLean interface-boxing bug living exactly there. The six-form
+  boundary matrix in the review doc is the rung's witness spec; needs
+  impure-free multi-result forwarding only, no effect discipline.
 - **Recovered-event coverage rung** (audit deferral, measured 1/120
   cases): force a hot statement form inside guarded statements so
   statement-level catch is exercised end to end; re-measure, then
