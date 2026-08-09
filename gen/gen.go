@@ -133,11 +133,20 @@ func (c Config) Validate() error {
 	// per-level factor 2*LoopCap silently assumed slice-range trip counts
 	// were LoopCap-like, but they are len-bounded, and growth under
 	// ranges compounded across statements without limit (measured worst
-	// case legal under the old rules: ~9e18 executed statements). Now
-	// growth is masked while any slice range is open and slice ranges are
+	// case legal under the old rules: ~9e18 executed statements). Growth
+	// is now masked while any slice range is open and slice ranges are
 	// emitted only over slices whose static maxLenBound is at most
-	// 8*LoopCap, so every level's trip count is at most 8*LoopCap and the
-	// formula is sound again.
+	// 8*LoopCap.
+	//
+	// THIS BOUND DOES NOT YET HOLD — arc-end review, 2026-08-09, refuted
+	// BY MEASUREMENT (docs/2026-08-09_evidence-arc-status.md): the mask is
+	// lexical, but emitted source is RE-EXECUTED by enclosing loops, so an
+	// append emitted after a range grows what that range walks on the next
+	// iteration, past a gate that already passed. Measured 14,372,767
+	// executed statements against the 4e6 below, at a config this function
+	// ACCEPTS (Stmts=1, Depth=2, LoopCap=250, seed 174813). String growth
+	// is ungated entirely. DefaultConfig is comfortably inside the bound;
+	// the exposure is explicit non-default configs. Fixing it is rung E5.
 	worst := float64(c.Stmts)
 	for i := 0; i < c.Depth; i++ {
 		worst *= 8 * float64(c.LoopCap)
@@ -469,7 +478,12 @@ func (g *Generator) drawSetup() {
 	cfg := g.cfg
 	// The corrected E4 formula — W4's bound tracking multiplies by this,
 	// so it must dominate every realizable trip product (slice ranges are
-	// capped at 8*LoopCap trips by the emission gate).
+	// capped at 8*LoopCap trips by the emission gate — but see the
+	// refutation recorded in Validate: that per-level cap is not yet
+	// sound for non-default configs, so maxExec is an OPTIMISTIC bound
+	// there. W4's use of it over-approximates in the safe direction
+	// (over-tagging, never under-tagging), which the soundness screen
+	// confirms; E5 closes the underlying gate).
 	g.maxExec = int64(cfg.Stmts)
 	for i := 0; i < cfg.Depth; i++ {
 		g.maxExec *= 8 * int64(cfg.LoopCap)

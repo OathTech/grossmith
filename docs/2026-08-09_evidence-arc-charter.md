@@ -1,5 +1,8 @@
 *ACTIVE (2026-08-09): governing the evidence arc, branch `evidence-arc`.
-Sequencing: `docs/roadmap.md`.*
+The arc is NOT complete — the arc-end review returned seven blocking
+findings and two of the exit conditions below are UNMET (E3's and E4's).
+Status of record: `docs/2026-08-09_evidence-arc-status.md`. Sequencing:
+`docs/roadmap.md`.*
 
 # The evidence arc: charter (2026-08-09)
 
@@ -149,6 +152,12 @@ ran.
 Exit (the audit's, in the arc's wording): extra, missing, or changed
 files fail before execution; interruption preserves the previous batch;
 offline inspection can prove which bytes both adapters executed.
+UNMET at arc-end review: the first two hold (validation refuses before
+any adapter runs; atomic publish survived a kill -9 sweep), the third
+does not — `batch.json` and `manifest.tsv` are undigested and
+`golean-work/`, which holds the source the CLONE compiled, sits outside
+the descriptor. A rewritten conformance statement passes `gengo -verify`
+with exit 0. Details and E5 scope: the status document.
 
 **E4 — resource guarantees made true.** Measure first, then fix.
 - MEASURE the cross-slice range/append amplification: instrument
@@ -179,6 +188,14 @@ offline inspection can prove which bytes both adapters executed.
 Exit: the resource witnesses (cross-slice growth pattern, a compiler
 that never returns, unbounded subject output) return typed errors or
 stay inside measured, persisted budgets.
+UNMET at arc-end review, and refuted by MEASUREMENT: the re-derived
+executed-statement bound does not hold (14,372,767 statements measured
+against the 4e6 Validate guarantees, at a config Validate accepts),
+because the growth mask is lexical while emitted source is re-executed
+by enclosing loops; and the mask is slice-only, leaving string
+concat-into-string-range entirely ungated. `GcAdapter.Identity` — the
+probe gating every batch — has no budget at all, so "identity probes
+bounded" is also unmet. Details and E5 scope: the status document.
 
 ## Review plan (pre-authorized)
 

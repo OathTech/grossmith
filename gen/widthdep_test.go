@@ -65,7 +65,13 @@ func TestWidthDepUntaggedObservesInWindow(t *testing.T) {
 // numbers: program-level saturation stays meaningfully below the old
 // ~98%, and the untagged (off-tag) population — what the cross-arch CI
 // job's discrimination check runs against — stays a real minority, not
-// a rounding error. Measured 87.5% (n=2000) after the arc-end review's
+// a rounding error. STALE FIGURE (arc-end review): E4's widened maxExec
+// moved this to 88.90% (n=2000) and 93.75% on this test's own window,
+// against the 0.94 threshold below — passing by 0.25 percentage points,
+// with the off-tag population (the cross-arch discrimination job's
+// denominator) down ~15% relative. Re-measure and re-state in E5; see
+// docs/2026-08-09_evidence-arc-status.md. Previously measured 87.5%
+// (n=2000) after the witness-arc's
 // soundness hardening (unsigned underflow, conditional-write joins,
 // loop-staleness widening); the pre-hardening decomposition (n=1000,
 // 82.8%) attributed 287 tagged programs to window-fold constructs and

@@ -290,7 +290,13 @@ func run(cfg config) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("batch %s verified: %d cases, descriptor and completion bound, every input digest intact\n", cfg.verify, len(ids))
+		// Scope stated honestly (arc-end review B1/B2): case inputs and
+		// the root go.mod are digest-checked; batch.json, manifest.tsv
+		// and golean-work/ are NOT yet covered by the descriptor, so
+		// this is not a statement about the report or the clone's tree.
+		// See docs/2026-08-09_evidence-arc-status.md; E5 closes it.
+		fmt.Printf("batch %s verified: %d cases, every CASE INPUT digest intact and bound to the manifest\n", cfg.verify, len(ids))
+		fmt.Printf("  not yet covered: batch.json, manifest.tsv, golean-work/ (evidence-arc E5)\n")
 		return nil
 	}
 	if cfg.replay != "" {

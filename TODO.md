@@ -99,6 +99,22 @@ now first-party. Mapping onto this backlog:
   (same-revision contract — now warned up front) and the durable
   regression corpus that would survive arcs is R4's checked-in
   fix-pair work.
+- **Evidence arc E5 — the arc-end review's seven blockers** (full
+  record and measurements: `docs/2026-08-09_evidence-arc-status.md`;
+  the arc does NOT merge until these close). A1: the E4
+  executed-statement bound is refuted by measurement — the growth mask
+  is lexical, emitted source is re-executed by enclosing loops, 14.4M
+  statements measured against a 4e6 guarantee at an accepted config.
+  A2: the mask is slice-only, so string concat feeding a string range
+  is ungated (17 of 3000 default seeds). B1: `golean-work/` — the
+  clone's actual source — is outside the descriptor. B2: `batch.json`
+  and `manifest.tsv` are undigested; a rewritten conformance statement
+  passes `gengo -verify` with exit 0. B3: `-verify` panics on a
+  truncated `complete.json` (unguarded `[:12]`). B4: the completion
+  binding is fail-open on an unreadable file. C1: `GcAdapter.Identity`,
+  the probe gating every batch, has no timeout. Plus: W4 saturation
+  drifted to 0.25pp of its failure threshold with a stale recorded
+  figure, and two E4 witnesses assert less than they read.
 - **The repo is not gofmt-clean and nothing gates it** (noticed during
   the 2026-08-09 wording pass): `gofmt -l` flags nine files, six of
   them untouched by recent work — mostly struct-tag alignment that
