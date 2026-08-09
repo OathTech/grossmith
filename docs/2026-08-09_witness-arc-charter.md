@@ -42,8 +42,10 @@ interface/concrete parameter types — variadic helpers do not exist
 yet; add the minimal variadic-PARAMETER form needed, helpers stay
 pure). Tag `tuple_forward`. Witnesses: emission shapes + a runtime
 witness per matrix row. Then CROSS-VALIDATION across their fix
-pair: campaign the same seeds against `e49ebb1` (pre-fix) and
-`eb0406f` (post-fix) in a scratch clone — the differential-of-
+pair: campaign the same seeds against `2e05313` (pre-fix) and
+`264520e` (post-fix, BUG-049) in a scratch clone — the earlier
+citation named BUG-051's pair by mistake (W0's agent located the
+correct pair by ledger grep; corrected here) — the differential-of-
 differentials method used for BUG-012. Verdict changes attributable to
 the fix demonstrate the rung reaches the shape their defect lived in.
 
