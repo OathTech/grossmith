@@ -223,6 +223,17 @@ type Generator struct {
 	// revisit trigger: pointer parameters, closures over subject state, or
 	// package-level variables.
 	helpers []helper
+	// fwdPairs are the tuple-forwarding source/sink pairs (witness arc W0):
+	// created lazily at a forwarding call site, cached per form (fwdByForm),
+	// written to the preamble after helpers. Sinks are NEVER in g.helpers —
+	// no other arm may call them, so every sink call has the forwarding
+	// shape tgN(tfN(...)) with matching index (a cached sink may have
+	// SEVERAL such sites — review finding 4); that call-shape guarantee is
+	// what makes any-slot assertions and constant tail indices safe by
+	// construction.
+	fwdPairs  []fwdPair
+	fwdByForm map[string]int
+	fwdSeq    int
 	// defined are the per-seed defined types and their methods.
 	defined   []definedType
 	methodSeq int
@@ -608,6 +619,9 @@ func (g *Generator) Generate() (c Case, err error) {
 	}
 	for _, h := range g.helpers {
 		out.WriteString(h.src)
+	}
+	for _, p := range g.fwdPairs {
+		out.WriteString(p.src)
 	}
 	for _, dt := range g.defined {
 		fmt.Fprintf(&out, "type %s %s\n\n", dt.typ.Named, dt.typ.underlyingName())

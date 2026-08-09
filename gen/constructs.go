@@ -39,6 +39,7 @@ func Optional() []string {
 		"string_index", "string_slice", "string_range",
 		"slice_triple", "type_switch",
 		"order_witness",
+		"tuple_forward",
 	}
 }
 
@@ -69,6 +70,9 @@ func Optional() []string {
 //	element_fold     — a range fold included base[i] alongside the index
 //	                   (W3: element-visible observation; survey F14's
 //	                   element-blindness remedy, stratifiable)
+//	any_slot         — a forward sink read an any-typed slot via a
+//	                   can't-fail assertion (stratifies the assertion
+//	                   metrics — review finding 7)
 const (
 	tagBoundary        = "boundary"
 	tagDeadCode        = "dead_code"
