@@ -211,8 +211,11 @@ type Generator struct {
 	// fwdPairs are the tuple-forwarding source/sink pairs (witness arc W0):
 	// created lazily at a forwarding call site, cached per form (fwdByForm),
 	// written to the preamble after helpers. Sinks are NEVER in g.helpers —
-	// no other arm may call them, which is what makes their any-slot
-	// assertions and constant tail indices safe by construction.
+	// no other arm may call them, so every sink call has the forwarding
+	// shape tgN(tfN(...)) with matching index (a cached sink may have
+	// SEVERAL such sites — review finding 4); that call-shape guarantee is
+	// what makes any-slot assertions and constant tail indices safe by
+	// construction.
 	fwdPairs  []fwdPair
 	fwdByForm map[string]int
 	fwdSeq    int

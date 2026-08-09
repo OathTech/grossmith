@@ -17,15 +17,20 @@ import (
 //
 // The pair is built deliberately — the generator controls both sides, so
 // callee signatures match forwardable tuples by construction rather than by
-// search — and the sink is called ONLY through the forwarding call
-// (witnessed: TestTupleForwardEmitted fails on any other tg call shape).
-// That single-call-site guarantee is load-bearing twice:
+// search — and every sink call has the forwarding SHAPE tgN(tfN(...)) with
+// MATCHING index (witnessed: TestTupleForwardEmitted asserts the paired
+// index on every tg call). A cached sink may have several call sites
+// (pairs are reused per form — mid-arc review finding 4 corrected the
+// earlier "single call site" overstatement), but all of them forward the
+// same paired source, and that single-call-SHAPE guarantee is what is
+// load-bearing, twice:
 //
 //   - type assertions on any-slots are guaranteed to succeed (the generator
-//     knows the dynamic type it forwards), so the sink stays panic-free —
-//     the same argument as implementer-restricted interface assertions;
+//     knows the dynamic type its paired source forwards), so the sink stays
+//     panic-free — the same argument as implementer-restricted interface
+//     assertions;
 //   - constant indices into a variadic tail are always in range (len(xs) is
-//     exactly the forwarded tail's component count).
+//     exactly the paired tail's component count).
 //
 // Both halves stay pure helpers: params in, results out, no globals, no
 // output, panic-free. The variadic PARAMETER form exists here in the minimal
@@ -33,19 +38,36 @@ import (
 // constant index); general variadic calls (spread, ordinary variadic
 // arguments) remain deferred on the ledger (sx g24, c55).
 //
-// The form matrix (destinations × parameter types) is drawn per call site:
+// The form matrix (destinations × parameter types) is drawn per form:
 //
 //	dest:  fixed (a0, a1, ...) | variadic (xs ...E) | mixed (a0, xs ...E)
 //	ptype: concrete (exact component types) | any (every slot boxed) |
 //	       mixed (both kinds; masked for pure-variadic — one element type)
+//	src:   each boxed slot may additionally draw srcBoxed (source result
+//	       typed any), moving the boxing into the source — the
+//	       conversion-free negative-control rows, (any, ...) -> (any, ...)
 //
 // which covers all six of the review's boundary-matrix rows, controls
-// included.
+// included (the (any, any) -> (any, any) control entered with the
+// srcBoxed axis — mid-arc review finding 2; before it, every generated
+// forward performed its boxing at the call and the generic-forwarding
+// control was unrepresentable).
 
-// fwdSlot is one forwarded tuple component and how the sink receives it.
+// fwdSlot is one forwarded tuple component and how each side types it.
 type fwdSlot struct {
-	comp  Type // the concrete component type the source returns
+	comp  Type // the concrete component type underlying the slot
 	boxed bool // the sink declares this slot (or the variadic element) as any
+	// srcBoxed: the SOURCE's result type for this slot is any too — the
+	// boxing happens at the source's return, inside the source, so the
+	// forwarding call itself moves an interface value with NO implicit
+	// conversion. This is the review matrix's negative-control row
+	// ((any, any) -> (any, any)): a divergence here indicts generic
+	// tuple forwarding (splat arity, temp ordering), not interface
+	// boxing — the discriminator BUG-049's shape needs (mid-arc review
+	// finding 2). Only legal under a boxed sink slot (any is not
+	// assignable to a concrete parameter), enforced by construction in
+	// drawForwardSlots.
+	srcBoxed bool
 }
 
 // fwdPair is one generated source/sink helper pair plus the form it covers.
@@ -95,6 +117,13 @@ func (g *Generator) tupleForwardStmt(out *emitter) {
 }
 
 // forwardPair returns the pair for a form, building it on first use.
+//
+// TAPE-SHAPE NOTE (mid-arc review finding 11, accepted brittleness): a
+// cache hit consumes zero draws while a miss consumes the slot draws plus
+// a whole source-body generation, so the tape length is coupled to
+// form-visit ORDER. Replay is exact regardless; the cost lands on the
+// future shrinker (the same class as helper-count coupling, gen.go's
+// generateHelpers note), recorded rather than redesigned away.
 func (g *Generator) forwardPair(dest, ptype string) fwdPair {
 	key := dest + "/" + ptype
 	if i, ok := g.fwdByForm[key]; ok {
@@ -104,11 +133,7 @@ func (g *Generator) forwardPair(dest, ptype string) fwdPair {
 	srcName := fmt.Sprintf("tf%d", g.fwdSeq)
 	sinkName := fmt.Sprintf("tg%d", g.fwdSeq)
 	g.fwdSeq++
-	comps := make([]Type, len(slots))
-	for i, s := range slots {
-		comps[i] = s.comp
-	}
-	params, srcText := g.buildForwardSource(srcName, comps)
+	params, srcText := g.buildForwardSource(srcName, slots)
 	pair := fwdPair{srcName: srcName, sinkName: sinkName, params: params,
 		dest: dest, ptype: ptype,
 		src: srcText + g.buildForwardSink(sinkName, slots, dest)}
@@ -193,14 +218,30 @@ func (g *Generator) drawForwardSlots(dest, ptype string) []fwdSlot {
 			slots[g.c.draw(n)].boxed = true
 		}
 	}
+	// Source boxing (the negative-control axis): a boxed sink slot may
+	// draw an any-typed SOURCE result too, moving the implicit conversion
+	// from the forwarding call into the source's own return. Boxed-only
+	// by construction — any is not assignable to a concrete parameter.
+	for i := range slots {
+		if slots[i].boxed && g.c.chance(2) {
+			slots[i].srcBoxed = true
+		}
+	}
 	return slots
 }
 
 // buildForwardSource is generateHelper with PRESCRIBED results: the source
 // half of a forward pair returns exactly the component tuple its sink's
 // parameters were built to receive. Same purity machinery: params only,
-// pureMode masks every hot arm, p0 int is the non-constant base.
-func (g *Generator) buildForwardSource(name string, comps []Type) ([]Type, string) {
+// pureMode masks every hot arm, p0 int is the non-constant base. A
+// srcBoxed slot declares its RESULT type any — the return statement's
+// concrete expression boxes at the source's return, so the forwarding
+// call moves a ready-made interface value (the negative-control row).
+func (g *Generator) buildForwardSource(name string, slots []fwdSlot) ([]Type, string) {
+	comps := make([]Type, len(slots))
+	for i, s := range slots {
+		comps[i] = s.comp
+	}
 	pool := scalarTypes()
 	if g.enabled("strings") {
 		pool = append(pool, Str())
@@ -235,6 +276,13 @@ func (g *Generator) buildForwardSource(name string, comps []Type) ([]Type, strin
 	rt := make([]string, len(comps))
 	for j, r := range comps {
 		rt[j] = r.GoName()
+		if slots[j].srcBoxed {
+			// The result type is any; the returned concrete expression
+			// boxes HERE, not at the forwarding call. Gated by the same
+			// interfaces+assertion gate as the sink's boxed slots (the
+			// slot cannot be srcBoxed without being boxed).
+			rt[j] = "any"
+		}
 	}
 	return params, fmt.Sprintf("func %s(%s) (%s) {\n%s}\n\n",
 		name, strings.Join(ps, ", "), strings.Join(rt, ", "), body.buf.String())
@@ -284,9 +332,14 @@ func (g *Generator) buildForwardSink(name string, slots []fwdSlot, dest string) 
 			// Guaranteed-success assertion (the generator controls the
 			// dynamic type it forwards) — panic-free. This is the exact
 			// site where a clone that skipped the implicit boxing hands
-			// its machine a raw value (BUG-049).
+			// its machine a raw value (BUG-049). Noted any_slot (review
+			// finding 7): a can't-fail assertion inflates the assertion/
+			// interfaces judged-coverage numbers unless stratifiable —
+			// the sharp empty-interface assertion is a different
+			// population and the tag keeps them separable.
 			access = fmt.Sprintf("%s.(%s)", access, s.comp.GoName())
 			g.mark("interfaces", "assertion")
+			g.note("any_slot")
 		}
 		term := access
 		switch {

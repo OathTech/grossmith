@@ -50,6 +50,9 @@ func Optional() []string {
 //	width_dependent  — an emitted operation can differ between GOARCH widths
 //	feeder_value     — a variable is read but not observed
 //	dead_value       — a variable is discharged with _ = v, eliminable
+//	any_slot         — a forward sink read an any-typed slot via a
+//	                   can't-fail assertion (stratifies the assertion
+//	                   metrics — review finding 7)
 const (
 	tagBoundary        = "boundary"
 	tagDeadCode        = "dead_code"
