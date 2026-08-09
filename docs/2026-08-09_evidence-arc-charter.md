@@ -1,7 +1,9 @@
 *ACTIVE (2026-08-09): governing the evidence arc, branch `evidence-arc`.
-The arc is NOT complete — the arc-end review returned seven blocking
-findings and two of the exit conditions below are UNMET (E3's and E4's).
-Status of record: `docs/2026-08-09_evidence-arc-status.md`. Sequencing:
+E5 is executed and re-reviewed: E3's exit condition is MET; E4's is met
+on its measured mechanisms and UNMET on the universal bound, which is
+stopped at `docs/2026-08-09_execution-bound-design-note.md` per this
+charter's own exit condition — a design decision for the user. Status
+of record: `docs/2026-08-09_evidence-arc-status.md`. Sequencing:
 `docs/roadmap.md`.*
 
 # The evidence arc: charter (2026-08-09)

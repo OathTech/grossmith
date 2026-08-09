@@ -1,6 +1,11 @@
-*ACTIVE (2026-08-09): the evidence arc's honest status record. The arc is
-NOT complete and `evidence-arc` is NOT merge-ready. Sequencing:
-`docs/roadmap.md`; charter: `docs/2026-08-09_evidence-arc-charter.md`.*
+*ACTIVE (2026-08-09): the evidence arc's honest status record. E5 is
+EXECUTED and RE-REVIEWED: six of the seven blockers are closed with the
+re-review's own probes confirming them (its one blocking finding fixed
+on-branch); the seventh — A1's universal executed-statement bound — is
+STOPPED at `docs/2026-08-09_execution-bound-design-note.md`, a design
+decision that is the user's. Merge waits on that decision and the
+per-merge sign-off. Sequencing: `docs/roadmap.md`; charter:
+`docs/2026-08-09_evidence-arc-charter.md`.*
 
 # Evidence arc: status at arc-end review (2026-08-09)
 
