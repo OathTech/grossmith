@@ -1,8 +1,8 @@
 # Backlog
 
-Items outside the governing audit phase plan (that plan lives in
-`docs/2026-08-06_project-charter-and-engineering-audit.md`). Ordering
-here is not commitment.
+An issue inventory. Ordering here is not commitment;
+`docs/roadmap.md` is the ordering authority (the 2026-08-06 audit
+phase plan that used to govern is closed — delivered in full).
 
 ## Customer-prioritized: GoLean's generation requests (2026-08-07)
 
@@ -12,8 +12,8 @@ composition-histogram backlog item was absorbed and closed by rung 5.
 The recover WRAPPER observes panics at function level — SITE-encoded
 since 2026-08-08 (wrapperCaught + wrapperJudged in batch.json); the guarded-STATEMENT recovered-event rung below
 remains open — a different mechanism, not absorbed. Remaining from the request set:
-R2b (order witnessing — effect-discipline design) and R6 (embedding
-matrices — blocked on rungs).
+R6 only (embedding matrices — blocked on rungs); R2b was DELIVERED in
+the witness arc (its entry below records the details).
 
 `docs/grossmith-requests-2026-08-07.md` — six requests ordered by
 demonstrated yield against their 43-entry bug ledger, filed after their

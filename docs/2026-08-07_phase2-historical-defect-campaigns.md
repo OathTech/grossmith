@@ -1,3 +1,6 @@
+*CLOSED/HISTORICAL (2026-08-09): campaign record. The fix-pair method recurred
+in witness-arc W0/W1; a durable checked-in corpus is `docs/roadmap.md` (R4).*
+
 # Phase 2 slice 2: historical-defect campaigns (2026-08-07)
 
 Method (design note, slice 2): differential of differentials. The SAME

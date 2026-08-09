@@ -18,15 +18,15 @@
 We are building software, not bureaucracy. Tests are the gate; work happens on
 a branch; the maintainer reviews before merge. That is the entire process.
 
-**Current status (2026-08-06):** the outside audit
-(`docs/2026-08-06_project-charter-and-engineering-audit.md`) ruled the
-generator foundation healthy and the conformance PRODUCT incomplete: what
-exists today is an advanced deterministic Go program generator with a
-gc-only batch harness. Grammar expansion is paused; work follows the
-audit's phases (honesty pass -> product MVP with real runtime adapters and
-a portable observation protocol -> observation sensitivity -> replay ->
-resume the ladder from a spec-surface ledger). Statements below marked
-PLANNED describe that product, not the current code.
+**Current status (2026-08-09):** the 2026-08-06 audit's phases are all
+DELIVERED — observation protocol and runtime adapters, measured
+sensitivity, replay, and the spec-surface ledger with the
+request-driven ladder (GoLean's R1-R5, then R2b order witnessing and
+tuple forwarding in the witness arc). `docs/roadmap.md` is the living
+roadmap (currently: the evidence arc, hardening the evidence
+boundary); `docs/spec-ledger.md` is the coverage ground truth. This
+file remains the founding design; delivered state is noted in place
+where the text below predates it.
 
 ## What this tool is for: clone conformance
 
@@ -43,8 +43,9 @@ implementation. That shapes everything:
   gc-386 degenerate clone, and the GoLean campaign adapter (`golean`)
   implemented.
 - **The conformance equivalence is byte equality of observations.** Programs
-  are outcome-deterministic by construction, so no fuzzy matching is ever
-  needed. Only two declared quotients exist: platform width (pin `GOARCH` or
+  in the STRICT lane — today the entire corpus — are outcome-deterministic
+  by construction, so no fuzzy matching is ever needed; other lanes
+  (designed, not yet emitted) carry explicit lane-specific oracles. Only two declared quotients exist: platform width (pin `GOARCH` or
   declare the dependency) and panic identity (TODAY a policy knob:
   `-panic-policy exact` matches full `gc` message text, `kind` matches only
   the closed panic taxonomy — the prose is implementation detail a
@@ -54,11 +55,13 @@ implementation. That shapes everything:
   with narrower channels get a declared capability profile (GoLean:
   slices/maps unobserved, event constructs excluded) rather than silent
   blindness.
-- **"Cover the interesting behaviors" is a measured claim.** PLANNED: the
-  Go spec surface enumerated as a ledger (supported / partial /
-  deferred-with-reason / out-of-scope) so the uncovered remainder is the
-  roadmap. TODAY: tags are emission-gate names, not a spec inventory;
-  programs carry the tags they exercised and the batch report shows the
+- **"Cover the interesting behaviors" is a measured claim.** DELIVERED
+  (Phase 4): the Go spec surface enumerated as a ledger
+  (`docs/spec-ledger.md` — supported / partial / deferred-with-reason /
+  out-of-scope) so the uncovered remainder is the roadmap; every
+  `supported` row names its emission tags and the ledger gate
+  (`TestLedgerNamesEveryTag`) fails when a tag goes unnamed. Programs
+  carry the tags they exercised and the batch report shows the
   histogram.
 - **The conformance statement is the product**: reference version, `GOARCH`,
   equivalence policy, N programs, compile/run rate, coverage histogram.
@@ -95,9 +98,9 @@ Departures from csmith, each clearly dominating:
    itself a weighted, recorded draw (see "Liveness" below). (Csmith's CRC-32
    exists because printing C state is painful; Go has no such excuse.)
    Injectivity domain, precisely: scalars, strings, arrays, structs, maps
-   (len + alphabet probes), and slices (len + elements) are injective;
-   INTERFACES are not — only dynamic-type identity is observed, payload is
-   dropped (audit C4; the fix is a Phase 2 deliverable).
+   (len + alphabet probes), slices (len + elements), and — since the
+   audit-C4 fix — interfaces (dynamic-type identity plus payload) are
+   injective.
 4. **Panic paths are test content.** Division by zero, bounds, nil deref are
    *defined, deterministic* outcomes in Go — a class csmith structurally
    cannot generate. Panic/no-panic is decided on purpose at each site,
@@ -119,7 +122,11 @@ Exactly three properties are enforced by construction (the legality mask):
 2. **Halts** — non-termination is legal Go but not differentially testable
    (charter 2). Includes resource bounds: string/data growth linear by
    construction.
-3. **Outcome-deterministic** — no unordered iteration reaching output, side
+3. **Outcome-deterministic** — the STRICT-lane invariant (today the entire
+   corpus; sanctioned alternate lanes — membership first, designed in
+   `docs/2026-08-09_membership-lane-emission-design.md` — sit BESIDE this
+   invariant with explicit lane-specific oracles, never as a loosening of
+   it): no unordered iteration reaching output, side
    effects in statement position until an effect discipline exists, panics
    deliberate (charter 2; gosmith admitted nondeterminism on day one and was
    crash-only forever — this cannot be retrofitted). Panic IDENTITY is part
@@ -273,16 +280,18 @@ break / continue; panic paths (division, modulo). Then:
    literals), pure value-receiver methods, interfaces (derived +
    interface{}; satisfaction by construction; assertions restricted to
    legal implementers; NEVER-nil values), map-range fold.
-8. Remaining — RESUMES ONLY AFTER the audit's product phases: recursion
-   with fuel, pointer params/package vars/capturing closures (brings the
-   effect discipline), shared method sets (non-trivial satisfaction),
-   type switches, nil-interface dispatch, the multi_panic any-panic
-   corner, corner-list expansion (division-signs, dead-rich,
+8. Remaining: recursion with fuel, pointer params/package vars/capturing
+   closures (the effect discipline is designed and signed off —
+   `docs/2026-08-07_effect-discipline-design.md`; mechanism 1, order
+   witnessing, is delivered, mechanisms 2/3 remain), shared method sets
+   (non-trivial satisfaction), nil-interface dispatch, the multi_panic
+   any-panic corner, corner-list expansion (division-signs, dead-rich,
    conversion-truncation, shift boundaries), floats/complex (equivalence
    policy first), concurrency (deterministic schedule construction or
    declared quotient only), generics (validity-by-construction design
-   first). Prioritized from the spec-surface ledger once it exists
-   (audit Phase 4).
+   first). Type switches, listed here before Phase 4, have since landed
+   (ledger row `switch`). Prioritized from the spec-surface ledger
+   (`docs/spec-ledger.md`, live) by `docs/roadmap.md`.
 
 Each rung: emission code gated on new tags + witness test + the conformance
 rate watched (expect a dip, fix by construction).

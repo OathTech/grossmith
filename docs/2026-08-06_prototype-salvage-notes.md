@@ -1,3 +1,6 @@
+*REFERENCE (2026-08-09): input record — the trap catalogue and survey
+conclusions the code cites; not a plan. Sequencing: `docs/roadmap.md`.*
+
 # Prototype salvage notes: the trap catalogue and survey conclusions
 
 The grossmith 2.0 generator is built on lessons from the frozen

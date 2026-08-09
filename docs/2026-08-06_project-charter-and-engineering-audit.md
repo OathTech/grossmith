@@ -1,3 +1,6 @@
+*CLOSED/HISTORICAL (2026-08-09): all four phases delivered and merged; no
+longer the governing plan — `docs/roadmap.md` owns sequencing.*
+
 # Project charter and engineering audit
 
 **Date:** 2026-08-06  

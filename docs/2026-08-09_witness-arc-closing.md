@@ -1,3 +1,7 @@
+*CLOSED/HISTORICAL (2026-08-09): closing record. The "awaiting sign-off"
+merge/push list below is a snapshot of that moment, not current state; the
+deferred items are queued in `docs/roadmap.md`, which owns sequencing.*
+
 # Witness arc: closing record (2026-08-09)
 
 The arc ran to charter completion on branch `witness-arc` (head

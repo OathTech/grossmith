@@ -2,21 +2,28 @@
 
 [![ci](https://github.com/OathTech/grossmith/actions/workflows/ci.yml/badge.svg)](https://github.com/OathTech/grossmith/actions/workflows/ci.yml)
 
-A generator of small, valid, **outcome-deterministic** Go programs, built
-for differential conformance testing of Go reimplementations ("clones" —
-interpreters, formal semantics, alternative backends) against the reference
-`gc` toolchain.
+A generator of small, valid Go programs, built for differential
+conformance testing of Go reimplementations ("clones" — interpreters,
+formal semantics, alternative backends) against the reference `gc`
+toolchain. Generated programs in the **STRICT lane** — today the entire
+corpus — are outcome-deterministic by construction; other lanes
+(designed, not yet emitted) carry explicit lane-specific oracles.
 
-**Current status (2026-08-07):** Phases 1-3 of the audit plan
-(`docs/2026-08-06_project-charter-and-engineering-audit.md`) are complete:
-a portable observation protocol (`observe`), a runtime-adapter harness with
-a closed verdict taxonomy (`harness`), durable per-case and per-batch
-artifacts, a working first clone integration (GoLean, `golean`), measured
-observation sensitivity (per-shape positive controls; planted and
-historical defect campaigns), and draw-trace replay (`gengo -replay`
-reproduces a case byte-identically from its record alone). The
-spec-surface ledger and the ladder resumption (Phase 4, prioritized by
-GoLean's filed requests) are next.
+**Current status (2026-08-09):** all four phases of the 2026-08-06 audit
+plan are complete and merged: a portable observation protocol
+(`observe`), a runtime-adapter harness with a closed verdict taxonomy
+(`harness`), durable per-case and per-batch artifacts, a working first
+clone integration (GoLean, `golean`), measured observation sensitivity
+(per-shape positive controls; planted and historical defect campaigns),
+draw-trace replay (`gengo -replay` reproduces a case byte-identically
+from its record alone), the spec-surface ledger (`docs/spec-ledger.md`,
+live, with its honesty gate), and the request-driven ladder (GoLean's
+R1-R5 plus R2b order witnessing and tuple forwarding delivered). The
+witness arc is complete (`docs/2026-08-09_witness-arc-closing.md`). In
+progress: the evidence arc (`docs/2026-08-09_evidence-arc-charter.md`),
+hardening the evidence boundary so a campaign is an immutable,
+self-consistent, reproducible experiment. `docs/roadmap.md` is the one
+living roadmap.
 
 ## What works today
 
@@ -63,7 +70,10 @@ integer types, pure value-receiver methods, interfaces (derived and
 interleaved observation points, `defer`, and statement-level
 `recover` — with deliberate, budgeted, tagged panic paths. Three properties
 hold **by construction** (never by filtering): every program compiles,
-halts (time and memory), and produces byte-identical output on every run.
+halts (time and memory), and — in the STRICT lane, today the whole
+corpus — produces byte-identical output on every run; other lanes
+(designed, not yet emitted — membership first) carry explicit
+lane-specific oracles (`docs/2026-08-09_membership-lane-emission-design.md`).
 
 ## Packages
 
@@ -82,7 +92,9 @@ halts (time and memory), and produces byte-identical output on every run.
 
 `BRIEF.md` is the founding design document: the charter, the
 legality-vs-weights taxonomy, the observation model, and the growth
-ladder. `docs/2026-08-06_observation-protocol-and-adapters.md` is the
+ladder. `docs/roadmap.md` is the living roadmap; `docs/spec-ledger.md`
+is the spec-surface ledger (what is generated, quotiented, deferred and
+why). `docs/2026-08-06_observation-protocol-and-adapters.md` is the
 Phase 1 protocol/adapter design; `docs/2026-08-06_prototype-salvage-notes.md`
 records the Go trap catalogue and generator-survey conclusions.
 

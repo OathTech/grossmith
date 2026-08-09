@@ -1,3 +1,6 @@
+*CLOSED/HISTORICAL (2026-08-09): arc complete — the record is
+`docs/2026-08-09_witness-arc-closing.md`; sequencing now in `docs/roadmap.md`.*
+
 # The witness arc: charter (2026-08-09)
 
 PURPOSE. grossmith is a Go program generator used for differential

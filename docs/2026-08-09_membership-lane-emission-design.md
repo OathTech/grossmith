@@ -1,3 +1,9 @@
+*ACTIVE, BLOCKED-ON (2026-08-09): implementation (roadmap R6) is blocked on a
+stable machine-readable GoLean reason-code contract for their membership
+stages — their `diff-coverage` today emits one `membership` stage with
+free-text detail for five distinct failure kinds, which cannot map to the
+verdict taxonomy in §3. Sequencing: `docs/roadmap.md`.*
+
 # Membership-lane emission — design note (witness arc W5, 2026-08-09)
 
 PURPOSE. grossmith generates outcome-deterministic Go programs for
@@ -51,12 +57,22 @@ class keeps the first lane campaign attributable.
   demotion-by-honesty is the correct response, mirrored on our side by
   batch.json carrying the realized lane per case.
 - **Guaranteed multiplicity** (their singleton-rejection gate): the
-  emitter writes TWO known keys with DISTINCT fold terms into the map
-  immediately before the fold, unconditionally — so len >= 2 at range
-  time whatever earlier deletes did, and two orders differ because
-  a*31 + b == b*31 + a iff a == b. That argument (2 guaranteed
-  distinct entries => >= 2 enumerable observations) goes verbatim into
-  the manifest's `why` column.
+  emitter writes TWO known keys into the map immediately before the
+  fold, unconditionally — so len >= 2 at range time whatever earlier
+  deletes did. CORRECTED 2026-08-09 (evidence arc E0; the 2026-08-09
+  comprehensive audit caught it): this note originally argued the two
+  orders differ "because a*31 + b == b*31 + a iff a == b", which is
+  FALSE in modular arithmetic — the two folds differ by 30*(a-b), and
+  30*(a-b) ≡ 0 mod 2^w whenever a-b ≡ 0 mod 2^(w-1), reachable at
+  w=32 with in-range values. The repaired argument: both fold terms
+  come from literals the emitter chooses, so it controls their
+  difference d outright; it emits terms with 0 < |d| < 2^31, and then
+  30*d is nonzero mod 2^32 AND mod 2^64 (30 = 2*15 with 15 odd, so
+  30*d ≡ 0 mod 2^w iff d ≡ 0 mod 2^(w-1)) — the two orders provably
+  differ at both widths. That bounded-difference argument (2
+  guaranteed entries, term difference in (0, 2^31) => >= 2 enumerable
+  observations at either width) goes verbatim into the manifest's
+  `why` column.
 - **Width metadata, explicit** (their audit F2a: no silent defaults):
   the map-range consumption site's bound is the map's length at range
   time. The generator emits maps from bounded key alphabets and

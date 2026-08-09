@@ -1,3 +1,6 @@
+*CLOSED/HISTORICAL (2026-08-09): ledger live (`docs/spec-ledger.md`) and rungs
+1-5 delivered; the deferred remainder is queued in `docs/roadmap.md`.*
+
 # Phase 4 scope: the ledger and the ladder (2026-08-07)
 
 The audit's Phase 4: "resume capability scaling from a spec ledger" —

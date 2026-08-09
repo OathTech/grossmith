@@ -1,3 +1,6 @@
+*REFERENCE (2026-08-09): correspondence record (handover to GoLean), not a
+plan. Sequencing: `docs/roadmap.md`.*
+
 # grossmith differential findings — 2026-08-07
 
 Handed over from the grossmith project (generator of small,

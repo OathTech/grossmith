@@ -1,3 +1,7 @@
+*CLOSED/HISTORICAL (2026-08-09): implemented, with superseded details (the
+postscript below records the drift). Residual: adapter shape (a) — symmetric
+document emission — tracked in `TODO.md`; sequencing in `docs/roadmap.md`.*
+
 # Design draft: observation protocol v2 and runtime adapters (Phase 1)
 
 **Status: DRAFT for discussion — nothing below is implemented.**
