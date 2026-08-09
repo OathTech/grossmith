@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -53,6 +54,10 @@ type config struct {
 	// many cases per PAIR of optional constructs, each pair force-included
 	// into an otherwise ordinary swarm mix. Replaces -n.
 	pairs int
+	// allowDirty: permit a judged campaign from a dirty generator/clone
+	// tree (E3; audit P1: "-dirty" collapses arbitrary changes to one
+	// label). The dirty tree's content hash is recorded instead.
+	allowDirty bool
 	// explicit records which flags the user actually set (audit F5:
 	// -replay must refuse generation flags rather than ignore them).
 	explicit map[string]bool
@@ -73,6 +78,7 @@ func main() {
 	flag.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "parallel build/run workers")
 	flag.StringVar(&cfg.replay, "replay", "", "case directory to REPLAY from its case.json record (verifies byte + observation identity; ignores generation flags)")
 	flag.IntVar(&cfg.pairs, "pairs", 0, "pairwise-coverage mode: generate this many cases per optional-construct PAIR (replaces -n)")
+	flag.BoolVar(&cfg.allowDirty, "allow-dirty", false, "permit judged campaigns from a dirty tree (records a content hash instead of refusing)")
 	flag.Parse()
 	cfg.explicit = map[string]bool{}
 	flag.Visit(func(f *flag.Flag) {
@@ -86,6 +92,74 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gengo:", err)
 		os.Exit(1)
 	}
+}
+
+// stageBatchDir prepares the staging sibling `<out>.staging`: leftover
+// staging from an interrupted run is removed (it is ours by naming and
+// was never published), and an interrupted PUBLISH — `<out>.prev`
+// present with `<out>` missing — is rolled back first, restoring the
+// previous valid batch (E3: interruption preserves the previous batch).
+func stageBatchDir(out string) (string, error) {
+	prev := out + ".prev"
+	if _, err := os.Stat(prev); err == nil {
+		if _, err := os.Stat(out); os.IsNotExist(err) {
+			if err := os.Rename(prev, out); err != nil {
+				return "", fmt.Errorf("recovering interrupted publish: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "gengo: recovered interrupted publish (%s restored from %s)\n", out, prev)
+		} else {
+			// Both exist: the crash happened after the new batch was
+			// published but before cleanup — the leftover is disposable.
+			if err := os.RemoveAll(prev); err != nil {
+				return "", err
+			}
+		}
+	}
+	staging := out + ".staging"
+	if err := os.RemoveAll(staging); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		return "", err
+	}
+	return staging, nil
+}
+
+// writeComplete writes the completion descriptor: the manifest's digest,
+// bound at the moment the batch finished. Consumers treat a tree
+// without it as an interrupted run.
+func writeComplete(work string) error {
+	sum, err := harness.FileSHA256(filepath.Join(work, "manifest.json"))
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(map[string]string{
+		"schema":         "grossmith-complete-v1",
+		"manifestSha256": sum,
+	}, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(work, "complete.json"), b, 0o644)
+}
+
+// publishBatch atomically swaps staging into place. The previous batch
+// survives as `<out>.prev` until the swap succeeds; stageBatchDir
+// recovers the one crash window (prev present, out missing) on the next
+// run.
+func publishBatch(out, work string) error {
+	prev := out + ".prev"
+	if _, err := os.Stat(out); err == nil {
+		if err := os.Rename(out, prev); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(work, out); err != nil {
+		return err
+	}
+	return os.RemoveAll(prev)
 }
 
 // validate rejects a bad invocation BEFORE anything is written (audit H5):
@@ -147,16 +221,19 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 		}
 	}
 	// The out dir must be ours: empty/absent, or a previous batch
-	// (manifest.tsv present). Refusing foreign directories keeps the
-	// stale-case cleanup from ever deleting someone else's files.
+	// (manifest present). Refusing foreign directories keeps publishBatch
+	// from ever renaming away someone else's files (E3: publish replaces
+	// the whole dir, so the ownership bar is load-bearing).
 	entries, err := os.ReadDir(c.out)
 	switch {
 	case os.IsNotExist(err):
 	case err != nil:
 		return "", "", err
 	case len(entries) > 0:
-		if _, err := os.Stat(filepath.Join(c.out, "manifest.tsv")); err != nil {
-			return "", "", fmt.Errorf("out dir %s is non-empty and not a gengo batch (no manifest.tsv) — refusing to touch it", c.out)
+		if _, err := os.Stat(filepath.Join(c.out, "manifest.json")); err != nil {
+			if _, err := os.Stat(filepath.Join(c.out, "manifest.tsv")); err != nil {
+				return "", "", fmt.Errorf("out dir %s is non-empty and not a gengo batch (no manifest) — refusing to touch it", c.out)
+			}
 		}
 	}
 	return policy, checkout, nil
@@ -172,6 +249,20 @@ func run(cfg config) error {
 	}
 	judging := cfg.judge || cfg.clone != ""
 	rev := generatorRev()
+	if judging && strings.HasSuffix(rev, "-dirty") {
+		// A campaign of record from a dirty tree records an identity that
+		// names no reviewable revision (E3). Refuse, or — under
+		// -allow-dirty — bind the actual content: HEAD-relative diff plus
+		// the untracked file list, hashed.
+		if !cfg.allowDirty {
+			return fmt.Errorf("judged campaign from a dirty generator tree (%s): commit first, or pass -allow-dirty to record a content hash", rev)
+		}
+		if h, err := dirtyContentHash("."); err == nil {
+			rev += "+content-" + h[:12]
+		} else {
+			return fmt.Errorf("-allow-dirty: hashing the dirty tree: %w", err)
+		}
+	}
 
 	// Preflight the toolchain BEFORE any write (E1; audit: a bad -go was
 	// discovered only after the batch existed, contradicting "validates
@@ -191,31 +282,25 @@ func run(cfg config) error {
 		refOracle = &oid
 	}
 
-	if err := os.MkdirAll(cfg.out, 0o755); err != nil {
+	// Batches are IMMUTABLE runs built in a STAGING sibling and published
+	// by atomic rename (E3; audit P1: in-place regeneration truncated the
+	// manifest first, deleted batch.json, and overwrote cases one at a
+	// time — an interruption left a hybrid that still passed the
+	// ownership check; a symlinked case dir let writes escape the tree).
+	// Everything below — generation, judging, artifacts — lands in
+	// `work`; cfg.out is touched only inside publishBatch. This deletes
+	// the whole in-place mutation class: no ownership token, no stale-dir
+	// sweep, no batch.json removal.
+	work, err := stageBatchDir(cfg.out)
+	if err != nil {
 		return err
 	}
 	// The batch root is its own throwaway module so `go test ./...` in the
 	// repo never vets generated programs (vet's style checks — redundant
-	// `v || v` and friends — legitimately fire on random code).
-	modfile := filepath.Join(cfg.out, "go.mod")
-	if _, err := os.Stat(modfile); os.IsNotExist(err) {
-		if err := os.WriteFile(modfile, []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
-			return err
-		}
-	}
-	// Mark the dir as ours IMMEDIATELY (audit F3): manifest.tsv is the
-	// ownership token validate() checks, and writing it only after the full
-	// generation loop meant an interrupted run left a dir every future run
-	// refused. The header-only file is overwritten with the real manifest
-	// below.
-	if err := os.WriteFile(filepath.Join(cfg.out, "manifest.tsv"), []byte("id\tseed\tfeatures\tpair\n"), 0o644); err != nil {
-		return err
-	}
-	// And a previous run's report must not survive next to regenerated
-	// cases (audit F4): with index-based IDs a stale batch.json is
-	// structurally consistent with the new dirs — only the subject hashes
-	// disagree, and nothing rechecks them.
-	if err := os.Remove(filepath.Join(cfg.out, "batch.json")); err != nil && !os.IsNotExist(err) {
+	// `v || v` and friends — legitimately fire on random code). Staging is
+	// fresh, so it is always written, never inherited (audit P0: a reused
+	// root's go.mod kept arbitrary module/toolchain/replace directives).
+	if err := os.WriteFile(filepath.Join(work, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
 		return err
 	}
 
@@ -266,7 +351,8 @@ func run(cfg config) error {
 	tagCount := map[string]int{}
 	siteStats := map[string]*gen.SiteStats{}
 	featuresByID := map[string][]string{}
-	liveDirs := map[string]bool{}
+	var caseIDs []string
+	caseSeeds := map[string]int64{}
 	var manifest strings.Builder
 	manifest.WriteString("id\tseed\tfeatures\tpair\n")
 
@@ -283,7 +369,7 @@ func run(cfg config) error {
 			return fmt.Errorf("seed %d: %w", caseSeed, err)
 		}
 		id := fmt.Sprintf("case_%05d", i)
-		dir := filepath.Join(cfg.out, id)
+		dir := filepath.Join(work, id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -314,7 +400,8 @@ func run(cfg config) error {
 		}
 		fmt.Fprintf(&manifest, "%s\t%d\t%s\t%s\n", id, caseSeed, strings.Join(counted, ","), pairCol)
 		featuresByID[id] = c.Features
-		liveDirs[dir] = true
+		caseIDs = append(caseIDs, id)
+		caseSeeds[id] = caseSeed
 		for _, t := range c.Features {
 			tagCount[t]++
 		}
@@ -332,23 +419,15 @@ func run(cfg config) error {
 			}
 		}
 	}
-	if err := os.WriteFile(filepath.Join(cfg.out, "manifest.tsv"), []byte(manifest.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "manifest.tsv"), []byte(manifest.String()), 0o644); err != nil {
 		return err
 	}
-	// Remove stale case dirs from a previous larger batch in the same out
-	// dir: the batch glob would otherwise mix two batches' verdicts.
-	stale, err := filepath.Glob(filepath.Join(cfg.out, "case_*"))
-	if err != nil {
+	// The AUTHORITATIVE descriptor (E3): every build input digested;
+	// RunBatch refuses the tree if anything differs at judge time.
+	if _, err := harness.WriteManifest(work, rev, "go 1.26", caseIDs, caseSeeds); err != nil {
 		return err
 	}
-	for _, dir := range stale {
-		if !liveDirs[dir] {
-			if err := os.RemoveAll(dir); err != nil {
-				return err
-			}
-		}
-	}
-	fmt.Printf("generated %d cases in %s (seeds %d..%d)\n", len(specs), cfg.out, cfg.seed, cfg.seed+int64(len(specs))-1)
+	fmt.Printf("generated %d cases (seeds %d..%d)\n", len(specs), cfg.seed, cfg.seed+int64(len(specs))-1)
 	if cfg.pairs > 0 {
 		// Realized co-emission per forced pair: enabling a pair arms its
 		// sites but emission depends on draws and legality — unrealized
@@ -397,7 +476,10 @@ func run(cfg config) error {
 		printSiteStats(siteStats)
 	}
 	if !judging {
-		return nil
+		if err := writeComplete(work); err != nil {
+			return err
+		}
+		return publishBatch(cfg.out, work)
 	}
 
 	ctx := context.Background()
@@ -406,7 +488,7 @@ func run(cfg config) error {
 	if cfg.clone == "gc-386" {
 		cloneAd = &harness.GcAdapter{GoBin: cfg.goBin, GOARCH: "386", Timeout: cfg.timeout, AdapterName: "gc-386"}
 	}
-	rep, err := harness.RunBatch(ctx, cfg.out, ref, cloneAd, policy, cfg.workers)
+	rep, err := harness.RunBatch(ctx, work, ref, cloneAd, policy, cfg.workers)
 	if err != nil {
 		return err
 	}
@@ -416,7 +498,7 @@ func run(cfg config) error {
 	rep.ReferenceOracle = refOracle
 
 	if checkout != "" {
-		if err := runGoLean(ctx, &rep, cfg, checkout, featuresByID); err != nil {
+		if err := runGoLean(ctx, &rep, cfg, work, checkout, featuresByID); err != nil {
 			return err
 		}
 	}
@@ -463,7 +545,15 @@ func run(cfg config) error {
 		rep.CompositionJudged = judgedComp
 	}
 	rep.Pairs = cfg.pairs
-	if err := harness.WriteBatch(cfg.out, rep); err != nil {
+	if err := harness.WriteBatch(work, rep); err != nil {
+		return err
+	}
+	// Completion descriptor LAST, then atomic publish: a tree without
+	// complete.json is an interrupted run, never a batch of record.
+	if err := writeComplete(work); err != nil {
+		return err
+	}
+	if err := publishBatch(cfg.out, work); err != nil {
 		return err
 	}
 	printReport(rep, cfg, featuresByID, tagCount)
@@ -477,10 +567,11 @@ type caseRecordIn struct {
 	ID            string      `json:"id"`
 	Seed          int64       `json:"seed"`
 	GeneratorRev  string      `json:"generatorRev"`
-	SubjectSHA256 string      `json:"subjectSha256"`
-	DriverSHA256  string      `json:"driverSha256"`
-	DrawTrace     []int       `json:"drawTrace"`
-	Config        *gen.Config `json:"config"`
+	SubjectSHA256 string         `json:"subjectSha256"`
+	DriverSHA256  string         `json:"driverSha256"`
+	Features      map[string]int `json:"features"`
+	DrawTrace     []int          `json:"drawTrace"`
+	Config        *gen.Config    `json:"config"`
 }
 
 // runReplay is Phase 3's done-when as a command: regenerate a case from
@@ -507,11 +598,20 @@ func runReplay(cfg config) error {
 		return err
 	}
 	var rec caseRecordIn
-	if err := json.Unmarshal(b, &rec); err != nil {
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	// Strict decode (E3; audit P1: unknown record fields passed through
+	// silently — a record from a future or foreign producer verified).
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rec); err != nil {
 		return fmt.Errorf("case.json: %w", err)
 	}
 	if rec.Schema != harness.CaseSchema {
 		return fmt.Errorf("case.json: schema %q, want %q", rec.Schema, harness.CaseSchema)
+	}
+	// The directory IS the ID: a record copied into another case's dir
+	// would otherwise verify under the wrong identity (E3).
+	if base := filepath.Base(filepath.Clean(cfg.replay)); base != rec.ID {
+		return fmt.Errorf("case directory %q does not match the record's ID %q", base, rec.ID)
 	}
 	if rec.Config == nil {
 		// Fail closed with the real cause (audit F6: the zero config can
@@ -531,7 +631,22 @@ func runReplay(cfg config) error {
 		return fmt.Errorf("replayed subject hash %s != recorded %s (recorded under generator %s, this binary is %s)",
 			got, rec.SubjectSHA256, rec.GeneratorRev, generatorRev())
 	}
-	fmt.Printf("replay %s: subject byte-identical (sha256 %s)\n", rec.ID, rec.SubjectSHA256[:12])
+	// Feature metadata is part of the experiment, not decoration: it
+	// drives attribution, profiles, and width claims (E3; audit P1 —
+	// replay verified source bytes better than semantics).
+	if len(rec.Features) > 0 {
+		for tag, n := range c.FeatureCounts {
+			if rec.Features[tag] != n {
+				return fmt.Errorf("replayed feature %s=%d != recorded %d — the record's metadata does not describe this program", tag, n, rec.Features[tag])
+			}
+		}
+		for tag, n := range rec.Features {
+			if c.FeatureCounts[tag] != n {
+				return fmt.Errorf("recorded feature %s=%d never regenerated", tag, n)
+			}
+		}
+	}
+	fmt.Printf("replay %s: subject byte-identical (sha256 %s), features identical (%d tags)\n", rec.ID, rec.SubjectSHA256[:12], len(rec.Features))
 	// Driver identity too, when the record carries it (audit F10; older
 	// records predate the field and skip with a note).
 	if rec.DriverSHA256 == "" {
@@ -588,7 +703,7 @@ func runReplay(cfg config) error {
 	out := ref.Run(context.Background(), dir)
 	if out.Status != harness.StatusRan {
 		if recorded != nil && recorded.Reference.Status == out.Status {
-			fmt.Printf("replay %s: outcome %s matches the record — source reproduced, no observation to compare\n", rec.ID, out.Status)
+			fmt.Printf("replay %s: SAME FAILURE CLASS as the record (%s) — source reproduced; a class match is not observation identity (E3)\n", rec.ID, out.Status)
 			return nil
 		}
 		return fmt.Errorf("replayed case did not run: %s: %s", out.Status, out.Detail)
@@ -617,7 +732,7 @@ func runReplay(cfg config) error {
 
 // runGoLean judges the batch's reference outcomes through GoLean's harness
 // and folds the verdicts into the report.
-func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, checkout string, featuresByID map[string][]string) error {
+func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, work string, checkout string, featuresByID map[string][]string) error {
 	identity, err := golean.Identity(ctx, checkout)
 	if err != nil {
 		return err
@@ -628,7 +743,7 @@ func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, checko
 	rep.PanicPolicy = "golean-harness (expected status + exact panic message)"
 	cases := make([]golean.Case, len(rep.Cases))
 	for i, cr := range rep.Cases {
-		cases[i] = golean.Case{ID: cr.ID, Dir: filepath.Join(cfg.out, cr.ID),
+		cases[i] = golean.Case{ID: cr.ID, Dir: filepath.Join(work, cr.ID),
 			Features: featuresByID[cr.ID], Reference: cr.Reference}
 	}
 	// The nested oracle is the SAME pinned binary, in their module mode,
@@ -644,7 +759,7 @@ func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, checko
 		nested.ScriptSHA256 = scriptSum
 		rep.CloneNestedOracle = &nested
 	}
-	results, err := golean.Run(ctx, filepath.Join(cfg.out, "golean-work"), cases, golean.Config{
+	results, err := golean.Run(ctx, filepath.Join(work, "golean-work"), cases, golean.Config{
 		Checkout: checkout, Jobs: cfg.workers, GoBin: cfg.goBin,
 	})
 	if err != nil {
@@ -754,6 +869,33 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 // `go run` and test builds do not stamp VCS settings (audit M5 observed
 // "unknown" in real artifacts), so the fallback asks git about the working
 // directory — prefixed so the record is honest about its provenance.
+// dirtyContentHash binds a dirty tree's actual content: the HEAD-relative
+// diff (tracked changes) and the untracked file list with per-file
+// hashes, sha256'd together. Two different dirty trees no longer share
+// an identity (E3). Sanitized git env, same as generatorRev.
+func dirtyContentHash(dir string) (string, error) {
+	gitEnv := []string{}
+	for _, key := range []string{"PATH", "HOME"} {
+		if v := os.Getenv(key); v != "" {
+			gitEnv = append(gitEnv, key+"="+v)
+		}
+	}
+	h := sha256.New()
+	for _, args := range [][]string{
+		{"git", "-C", dir, "diff", "HEAD"},
+		{"git", "-C", dir, "status", "--porcelain"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = gitEnv
+		out, err := cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", strings.Join(args, " "), err)
+		}
+		h.Write(out)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
 func generatorRev() string {
 	rev, dirty := "", false
 	if info, ok := debug.ReadBuildInfo(); ok {

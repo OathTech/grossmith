@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"fmt"
 	"context"
 	"os"
 	"path/filepath"
@@ -21,12 +22,15 @@ func writeCases(t *testing.T, root string, n int, seedBase int64) {
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	ids := make([]string, 0, n)
+	seeds := map[string]int64{}
 	for i := 0; i < n; i++ {
 		c, err := gen.New(gen.DefaultConfig(seedBase + int64(i))).Generate()
 		if err != nil {
 			t.Fatal(err)
 		}
-		dir := filepath.Join(root, "case_"+strings.Repeat("0", 3)+string(rune('a'+i)))
+		id := fmt.Sprintf("case_%05d", i)
+		dir := filepath.Join(root, id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -36,6 +40,13 @@ func writeCases(t *testing.T, root string, n int, seedBase int64) {
 		if err := os.WriteFile(filepath.Join(dir, "driver.go"), c.Driver, 0o644); err != nil {
 			t.Fatal(err)
 		}
+		ids = append(ids, id)
+		seeds[id] = seedBase + int64(i)
+	}
+	// E3: batches carry their descriptor; RunBatch refuses trees without
+	// one, so the helper writes it like the producer does.
+	if _, err := WriteManifest(root, "test", "go 1.26", ids, seeds); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -140,7 +151,7 @@ func TestBuildSurvivesHostileGit(t *testing.T) {
 	}
 	root := t.TempDir()
 	writeCases(t, root, 1, 717000)
-	dir := filepath.Join(root, "case_000a")
+	dir := filepath.Join(root, "case_00000")
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}

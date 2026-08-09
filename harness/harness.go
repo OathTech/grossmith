@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -375,7 +374,16 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	if err != nil {
 		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
 	}
-	exe := "case-" + a.Name() + ".bin"
+	// Build OUTPUT lives outside the case tree (E3): a batch is exactly
+	// its manifested inputs, and the first judged pass previously left
+	// case-<name>.bin beside them — which the descriptor validation now
+	// correctly refuses as an unlisted file. Inputs stay pristine.
+	exeDir, err := os.MkdirTemp("", "grossmith-bin-*")
+	if err != nil {
+		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
+	}
+	defer os.RemoveAll(exeDir)
+	exe := filepath.Join(exeDir, "case-"+a.Name()+".bin")
 	// -buildvcs=false (2026-08-08 review, G2): case binaries never need
 	// VCS stamps, and Go 1.26's auto stamping runs git — which fails
 	// (exit 128) under scratch HOMEs, foreign-owned checkouts, or
@@ -393,7 +401,7 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	abs, err := filepath.Abs(filepath.Join(caseDir, exe))
+	abs, err := filepath.Abs(exe)
 	if err != nil {
 		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
 	}
@@ -418,17 +426,21 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 // RunBatch judges every case directory under root (sorted) with the
 // reference and optional clone adapter.
 func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, policy observe.PanicPolicy, workers int) (BatchReport, error) {
-	matches, err := filepath.Glob(filepath.Join(root, "*", "subject.go"))
+	// The descriptor is authoritative (E3; audit P0: glob discovery
+	// judged whatever was on disk — injected files included — and
+	// verified nothing). Validation happens HERE, immediately before
+	// execution: extra, missing, tampered, or symlinked inputs refuse
+	// the whole batch.
+	ids, err := ValidateBatch(root)
 	if err != nil {
 		return BatchReport{}, err
 	}
-	if len(matches) == 0 {
+	if len(ids) == 0 {
 		return BatchReport{}, fmt.Errorf("no cases under %s", root)
 	}
-	sort.Strings(matches)
-	dirs := make([]string, len(matches))
-	for i, m := range matches {
-		dirs[i] = filepath.Dir(m)
+	dirs := make([]string, len(ids))
+	for i, id := range ids {
+		dirs[i] = filepath.Join(root, id)
 	}
 
 	rep := BatchReport{Schema: BatchSchema, PanicPolicy: string(policy),
