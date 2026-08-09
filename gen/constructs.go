@@ -50,6 +50,9 @@ func Optional() []string {
 //	width_dependent  — an emitted operation can differ between GOARCH widths
 //	feeder_value     — a variable is read but not observed
 //	dead_value       — a variable is discharged with _ = v, eliminable
+//	witness_shortcircuit — a wit wrap landed under && / || (conditionally
+//	                   executed; the population GoLean's frontend
+//	                   quarantines — review finding 8's stratifier)
 const (
 	tagBoundary        = "boundary"
 	tagDeadCode        = "dead_code"

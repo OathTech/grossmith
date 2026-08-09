@@ -84,6 +84,15 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: LoopCap %d must be >= 1 — every loop draws a trip count in [1,LoopCap]", c.LoopCap)
 	case c.Corner != "" && c.Corner != "none" && c.Corner != "boundary" && c.Corner != "kinds" && c.Corner != "order":
 		return fmt.Errorf("config: unknown corner %q (use none, boundary, kinds, or order)", c.Corner)
+	// A forced order corner with its instrument disabled would be a
+	// corner in name only: corner_order noted, masks and weight biases
+	// applied, zero witness text (mid-arc review findings 3 and 5). Both
+	// disablement mechanisms are contracts and both are rejected loudly
+	// at config time rather than silently overridden or silently voided.
+	case c.Corner == "order" && containsTag(c.Exclude, "order_witness"):
+		return fmt.Errorf("config: Corner \"order\" with order_witness excluded — the corner IS the witness; drop the corner or the exclusion")
+	case c.Corner == "order" && c.Constructs != nil && !c.Constructs["order_witness"]:
+		return fmt.Errorf("config: Corner \"order\" with order_witness disabled by Constructs — the corner IS the witness; enable the tag or drop the corner")
 	case c.Vars > 128:
 		return fmt.Errorf("config: Vars %d exceeds 128", c.Vars)
 	case c.ExprFuel > 12:
@@ -249,6 +258,10 @@ type Generator struct {
 	// plus a decimal suffix (v0, q1, h0, agg0, p2, S0, T0, m0, w0, ...),
 	// and neither wit nor wOrd matches that shape.
 	witSeq int
+	// shortCircuitDepth counts enclosing && / || operand contexts, so
+	// witness() can tag wraps that land in conditionally-executed
+	// position (witness_shortcircuit — the quarantined population).
+	shortCircuitDepth int
 	// riskSpent is the per-statement panic-risk budget (review finding: two
 	// hot panic sites in one statement have SPEC-UNSPECIFIED panic identity
 	// — a conformant clone may report either panic). Each statement context
@@ -439,7 +452,12 @@ func (g *Generator) drawSetup() {
 				{name: "plain", weight: 5, ok: true},
 				{name: "boundary", weight: 1, ok: true},
 				{name: "kinds", weight: 1, ok: true},
-				{name: "order", weight: 1, ok: !containsTag(cfg.Exclude, "order_witness")},
+				// Masked by BOTH explicit disablement contracts (review
+				// findings 3/5): a profile Exclude and an explicit
+				// Constructs map each veto the arm; only the swarm mix's
+				// own draw is overridden below.
+				{name: "order", weight: 1, ok: !containsTag(cfg.Exclude, "order_witness") &&
+					(cfg.Constructs == nil || cfg.Constructs["order_witness"])},
 			}).name {
 			case "boundary":
 				g.corner = "boundary"
@@ -451,13 +469,15 @@ func (g *Generator) drawSetup() {
 			}
 		}
 	}
-	if g.corner == "order" && !containsTag(cfg.Exclude, "order_witness") {
-		// The order corner (drawn OR forced) force-enables its instrument
-		// tag: the corner is the witness opt-in. An explicit profile
-		// Exclude still wins — profiles are contracts.
-		if g.constructs != nil {
-			g.constructs["order_witness"] = true
-		}
+	if g.corner == "order" && g.constructs != nil {
+		// The order corner force-enables its instrument tag OVER THE SWARM
+		// MIX ONLY: the corner is the witness opt-in, and a corner whose
+		// own mix draw disabled the tag would be a corner in name only.
+		// Both explicit contracts are already honoured before this line —
+		// Exclude and explicit-Constructs disablement mask the drawn arm
+		// above and reject the forced corner in Validate (review findings
+		// 3/5) — so the only opinion overridden here is the swarm's.
+		g.constructs["order_witness"] = true
 	}
 }
 
@@ -984,6 +1004,13 @@ func (g *Generator) witness(v value, t Type) value {
 	}
 	g.witSeq++
 	g.mark("order_witness")
+	if g.shortCircuitDepth > 0 {
+		// The wrap sits under && / || — conditionally executed, the
+		// sharpest R2b shape and the one GoLean's frontend quarantines.
+		// Tagged so composition/compositionJudged can show its judged
+		// coverage separately (review finding 8).
+		g.note("witness_shortcircuit")
+	}
 	// The *31+tag accumulator wraps platform-width int — the same
 	// width_dependent convention as the aggregate folds.
 	g.markWidthDep(Int(0, false))

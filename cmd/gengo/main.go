@@ -405,7 +405,7 @@ func run(cfg config) error {
 	// draft ran before runGoLean and judged against empty verdicts —
 	// exactly the generated-vs-judged conflation G3 warns about, in the
 	// metric meant to fix it).
-	judgedWrapped := 0
+	judgedWrapped, cloneInfraWrapped := 0, 0
 	for _, cr := range rep.Cases {
 		if !hasTag(featuresByID[cr.ID], "recover_wrapper") || cr.Reference.Status != harness.StatusRan {
 			continue
@@ -417,6 +417,9 @@ func run(cfg config) error {
 				if cr.Verdict == harness.VerdictMatch || cr.Verdict == harness.VerdictMismatch {
 					judgedWrapped++
 				}
+				if cr.Verdict == harness.VerdictCloneInfra {
+					cloneInfraWrapped++
+				}
 			}
 		}
 	}
@@ -424,7 +427,11 @@ func run(cfg config) error {
 		// Judged is meaningful only when a clone judged; null in the
 		// artifact otherwise (hunt F6: an unconditional zero reproduced
 		// the exact caught-without-judged signature on clone-less runs).
+		// CloneInfra is the third leg (mid-arc review finding 1): the
+		// nightly gates on caught == judged + cloneInfra exactly, so a
+		// judgement regression cannot hide in unrelated quarantine slack.
 		rep.WrapperJudged = &judgedWrapped
+		rep.WrapperCloneInfra = &cloneInfraWrapped
 		judgedComp := map[string]int{}
 		for _, cr := range rep.Cases {
 			if cr.Verdict != harness.VerdictMatch && cr.Verdict != harness.VerdictMismatch {

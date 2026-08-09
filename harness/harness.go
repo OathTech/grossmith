@@ -174,6 +174,15 @@ type BatchReport struct {
 	// on clone-less runs reproduced the exact signature the field was
 	// added to detect), never omitted when a clone ran.
 	WrapperJudged *int `json:"wrapperJudged"`
+	// WrapperCloneInfra counts the subset of WrapperCaught whose verdict
+	// was clone-infra-failure — the third leg of the wrapper accounting
+	// (mid-arc review finding 1): caught == judged + cloneInfra must hold
+	// EXACTLY when a clone judged. The nightly gates on that identity; a
+	// slack bound against the GLOBAL clone-infra count admitted a
+	// two-thirds judgement regression, because the quarantine population
+	// the slack excused is disjoint from the wrapper population. Null
+	// when no clone judged, like WrapperJudged.
+	WrapperCloneInfra *int `json:"wrapperCloneInfra"`
 	// CompositionJudged is Composition restricted to cases that reached a
 	// semantic verdict (hunt F8: the G3 generated-vs-judged remedy applied
 	// to every tag, not just the wrapper — the ratio per tag is the

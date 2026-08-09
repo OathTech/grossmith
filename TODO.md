@@ -48,7 +48,17 @@ now first-party. Mapping onto this backlog:
   quarantine; 10 of them witnessed subjects — expected, classified),
   28/38 witnessed subjects semantically judged MATCH. Remaining from
   the design: mechanism 2 (pointer-parameter witness), per-type wit
-  helpers beyond plain int.
+  helpers beyond plain int. Mid-arc review response: exact three-leg
+  wrapper gate (wrapperCloneInfra), Validate rejects the vacuous/
+  overriding corner configs, witness_shortcircuit stratifier, corner
+  collateral documented in the ledger (early_return masked -> dead_code
+  -86% in-corner, ~12% corpus-wide).
+- **nonConstExpr pureMode fallback lacks a conversions gate** (mid-arc
+  review, pre-existing note): the `T(pureBase)` fallback emits a
+  conversion without gating or marking `conversions` — visible inside
+  any helper body under a conversions-excluded profile. Small honesty
+  fix; touches the constant-overflow safety path, so it wants its own
+  witness when picked up.
 - **R3 kind/definedness matrix corner**: {op site} x {int kinds,
   floats} x {defined vs unnamed} with IN-KIND arithmetic — their
   insight that `int(x)` conversion laundering masks the whole

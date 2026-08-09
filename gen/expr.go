@@ -316,6 +316,13 @@ func (g *Generator) indexExpr(bound int) string {
 // helper body there is no floor, so the fallback converts the guaranteed
 // plain-int first parameter — a conversion of a variable is non-constant for
 // every integer target.
+//
+// DISCARD-PATH DEPENDENCY (mid-arc review finding 12): the fallback throws
+// the drawn expression away. Today no discarded expression can carry a wit
+// tag — witness() never wraps a constant:true value, and only constants are
+// discarded here — so no order_witness mark or wOrd tag is orphaned. That
+// argument leans on wit being int-only and constant-erasing; the per-type
+// wit extension recorded in the ledger must re-derive it or tags will gap.
 func (g *Generator) nonConstExpr(t Type, fuel int) value {
 	if e := g.expr(t, fuel); !e.constant {
 		return e
@@ -690,6 +697,12 @@ func (g *Generator) stringExpr(fuel int) value {
 // self-compare is constant-in-effect (second review: 56 in 1300 programs).
 // A discarded bare-variable read is un-counted; identical COMPLEX operands
 // keep their reads, which remain real via the left copy.
+// DISCARD-PATH DEPENDENCY (mid-arc review finding 12): unSelf discards the
+// right expression on exact text equality. A wit-wrapped value can never
+// collide (its unique tag makes the text unique), so no order_witness mark
+// is orphaned — witness sites also wrap AFTER unSelf runs. Both facts lean
+// on wit being int-only with globally-unique tags; the per-type wit
+// extension must re-derive this or discarding will orphan tags.
 func (g *Generator) unSelf(left, right value, t Type) value {
 	if left.text != right.text {
 		return right
@@ -837,8 +850,16 @@ func (g *Generator) boolExpr(fuel int) value {
 				op = "||"
 			}
 			g.mark("bools")
-			out = value{text: fmt.Sprintf("(%s %s %s)",
-				g.boolExpr(fuel-1).text, op, g.boolExpr(fuel-1).text)}
+			// Wraps landing anywhere under && / || are the short-circuit
+			// witness shape — tagged (witness_shortcircuit, via witness())
+			// because it is the population GoLean's frontend quarantines:
+			// without the tag, "N witnessed subjects judged" could not
+			// show this shape was judged zero times (review finding 8).
+			g.shortCircuitDepth++
+			left := g.boolExpr(fuel - 1)
+			right := g.boolExpr(fuel - 1)
+			g.shortCircuitDepth--
+			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
 		}},
 		{name: "not", weight: 1, ok: true, emit: func() {
 			g.mark("bools")

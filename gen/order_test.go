@@ -2,8 +2,10 @@ package gen
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"reflect"
+	"regexp"
 	"strconv"
 	"testing"
 
@@ -114,6 +116,41 @@ func TestOrderWitnessEmitted(t *testing.T) {
 	t.Logf("witnessed subjects: %d/200", witnessed)
 }
 
+// TestOrderCornerConfigContracts (review findings 3/5): a forced order
+// corner with its instrument disabled — by either contract mechanism —
+// is rejected at Validate, not silently overridden (the old behavior
+// emitted wit/wOrd in 198/200 subjects against an explicit
+// Constructs=false) and not silently voided (corner_order noted with
+// zero witness text).
+func TestOrderCornerConfigContracts(t *testing.T) {
+	excl := DefaultConfig(1)
+	excl.Corner = "order"
+	excl.Exclude = []string{"order_witness"}
+	if _, err := New(excl).Generate(); err == nil {
+		t.Fatal("Corner order + Exclude order_witness accepted")
+	}
+	cons := DefaultConfig(1)
+	cons.Corner = "order"
+	cons.Swarm = false
+	cons.Constructs = map[string]bool{"multi_assign": true}
+	if _, err := New(cons).Generate(); err == nil {
+		t.Fatal("Corner order + Constructs without order_witness accepted")
+	}
+	// The drawn arm respects an explicit Constructs map too: with the tag
+	// disabled there, no swarm seed may resolve the order corner.
+	for seed := int64(78000); seed < 78200; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Constructs = map[string]bool{"multi_assign": true, "index": true, "arrays": true}
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hasFeature(c, "corner_order") || bytes.Contains(c.Source, []byte("wit(")) {
+			t.Fatalf("seed %d: order corner resolved under a Constructs map that disables it", seed)
+		}
+	}
+}
+
 // TestOrderWitnessContained: outside the order corner the witness text
 // must not exist — instruments are minorities, and the corner IS the
 // minority mechanism (mid-arc review bar).
@@ -220,6 +257,57 @@ func fuzzSubject() (q0 int, q1 int, qP int) {
 	return v0, wOrd, 0
 }
 `
+
+// TestOrderWitnessUnderProfile pins the hardest arity combination —
+// wrapped x aggregate x witnessed (review finding 10). It cannot arise
+// under DefaultConfig (aggregate slots need NoObserve); it is the
+// CAMPAIGN profile's shape, so the campaign profile is what sweeps here.
+// The tail contract: ..., aggN, wOrd, qP — the defer writes psite to the
+// last slot and snapshots wOrd into the one before it.
+func TestOrderWitnessUnderProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs a binary")
+	}
+	for seed := int64(77000); seed < 77600; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Corner = "order"
+		cfg.NoObserve = []Shape{ShapeSlice, ShapeMap}
+		cfg.Exclude = []string{"observe_point", "defer", "recover"}
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasFeature(c, "recover_wrapper") || !hasFeature(c, "aggregate_observed") || !hasFeature(c, "order_witness") {
+			continue
+		}
+		doc := runCase(t, c)
+		if doc.Status != observe.StatusOK {
+			t.Fatalf("seed %d: status %s", seed, doc.Status)
+		}
+		n := len(doc.Values)
+		// The generated defer must address exactly the contracted slots.
+		for _, want := range []string{
+			fmt.Sprintf("q%d = psite", n-1),
+			fmt.Sprintf("q%d = wOrd", n-2),
+		} {
+			if !bytes.Contains(c.Source, []byte(want)) {
+				t.Fatalf("seed %d: defer missing %q for arity %d\n%s", seed, want, n, c.Source)
+			}
+		}
+		// The final return carries ..., agg, wOrd, 0 in that order.
+		if !regexp.MustCompile(`agg\d+, wOrd, 0\n`).Match(c.Source) {
+			t.Fatalf("seed %d: tail order not agg..., wOrd, 0\n%s", seed, c.Source)
+		}
+		for _, i := range []int{n - 1, n - 2} {
+			if doc.Values[i].Kind != "int" || doc.Values[i].GoType != "int" {
+				t.Fatalf("seed %d: slot %d is %s/%s, want int", seed, i, doc.Values[i].Kind, doc.Values[i].GoType)
+			}
+		}
+		t.Logf("seed %d: wrapped x agg x witnessed, arity %d, tail verified", seed, n)
+		return
+	}
+	t.Fatal("no wrapped+aggregate+witnessed subject in 600 profile seeds")
+}
 
 func TestOrderWitnessPanicTruncation(t *testing.T) {
 	if testing.Short() {

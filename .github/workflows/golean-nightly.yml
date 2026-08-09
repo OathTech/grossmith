@@ -122,18 +122,21 @@ jobs:
           # frontend regression turning EVERY case clone-infra previously
           # passed green, and a regression back to caught-without-judged
           # (the G1 state) was invisible.
-          # The wrapper gate is equality MODULO unrelated quarantines
-          # (W2: a wrapped subject can carry short-circuit wit calls and
-          # land in GoLean's frontend quarantine for that reason, not the
-          # wrapper's): caught-but-unjudged is bounded by the clone-infra
-          # count, and the G1 tripwire — judged must be nonzero whenever
-          # caught is — stays absolute.
+          # The wrapper gate is the EXACT three-leg identity (mid-arc
+          # review finding 1): caught == judged + wrapperCloneInfra. A
+          # wrapped subject may be quarantined for an unrelated reason
+          # (W2: short-circuit wit calls), but the excuse is counted over
+          # the WRAPPER population itself, never borrowed from the global
+          # clone-infra count — a bound against the global count admitted
+          # a two-thirds judgement regression. The G1 tripwire (judged
+          # nonzero whenever caught is) stays as a second line.
           jq -e '(.verdicts["harness-error"] // 0) == 0
              and (.verdicts["reference-infra-failure"] // 0) == 0
              and (.verdicts["observation-mismatch"] // 0) == 0
              and ((.verdicts["clone-infra-failure"] // 0) < .total)
              and ((.wrapperJudged // -1) >= 0)
-             and (((.wrapperCaught // 0) - (.wrapperJudged // 0)) <= (.verdicts["clone-infra-failure"] // 0))
+             and ((.wrapperCloneInfra // -1) >= 0)
+             and ((.wrapperCaught // 0) == ((.wrapperJudged // 0) + (.wrapperCloneInfra // 0)))
              and (((.wrapperCaught // 0) == 0) or ((.wrapperJudged // 0) > 0))' "$B"
       - name: archive the conformance statement
         if: always()
