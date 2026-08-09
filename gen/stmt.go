@@ -365,9 +365,22 @@ func (g *Generator) compoundAssign(out *emitter) {
 		target.reads--
 		rhs = g.literal(target.typ)
 	}
-	// W4: the mark follows the post-write bound, not the operator class.
+	// W4: the mark follows the post-write bound, not the operator class —
+	// except unsigned subtraction, which underflows at ANY magnitude
+	// (arc-end review finding 2: v5 -= min(...)*min(...) observed
+	// 18446744073709550804 on amd64, 4294966484 at 32-bit, untagged).
 	switch op {
-	case "+=", "-=":
+	case "-=":
+		if target.typ.Unsigned {
+			target.bound = typeMagCap(target.typ)
+			if target.typ.Bits == 0 {
+				g.markWidthDep(target.typ)
+			}
+			break
+		}
+		g.writeBound(target, rhs.bound, "+")
+		g.markWidthDepBounded(target.typ, target.bound)
+	case "+=":
 		g.writeBound(target, rhs.bound, "+")
 		g.markWidthDepBounded(target.typ, target.bound)
 	case "*=":
@@ -401,8 +414,17 @@ func (g *Generator) incDec(out *emitter) {
 		op = "--"
 	}
 	g.mark("assignment", "ints")
-	g.writeBound(target, 1, "+")
-	g.markWidthDepBounded(target.typ, target.bound)
+	if op == "--" && target.typ.Unsigned {
+		// Unsigned decrement underflows at zero to 2^W-1 — width-sized
+		// at any starting value (arc-end review finding 2's family).
+		target.bound = typeMagCap(target.typ)
+		if target.typ.Bits == 0 {
+			g.markWidthDep(target.typ)
+		}
+	} else {
+		g.writeBound(target, 1, "+fixed")
+		g.markWidthDepBounded(target.typ, target.bound)
+	}
 	out.line("%s%s", target.name, op)
 }
 
@@ -418,9 +440,13 @@ func (g *Generator) elemAssign(out *emitter) {
 	} else {
 		g.mark("arrays", "index", "assignment")
 	}
+	// Index first, RHS second — the draw order main had (arc-end review
+	// finding 9: hoisting the RHS silently reversed it and moved the
+	// panic-risk slot).
+	idx := g.indexExpr(arr.indexBound())
 	rhs := g.expr(*arr.typ.Elem, g.cfg.ExprFuel)
 	g.writeBound(arr, rhs.bound, "max")
-	out.line("%s[%s] = %s", arr.name, g.indexExpr(arr.indexBound()), rhs.text)
+	out.line("%s[%s] = %s", arr.name, idx, rhs.text)
 }
 
 // appendStmt grows a slice: s = append(s, elem). Growth per execution is one
@@ -453,9 +479,11 @@ func (g *Generator) mapWrite(out *emitter) {
 	g.resetRisk()
 	m := &g.vars[pick(g.c, g.mapVars(nil))]
 	g.mark("maps", "assignment")
+	// Key first, RHS second (finding 9: preserve main's draw order).
+	key := pick(g.c, m.keys)
 	rhs := g.expr(*m.typ.Elem, g.cfg.ExprFuel)
 	g.writeBound(m, rhs.bound, "max")
-	out.line("%s[%s] = %s", m.name, pick(g.c, m.keys), rhs.text)
+	out.line("%s[%s] = %s", m.name, key, rhs.text)
 }
 
 // mapDelete removes one alphabet key — present or not, deterministically.
@@ -605,7 +633,15 @@ func (g *Generator) multiAssign(out *emitter) {
 			a.reads++
 			b.reads++
 			g.mark("assignment", "multi_assign")
-			a.bound, b.bound = b.bound, a.bound
+			switch {
+			case g.loopDepth > 0:
+				a.bound, b.bound = 0, 0
+			case g.condDepth > 0:
+				j := boundMax(a.bound, b.bound)
+				a.bound, b.bound = j, j
+			default:
+				a.bound, b.bound = b.bound, a.bound
+			}
 			out.line("%s, %s = %s, %s", a.name, b.name, b.name, a.name)
 		}},
 		// u, a[u%N] = e1, e2 — the aliased-target shape: the index reads
@@ -865,7 +901,9 @@ func (g *Generator) guardedStmt(out *emitter) {
 	out.close()
 	out.dedent()
 	out.line("}()")
+	g.condDepth++
 	g.stmtIn(out, 0, false, true)
+	g.condDepth--
 	out.dedent()
 	out.line("}()")
 }
@@ -1029,9 +1067,13 @@ func (g *Generator) mapRangeFold(out *emitter) {
 	g.mark("maps", "range", "assignment", "control_flow", "short_decl")
 	g.note("map_range_fold")
 	// W4: a commutative sum of map values is bounded by the map's element
-	// bound times the execution cap — small maps of small values no
-	// longer tag every program they appear in.
-	acc.bound = boundAdd(acc.bound, boundMul(m.bound, g.maxExec))
+	// bound times the execution cap. The whole-fold contribution goes
+	// through writeBound as "+fixed" — already multiplied for its own
+	// iterations, and NESTING inside an outer loop poisons it there
+	// (arc-end review finding 8: the direct computation bypassed the
+	// loop rule). m's own writes cannot be stale here: the fold body
+	// writes nothing but acc.
+	g.writeBound(acc, boundMul(m.bound, g.maxExec), "+fixed")
 	g.markWidthDepBounded(acc.typ, acc.bound)
 	out.open("for _, %s := range %s {", e, m.name)
 	out.line("%s += %s", acc.name, e)
@@ -1131,6 +1173,7 @@ func (g *Generator) ifStmt(out *emitter, depth int, inLoop bool) {
 	g.resetRisk()
 	g.mark("if", "control_flow")
 	out.open("if %s {", g.boolExpr(g.cfg.ExprFuel).text)
+	g.condDepth++
 	g.block(out, depth, 1+g.c.draw(2), inLoop)
 	if g.c.chance(2) {
 		out.dedent()
@@ -1138,6 +1181,7 @@ func (g *Generator) ifStmt(out *emitter, depth int, inLoop bool) {
 		out.indent++
 		g.block(out, depth, 1+g.c.draw(2), inLoop)
 	}
+	g.condDepth--
 	out.close()
 }
 
@@ -1209,12 +1253,14 @@ func (g *Generator) consumeIndex(out *emitter, index string, base *binding) {
 						g.markWidthDep(t)
 					}
 				}
+				// Element contributions read loop-mutable state: the plain
+				// "+" op goes unknown inside the loop (staleness rule).
 				g.writeBound(target, boundAdd(idxBound, contrib), "+")
 				g.markWidthDepBounded(target.typ, target.bound)
 				out.line("%s += %s(%s) + %s", target.name, target.typ.GoName(), index, elem)
 				return
 			}
-			g.writeBound(target, idxBound, "+")
+			g.writeBound(target, idxBound, "+fixed")
 			g.markWidthDepBounded(target.typ, target.bound)
 			out.line("%s += %s(%s)", target.name, target.typ.GoName(), index)
 			return
@@ -1236,7 +1282,7 @@ func (g *Generator) consumeIndex(out *emitter, index string, base *binding) {
 			out.line("%s += %s + %s[%s]", target.name, index, base.name, index)
 			return
 		}
-		g.writeBound(target, idxBound, "+")
+		g.writeBound(target, idxBound, "+fixed")
 		g.markWidthDepBounded(target.typ, target.bound)
 		out.line("%s += %s", target.name, index)
 	}
@@ -1320,12 +1366,16 @@ func (g *Generator) switchStmt(out *emitter, depth int, inLoop bool) {
 		out.dedent()
 		out.line("case %s:", literal)
 		out.indent++
+		g.condDepth++
 		g.block(out, depth, 1, inLoop)
+		g.condDepth--
 	}
 	out.dedent()
 	out.line("default:")
 	out.indent++
+	g.condDepth++
 	g.block(out, depth, 1, inLoop)
+	g.condDepth--
 	out.dedent()
 	out.line("}")
 }

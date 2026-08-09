@@ -51,16 +51,21 @@ func Optional() []string {
 //	                   widths. W4: bound-aware — marks only when a result's
 //	                   static magnitude bound is unknown or window-reaching
 //	                   (plus the unconditional keep-set: *31 folds, unsigned
-//	                   complement, signed-to-unsigned platform conversions,
-//	                   risky platform division). Measured 84.5% program
-//	                   saturation (was 97.6%): the floor is genuine — the
-//	                   corpus's deliberate boundary-literal density means
-//	                   most programs really do carry a window-capable op.
+//	                   complement AND negation/subtraction on plain uint —
+//	                   underflow is width-sized at any magnitude, arc-end
+//	                   findings 1/2 — signed-to-unsigned platform
+//	                   conversions, risky platform division). Measured 87.5%
+//	                   program saturation post-hardening (n=2000, was 97.6%):
+//	                   the floor is genuine — the corpus's deliberate
+//	                   boundary-literal density means most programs really
+//	                   do carry a window-capable op.
 //	feeder_value     — a variable is read but not observed
 //	dead_value       — a variable is discharged with _ = v, eliminable
-//	witness_shortcircuit — a wit wrap landed under && / || (conditionally
-//	                   executed; the population GoLean's frontend
-//	                   quarantines — review finding 8's stratifier)
+//	witness_shortcircuit — a wit wrap landed in the RIGHT operand of
+//	                   && / || (genuinely conditionally executed; left
+//	                   operands always run and are untagged — arc-end
+//	                   finding 6). The population GoLean's frontend
+//	                   quarantines — review finding 8's stratifier.
 //	element_fold     — a range fold included base[i] alongside the index
 //	                   (W3: element-visible observation; survey F14's
 //	                   element-blindness remedy, stratifiable)

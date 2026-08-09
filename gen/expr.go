@@ -481,9 +481,24 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			if op == "*" {
 				b = boundMul(left.bound, right.bound)
 			}
-			// W4: `60 + v0` cannot reach the window; `v * v` of unknowns
-			// or `x + MaxInt32` can.
-			g.markWidthDepBounded(t, b)
+			if op == "-" && t.Unsigned {
+				// Unsigned subtraction UNDERFLOWS at any magnitude: 29-56
+				// is 2^W-27 — width-sized whenever W is the platform
+				// width. The magnitude algebra cannot prove non-underflow
+				// (bounds track |v|, not ranges), so plain-uint minus
+				// marks unconditionally and the bound is the type's cap.
+				// Sized unsigned kinds wrap identically at both widths:
+				// no mark, but the bound is still the cap (arc-end
+				// review findings 1/2 — the reproduced under-tag class).
+				b = typeMagCap(t)
+				if t.Bits == 0 {
+					g.markWidthDep(t)
+				}
+			} else {
+				// W4: `60 + v0` cannot reach the window; `v * v` of
+				// unknowns or `x + MaxInt32` can.
+				g.markWidthDepBounded(t, b)
+			}
 			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text), bound: b}
 		}},
 		{name: "division", weight: 2, ok: g.enabled("division"), emit: func() {
@@ -748,10 +763,21 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				return
 			}
 			g.mark("ints")
-			// Negation is magnitude-preserving: -x differs across widths
-			// only when x is MinInt32 itself — window-reaching, so the
-			// bound rule covers exactly that case (W4: the old
-			// unconditional mark tagged every -x).
+			if t.Unsigned {
+				// Unsigned negation is 2^W - x: width-sized for EVERY
+				// nonzero operand, exactly like the complement above
+				// (arc-end review finding 1 — the reproduced under-tag:
+				// (-uint(45)) / MaxUint32 observed 4294967341 on amd64,
+				// 45 at 32-bit width, untagged).
+				if t.Bits == 0 {
+					g.markWidthDep(t)
+				}
+				out = value{text: fmt.Sprintf("(-%s)", operand.text), bound: typeMagCap(t)}
+				return
+			}
+			// Signed negation is magnitude-preserving: -x differs across
+			// widths only when x is MinInt32 itself — window-reaching, so
+			// the bound rule covers exactly that case.
 			g.markWidthDepBounded(t, operand.bound)
 			out = value{text: fmt.Sprintf("(-%s)", operand.text), bound: operand.bound}
 		}},
@@ -1033,13 +1059,16 @@ func (g *Generator) boolExpr(fuel int) value {
 				op = "||"
 			}
 			g.mark("bools")
-			// Wraps landing anywhere under && / || are the short-circuit
-			// witness shape — tagged (witness_shortcircuit, via witness())
-			// because it is the population GoLean's frontend quarantines:
-			// without the tag, "N witnessed subjects judged" could not
-			// show this shape was judged zero times (review finding 8).
-			g.shortCircuitDepth++
+			// Wraps in the RIGHT operand of && / || are the short-circuit
+			// witness shape — conditionally executed, tagged via
+			// witness() (mid-arc finding 8). The LEFT operand always
+			// runs, so it stays untagged (arc-end finding 6 corrected
+			// the both-operands version, which mislabelled ~half the
+			// tagged wraps); a nested logic arm in right position
+			// inherits the depth for both its halves, correctly — its
+			// whole subtree is conditional.
 			left := g.boolExpr(fuel - 1)
+			g.shortCircuitDepth++
 			right := g.boolExpr(fuel - 1)
 			g.shortCircuitDepth--
 			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}

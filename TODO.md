@@ -60,8 +60,17 @@ now first-party. Mapping onto this backlog:
   unconditional keep-set is the *31 folds, unsigned complement,
   signed→unsigned platform conversions, and risky platform division
   (the historically-burned MinInt/-1 family — kept conservative on
-  purpose). Saturation 97.6% → 84.5%; off-tag population 2.4% → 15.5%
-  (6.5x the cross-arch discrimination coverage). The charter's <50%
+  purpose). The ARC-END review then confirmed three under-tag
+  mechanisms in the first cut (unsigned negation/subtraction underflow
+  — width-sized at any magnitude, invisible to a magnitude algebra;
+  conditional writes replacing instead of joining bounds; loop-body
+  staleness) with reproduced 32-vs-64 divergences; all fixed
+  (unconditional unsigned-minus keep-set, condDepth joins, loop writes
+  poison to unknown except construction-derived "+fixed"
+  contributions, the soundness screen widened 25→120 samples over the
+  breach range). Final saturation 87.5% (n=2000) vs 97.6% before;
+  off-tag population 2.4% → 12.5% (5x the cross-arch discrimination
+  coverage). The charter's <50%
   aspiration is UNREACHABLE without under-tagging: measured
   decomposition over 1000 seeds — 287/828 tagged programs carry
   window-reaching fold constructs, 537 carry boundary-literal or
@@ -73,6 +82,11 @@ now first-party. Mapping onto this backlog:
   lever if sharper stratification is ever needed: split the tag by
   cause (fold / boundary-arith / unknown-chain) rather than pushing
   the rate down.
+- **gengo's local cross-arch printout is vacuously reassuring**
+  (arc-end review finding 10, pre-existing): "divergences in-tag 0,
+  off-tag 0" prints even when zero cases were judged — the CI job is
+  correctly guarded, only the human-facing print conflates
+  generated-with-judged. Small print-side fix when picked up.
 - **nonConstExpr pureMode fallback lacks a conversions gate** (mid-arc
   review, pre-existing note): the `T(pureBase)` fallback emits a
   conversion without gating or marking `conversions` — visible inside

@@ -270,6 +270,11 @@ type Generator struct {
 	// enclosing loop bodies so write sites know to apply it.
 	maxExec   int64
 	loopDepth int
+	// condDepth counts enclosing conditionally-executed bodies (if arms,
+	// switch cases, guarded statements): a replacing write there must
+	// JOIN the old bound, not discard it (arc-end review finding 3 — a
+	// branch assignment replaced a window-sized bound with 15).
+	condDepth int
 	// shortCircuitDepth counts enclosing && / || operand contexts, so
 	// witness() can tag wraps that land in conditionally-executed
 	// position (witness_shortcircuit — the quarantined population).
@@ -1040,35 +1045,43 @@ func (g *Generator) witness(v value, t Type) value {
 	return value{text: fmt.Sprintf("wit(%s, %d)", v.text, g.witSeq), bound: v.bound}
 }
 
-// writeBound records a write's effect on the target binding's bound (W4).
-// op semantics:
-//   - "=" outside a loop REPLACES the bound;
-//   - "=" inside a loop is treated as accumulation too (the RHS may read
-//     the target itself — `v = v + x` iterated is growth in disguise);
-//   - "+" accumulates: the contribution is multiplied by the worst-case
-//     execution count when inside a loop;
-//   - "*" multiplies; iterated multiplication is exponential, so inside
-//     a loop the result is unknown outright;
-//   - "max" raises the bound to cover a new element/field value
-//     (container writes replace elements, so no accumulation).
+// writeBound records a write's effect on the target binding's bound (W4;
+// hardened per the arc-end review findings 3/4). op semantics:
+//   - "=" REPLACES the bound — but under a conditional body it JOINS
+//     (either branch may have run), and inside a loop it goes UNKNOWN
+//     (the RHS bound was computed from pre-iteration state; `v = v + x`
+//     iterated is growth the static bound cannot follow);
+//   - "+" accumulates outside loops; INSIDE a loop it goes unknown for
+//     the same staleness reason — a loop-body RHS may read state the
+//     loop itself grows (the reviewer's w0 := v0*(v0+v0) case);
+//   - "+fixed" is the exempt accumulation for contributions that are
+//     INDEPENDENT of loop-mutated state (a loop index bounded by
+//     construction, the ++/-- constant, a whole-fold contribution
+//     already multiplied for its own iterations): the contribution is
+//     multiplied by the worst-case execution count and added — sound
+//     under any nesting because it never reads a stale bound;
+//   - "*" multiplies; iterated multiplication is exponential — unknown
+//     inside loops;
+//   - "max" raises the bound to cover a new element/field value; inside
+//     a loop the written value may itself be loop-grown, so it goes
+//     unknown there too.
 func (g *Generator) writeBound(target *binding, rhs int64, op string) {
+	if g.loopDepth > 0 && op != "+fixed" {
+		target.bound = 0
+		return
+	}
 	switch op {
 	case "=":
-		if g.loopDepth == 0 {
-			target.bound = rhs
+		if g.condDepth > 0 {
+			target.bound = boundMax(target.bound, rhs)
 			return
 		}
-		fallthrough
+		target.bound = rhs
 	case "+":
-		if g.loopDepth > 0 {
-			rhs = boundMul(rhs, g.maxExec)
-		}
 		target.bound = boundAdd(target.bound, rhs)
+	case "+fixed":
+		target.bound = boundAdd(target.bound, boundMul(rhs, g.maxExec))
 	case "*":
-		if g.loopDepth > 0 {
-			target.bound = 0
-			return
-		}
 		target.bound = boundMul(target.bound, rhs)
 	case "max":
 		target.bound = boundMax(target.bound, rhs)

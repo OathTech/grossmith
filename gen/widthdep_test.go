@@ -20,8 +20,11 @@ func TestWidthDepUntaggedObservesInWindow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs binaries")
 	}
+	// Wide sweep, real sample (arc-end review finding 5: 25 programs in
+	// one narrow window missed all three under-tag mechanisms; the same
+	// screen over 700 seeds caught four genuine breaches).
 	untagged, checked := 0, 0
-	for seed := int64(52000); seed < 52400 && untagged < 25; seed++ {
+	for seed := int64(1); seed < 2000 && untagged < 120; seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()
 		if err != nil {
 			t.Fatal(err)
@@ -37,7 +40,9 @@ func TestWidthDepUntaggedObservesInWindow(t *testing.T) {
 		for i, v := range doc.Values {
 			switch v.Kind {
 			case "int":
-				if v.GoType == "int" && (v.Int >= 1<<31 || v.Int <= -(1<<31)) {
+				// Strictly below MinInt32: MinInt32 itself is 32-bit
+				// representable (finding 5's off-by-one).
+				if v.GoType == "int" && (v.Int >= 1<<31 || v.Int < -(1<<31)) {
 					t.Fatalf("seed %d: untagged program observed int %d at slot %d — width soundness broken\n%s",
 						seed, v.Int, i, c.Source)
 				}
@@ -60,12 +65,16 @@ func TestWidthDepUntaggedObservesInWindow(t *testing.T) {
 // numbers: program-level saturation stays meaningfully below the old
 // ~98%, and the untagged (off-tag) population — what the cross-arch CI
 // job's discrimination check runs against — stays a real minority, not
-// a rounding error. The measured decomposition (2026-08-09, n=1000):
-// 82.8% tagged = 287 window-fold constructs + 537 boundary/unknown-value
-// arithmetic + 4 other; the charter's <50% aspiration is unreachable
-// WITHOUT under-tagging because boundary literals (a deliberate,
-// near-universal corpus feature) genuinely diverge when they meet
-// plain-width arithmetic. Recorded in the ledger; the sound floor wins.
+// a rounding error. Measured 87.5% (n=2000) after the arc-end review's
+// soundness hardening (unsigned underflow, conditional-write joins,
+// loop-staleness poisoning); the pre-hardening decomposition (n=1000,
+// 82.8%) attributed 287 tagged programs to window-fold constructs and
+// 537 to boundary/unknown-value arithmetic, and the hardening moved a
+// further ~5% from unsound-untagged to tagged. The charter's <50%
+// aspiration is unreachable WITHOUT under-tagging because boundary
+// literals (a deliberate, near-universal corpus feature) genuinely
+// diverge when they meet plain-width arithmetic. Recorded in the
+// ledger; the sound floor wins.
 func TestWidthDepSaturation(t *testing.T) {
 	tagged, total := 0, 0
 	for seed := int64(53000); seed < 53400; seed++ {
@@ -79,7 +88,7 @@ func TestWidthDepSaturation(t *testing.T) {
 		}
 	}
 	rate := float64(tagged) / float64(total)
-	if rate > 0.92 {
+	if rate > 0.94 {
 		t.Fatalf("width_dependent saturation %.0f%% — W4's precision regressed toward the old 98%%", 100*rate)
 	}
 	if rate < 0.40 {
