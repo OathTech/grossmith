@@ -115,6 +115,13 @@ func ReadManifest(root string) (Manifest, error) {
 //   - duplicate case IDs, or a case directory the descriptor never named;
 //   - any symlink among the case files or root inputs.
 func ValidateBatch(root string) ([]string, error) {
+	// The root itself and every case directory must be REAL directories
+	// (mid-arc review finding 3: a symlinked case dir passed — ReadDir
+	// follows it and Lstat only ever saw the final components, so a
+	// mutator could swap the target without touching the batch tree).
+	if err := realDir(root); err != nil {
+		return nil, err
+	}
 	m, err := ReadManifest(root)
 	if err != nil {
 		return nil, err
@@ -132,6 +139,9 @@ func ValidateBatch(root string) ([]string, error) {
 		}
 		seen[mc.ID] = true
 		dir := filepath.Join(root, mc.ID)
+		if err := realDir(dir); err != nil {
+			return nil, err
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return nil, fmt.Errorf("batch: declared case missing: %w", err)
@@ -156,18 +166,94 @@ func ValidateBatch(root string) ([]string, error) {
 		}
 		ids = append(ids, mc.ID)
 	}
-	// Case directories the descriptor never named are foreign content.
+	// The ROOT is closed too (mid-arc review finding 4: "every build
+	// input digested" was overbroad — an injected root extra.go, go.work,
+	// or vendor/ was accepted; none changes a judged build under the
+	// pinned env today, but the descriptor's claim is the whole tree).
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range entries {
-		if e.IsDir() && !seen[e.Name()] && caseDirRe.MatchString(e.Name()) {
-			return nil, fmt.Errorf("batch: case directory %s on disk but not in the manifest", e.Name())
+		name := e.Name()
+		switch {
+		case e.IsDir() && seen[name]:
+		case e.IsDir() && name == "golean-work": // judge-time artifact tree
+		case !e.IsDir() && rootFileAllowed(name):
+		default:
+			return nil, fmt.Errorf("batch: %s at the batch root is neither a declared case nor a batch artifact — refusing", name)
+		}
+	}
+	// complete.json, when present, must bind to THIS manifest (mid-arc
+	// review finding 6: it was written and never read). Presence is
+	// required by VerifyBatch — a pre-judge staging tree does not have
+	// it yet, so ValidateBatch alone tolerates absence.
+	if sum, err := FileSHA256(filepath.Join(root, "complete.json")); err == nil {
+		_ = sum
+		var c struct {
+			Schema         string `json:"schema"`
+			ManifestSHA256 string `json:"manifestSha256"`
+		}
+		b, err := os.ReadFile(filepath.Join(root, "complete.json"))
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(b, &c); err != nil {
+			return nil, fmt.Errorf("complete.json: %w", err)
+		}
+		got, err := FileSHA256(filepath.Join(root, "manifest.json"))
+		if err != nil {
+			return nil, err
+		}
+		if c.ManifestSHA256 != got {
+			return nil, fmt.Errorf("batch: complete.json binds manifest %s but the manifest on disk is %s", c.ManifestSHA256[:12], got[:12])
 		}
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// VerifyBatch is ValidateBatch for a PUBLISHED batch of record: the
+// completion descriptor is required, not optional (finding 7's consumer:
+// `gengo -verify`).
+func VerifyBatch(root string) ([]string, error) {
+	if _, err := os.Stat(filepath.Join(root, "complete.json")); err != nil {
+		return nil, fmt.Errorf("batch: no completion descriptor — an interrupted or pre-E3 run, not a batch of record: %w", err)
+	}
+	return ValidateBatch(root)
+}
+
+// rootFileAllowed is the closed set of batch-root artifacts.
+func rootFileAllowed(name string) bool {
+	switch name {
+	case "go.mod", "manifest.tsv", "manifest.json", "batch.json", "complete.json", gengoStagingMarker:
+		return true
+	}
+	return false
+}
+
+// GengoStagingMarker names the ownership marker gengo writes FIRST into
+// a staging tree, so crash-recovery can tell its own leftovers from
+// foreign directories (mid-arc review finding 2).
+const gengoStagingMarker = ".gengo-staging"
+
+// StagingMarker exposes the marker name to the producer.
+func StagingMarker() string { return gengoStagingMarker }
+
+// realDir refuses symlinked or non-directory path components at the
+// levels the batch owns.
+func realDir(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("batch: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("batch: %s is a symlink — refused", path)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("batch: %s is not a directory", path)
+	}
+	return nil
 }
 
 func checkFile(dir, name, want string) error {

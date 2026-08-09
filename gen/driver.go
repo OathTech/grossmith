@@ -150,7 +150,14 @@ func _gReflect(v _greflect.Value) map[string]any {
 		return map[string]any{"kind": "struct", "goType": goType, "fields": fields}
 	case _greflect.Interface:
 		if v.IsNil() {
-			return map[string]any{"kind": "interface", "goType": goType, "dynType": ""}
+			// Fail closed, not emit-unparseable (mid-arc review finding
+			// 5): a nil interface has no dynType/payload, and the old
+			// empty-dynType emission was a document Parse REFUSES — a
+			// protocol violation shipped by our own driver. The generator
+			// invariant says interfaces are never nil; if it breaks, the
+			// serialization-panic path (exit 3, audit H1) reports it as
+			// infrastructure, never as a mangled observation.
+			panic("grossmith driver: nil interface value — the never-nil generator invariant broke")
 		}
 		inner := v.Elem()
 		return map[string]any{"kind": "interface", "goType": goType,

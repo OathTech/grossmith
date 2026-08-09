@@ -87,6 +87,18 @@ now first-party. Mapping onto this backlog:
   off-tag 0" prints even when zero cases were judged — the CI job is
   correctly guarded, only the human-facing print conflates
   generated-with-judged. Small print-side fix when picked up.
+- **Evidence-arc mid-arc review, deferred to arc-end or later** (its
+  findings 9-13; 1-8 fixed on-branch): (9) Outcome.Document should be a
+  pointer so non-ran outcomes stop embedding an invalid zero document
+  in batch.json (schema-additive: absent replaces empty); (10) no lock
+  against concurrent gengo runs on one -out (per-run staging suffix or
+  O_EXCL lock); (11) a failed publish leaves the finished batch in
+  .staging where the next run deletes it — preserve or say so; (12)
+  map-key order validation falls to duplicate-only for non-scalar key
+  kinds; (13) pre-arc records do not replay under the arc's generator
+  (same-revision contract — now warned up front) and the durable
+  regression corpus that would survive arcs is R4's checked-in
+  fix-pair work.
 - **nonConstExpr pureMode fallback lacks a conversions gate** (mid-arc
   review, pre-existing note): the `T(pureBase)` fallback emits a
   conversion without gating or marking `conversions` — visible inside

@@ -65,3 +65,26 @@ func TestUnknownPanicPolicyErrors(t *testing.T) {
 		t.Fatalf("unknown policy not rejected: %v", err)
 	}
 }
+
+// Mid-arc review finding 1: scalar kinds must not accept each other's
+// payload fields — the cross-contaminated document judged as a semantic
+// mismatch through the first version of the gate.
+func TestValidateRejectsScalarCrossContamination(t *testing.T) {
+	bad := []Value{
+		{Kind: "int", GoType: "int8", Int: 5, Str: "x"},
+		{Kind: "int", GoType: "int8", Int: 5, Bool: true},
+		{Kind: "int", GoType: "int8", Int: 5, Uint: 9},
+		{Kind: "uint", GoType: "uint8", Uint: 5, Int: 1},
+		{Kind: "string", GoType: "string", Str: "s", Uint: 1},
+		{Kind: "bool", GoType: "bool", Bool: true, Str: "s"},
+		{Kind: "slice", GoType: "[]int", Str: "hidden"},
+		{Kind: "interface", GoType: "I0", DynType: "T0", Int: 3,
+			Payload: &Value{Kind: "int", GoType: "T0", Int: 3}},
+	}
+	for i, v := range bad {
+		d := OK(nil, []Value{v})
+		if err := d.Validate(); err == nil {
+			t.Errorf("case %d (%+v): cross-contaminated value accepted", i, v)
+		}
+	}
+}

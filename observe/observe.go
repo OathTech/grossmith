@@ -315,18 +315,37 @@ func checkValue(v Value) error {
 	if v.GoType == "" {
 		return fmt.Errorf("observe: value kind %q with empty goType", v.Kind)
 	}
-	scalarOnly := func() error {
+	scalarOnly := func(kind string) error {
 		if len(v.Elems) != 0 || len(v.Fields) != 0 || len(v.Entries) != 0 || v.Payload != nil || v.DynType != "" || v.Len != 0 {
 			return fmt.Errorf("observe: scalar kind %q carries container/interface fields", v.Kind)
+		}
+		// A scalar kind carries ITS payload field and no other (mid-arc
+		// review finding 1: cross-contaminated scalars passed the gate
+		// and judged as semantic mismatches — the exact fail-open class
+		// E1 exists to close, reproduced inside the fix).
+		if kind != "bool" && v.Bool {
+			return fmt.Errorf("observe: kind %q carries a bool payload", kind)
+		}
+		if kind != "int" && v.Int != 0 {
+			return fmt.Errorf("observe: kind %q carries an int payload", kind)
+		}
+		if kind != "uint" && v.Uint != 0 {
+			return fmt.Errorf("observe: kind %q carries a uint payload", kind)
+		}
+		if kind != "string" && v.Str != "" {
+			return fmt.Errorf("observe: kind %q carries a string payload", kind)
 		}
 		return nil
 	}
 	switch v.Kind {
 	case "bool", "int", "uint", "string":
-		if err := scalarOnly(); err != nil {
+		if err := scalarOnly(v.Kind); err != nil {
 			return err
 		}
 	case "array", "slice":
+		if err := noScalarPayload(v); err != nil {
+			return err
+		}
 		if v.Len != len(v.Elems) {
 			return fmt.Errorf("observe: %s len %d != %d elems", v.Kind, v.Len, len(v.Elems))
 		}
@@ -339,6 +358,9 @@ func checkValue(v Value) error {
 			}
 		}
 	case "struct":
+		if err := noScalarPayload(v); err != nil {
+			return err
+		}
 		if len(v.Elems) != 0 || len(v.Entries) != 0 || v.Payload != nil || v.DynType != "" || v.Len != 0 {
 			return fmt.Errorf("observe: struct kind carries non-field payloads")
 		}
@@ -351,6 +373,9 @@ func checkValue(v Value) error {
 			}
 		}
 	case "map":
+		if err := noScalarPayload(v); err != nil {
+			return err
+		}
 		if v.Len != len(v.Entries) {
 			return fmt.Errorf("observe: map len %d != %d entries", v.Len, len(v.Entries))
 		}
@@ -371,6 +396,9 @@ func checkValue(v Value) error {
 			}
 		}
 	case "interface":
+		if err := noScalarPayload(v); err != nil {
+			return err
+		}
 		if v.DynType == "" || v.Payload == nil {
 			return fmt.Errorf("observe: interface kind without dynType/payload")
 		}
@@ -382,6 +410,15 @@ func checkValue(v Value) error {
 		}
 	default:
 		return fmt.Errorf("observe: unknown value kind %q", v.Kind)
+	}
+	return nil
+}
+
+// noScalarPayload: container/interface kinds carry no scalar payload
+// field at all (finding 1's other half).
+func noScalarPayload(v Value) error {
+	if v.Bool || v.Int != 0 || v.Uint != 0 || v.Str != "" {
+		return fmt.Errorf("observe: kind %q carries scalar payload fields", v.Kind)
 	}
 	return nil
 }

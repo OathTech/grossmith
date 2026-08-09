@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"grossmith/gen"
+	"grossmith/harness"
 )
 
 func base(out string) config {
@@ -311,9 +312,14 @@ func TestBatchPublishAtomicity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Crash window 1: a half-built staging dir left behind. The next
-	// stage removes it; the published batch is untouched.
+	// Crash window 1: a half-built staging dir left behind. Real staging
+	// writes its ownership marker FIRST, so the simulation includes it
+	// (mid-arc finding 2: an unmarked dir is FOREIGN and refused). The
+	// next stage removes ours; the published batch is untouched.
 	if err := os.MkdirAll(out+".staging", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out+".staging", harness.StagingMarker()), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(out+".staging", "half"), nil, 0o644); err != nil {
@@ -359,5 +365,34 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	}
 	if _, err := os.Stat(out + ".prev"); !os.IsNotExist(err) {
 		t.Fatal("previous batch not cleaned after successful publish")
+	}
+
+	// Finding 2's refusals: FOREIGN prev and staging (no gengo marker or
+	// manifest) are never touched — no rename, no delete.
+	foreign := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(foreign+".prev", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign+".prev", "user-data"), []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stageBatchDir(foreign); err == nil {
+		t.Fatal("foreign .prev accepted")
+	}
+	if b, _ := os.ReadFile(filepath.Join(foreign+".prev", "user-data")); string(b) != "precious" {
+		t.Fatal("foreign .prev was touched")
+	}
+	foreign2 := filepath.Join(t.TempDir(), "data2")
+	if err := os.MkdirAll(foreign2+".staging", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign2+".staging", "user-data"), []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stageBatchDir(foreign2); err == nil {
+		t.Fatal("foreign .staging accepted")
+	}
+	if b, _ := os.ReadFile(filepath.Join(foreign2+".staging", "user-data")); string(b) != "precious" {
+		t.Fatal("foreign .staging was touched")
 	}
 }
