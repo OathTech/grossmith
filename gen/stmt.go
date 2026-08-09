@@ -85,7 +85,7 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.ifStmt(out, depth, inLoop) }},
 		{name: "for", weight: 3, ok: g.enabled("loops") && depth > 0,
 			emit: func() { g.forStmt(out, depth) }},
-		{name: "range", weight: 2, ok: g.enabled("range") && depth > 0 && len(g.indexableVars()) > 0,
+		{name: "range", weight: 2, ok: g.enabled("range") && depth > 0 && len(g.rangeableVars()) > 0,
 			emit: func() { g.rangeStmt(out, depth) }},
 		{name: "switch", weight: 2, ok: g.enabled("switch") && depth > 0,
 			emit: func() { g.switchStmt(out, depth, inLoop) }},
@@ -478,6 +478,13 @@ func (g *Generator) appendStmt(out *emitter) {
 		elem = g.expr(*s.typ.Elem, g.cfg.ExprFuel)
 	}
 	g.writeBound(s, elem.bound, "max")
+	// The static length bound absorbs this site's worst-case executions
+	// (E4): +1 per execution, maxExec-multiplied inside loops.
+	grow := int64(1)
+	if g.loopDepth > 0 {
+		grow = g.maxExec
+	}
+	s.maxLenBound += grow
 	out.line("%s = append(%s, %s)", s.name, s.name, elem.text)
 }
 
@@ -1142,7 +1149,7 @@ func (g *Generator) fieldAssign(out *emitter) {
 // data (the Xsmith loop-over-container observation), no literal bound
 // needed. The index is folded into an accumulator first, like forStmt.
 func (g *Generator) rangeStmt(out *emitter, depth int) {
-	i := pick(g.c, g.indexableVars())
+	i := pick(g.c, g.rangeableVars())
 	arr := &g.vars[i]
 	if arr.typ.Shape == ShapeSlice {
 		// One range's own trip count is fixed (the range expression is

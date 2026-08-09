@@ -127,15 +127,31 @@ func (c Config) Validate() error {
 	// the OOM killer": bound worst-case executed statements. The cap is
 	// memory-aware (second review): a defer record or slice append can
 	// retain ~56B per executed statement, so 4e6 statements bounds retained
-	// memory to ~224MB. Time was capped at 1e9 before; memory is the
-	// binding constraint.
+	// memory to ~224MB.
+	//
+	// RE-DERIVED for E4 (the audit's amplification finding): the old
+	// per-level factor 2*LoopCap silently assumed slice-range trip counts
+	// were LoopCap-like, but they are len-bounded, and growth under
+	// ranges compounded across statements without limit (measured worst
+	// case legal under the old rules: ~9e18 executed statements). Now
+	// growth is masked while any slice range is open and slice ranges are
+	// emitted only over slices whose static maxLenBound is at most
+	// 8*LoopCap, so every level's trip count is at most 8*LoopCap and the
+	// formula is sound again.
 	worst := float64(c.Stmts)
 	for i := 0; i < c.Depth; i++ {
-		worst *= 2 * float64(c.LoopCap)
+		worst *= 8 * float64(c.LoopCap)
 	}
 	if worst > 4e6 {
 		return fmt.Errorf("config: worst-case executed statements ~%.0g exceeds 4e6 (Stmts=%d, LoopCap=%d, Depth=%d)",
 			worst, c.Stmts, c.LoopCap, c.Depth)
+	}
+	// Execution count is not the only cost: generation, formatting, and
+	// compilation scale with SOURCE size, which the execution formula
+	// does not see (audit: Stmts=4e6 at Depth=0 passed while being
+	// gigabytes of source). Statements bound source size linearly.
+	if c.Stmts > 4096 {
+		return fmt.Errorf("config: Stmts %d exceeds 4096 (source-size bound, E4)", c.Stmts)
 	}
 	// Unknown construct keys are misconfigurations, not empty gates: a typo
 	// like "array" would silently degrade the population to core-only. Core
@@ -215,6 +231,13 @@ type binding struct {
 	// every write site; a missed write site would UNDER-tag, which the
 	// runtime soundness witness and the cross-arch CI proof police.
 	bound int64
+	// maxLenBound is a slice's STATIC length upper bound (E4): initial
+	// composite length plus every append site's worst-case execution
+	// count. What makes slice ranges boundable — a range's trip count is
+	// at most this, so the executed-statement formula closes (the audit's
+	// amplification finding: cross-slice range/append compounding made
+	// the old formula unbounded by ~12 orders of magnitude).
+	maxLenBound int64
 	// minLen is a slice's guaranteed length lower bound: the initial
 	// composite length. Appends only grow and whole-slice assignment is
 	// never generated, so len >= minLen holds forever — which is what makes
@@ -444,9 +467,12 @@ func containsTag(tags []string, tag string) bool {
 // the tape.
 func (g *Generator) drawSetup() {
 	cfg := g.cfg
+	// The corrected E4 formula — W4's bound tracking multiplies by this,
+	// so it must dominate every realizable trip product (slice ranges are
+	// capped at 8*LoopCap trips by the emission gate).
 	g.maxExec = int64(cfg.Stmts)
 	for i := 0; i < cfg.Depth; i++ {
-		g.maxExec *= 2 * int64(cfg.LoopCap)
+		g.maxExec *= 8 * int64(cfg.LoopCap)
 	}
 	switch {
 	case cfg.Constructs != nil:
@@ -1318,6 +1344,7 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 	if typ.Shape == ShapeSlice {
 		// Slices are born from a composite literal: never nil, length known.
 		b.minLen = 2 + g.c.draw(3)
+		b.maxLenBound = int64(b.minLen)
 		elems := make([]string, b.minLen)
 		for i := range elems {
 			ev := g.literal(*typ.Elem)
@@ -1510,17 +1537,33 @@ func (g *Generator) arrayVars(elem *Type) []int { return g.varsOfShape(ShapeArra
 // sliceVars is arrayVars for slices.
 func (g *Generator) sliceVars(elem *Type) []int { return g.varsOfShape(ShapeSlice, elem) }
 
-// appendableSlices are slice variables no enclosing range is iterating.
+// appendableSlices are slice variables that may grow HERE. Since E4 the
+// mask is global, not per-slice: while ANY slice range is open, no slice
+// may grow (the audit's amplification finding — `for range a { b =
+// append(b, x) }` alternated with the converse compounds Fibonacci-wise
+// across statements, so growth under any slice range feeds some later
+// range's trip count). Growth happens only under literal-bounded control
+// flow, which is what makes maxLenBound sound.
 func (g *Generator) appendableSlices() []int {
+	if len(g.rangedSlices) > 0 {
+		return nil
+	}
+	return g.sliceVars(nil)
+}
+
+// rangeableVars are the containers a range may iterate (E4): arrays
+// (fixed length) and slices whose STATIC length bound keeps the trip
+// count inside the executed-statement formula's per-level factor. A
+// heavily-grown slice stays observable and indexable — it just cannot
+// drive a loop.
+func (g *Generator) rangeableVars() []int {
 	var found []int
+	for _, i := range g.varsOfShape(ShapeArray, nil) {
+		found = append(found, i)
+	}
+	cap := 8 * int64(g.cfg.LoopCap)
 	for _, i := range g.sliceVars(nil) {
-		ranged := false
-		for _, ri := range g.rangedSlices {
-			if ri == i {
-				ranged = true
-			}
-		}
-		if !ranged {
+		if g.vars[i].maxLenBound <= cap {
 			found = append(found, i)
 		}
 	}
