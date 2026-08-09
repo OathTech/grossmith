@@ -2,7 +2,9 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -375,6 +377,65 @@ func TestStalledCompilerIsBounded(t *testing.T) {
 			t.Fatalf("background work (pid %d) outlived the build deadline", pid)
 		}
 	}
+}
+
+// TestIdentityProbesBounded (E5, review C1): the identity probe gates
+// every batch and had no budget at all (measured still running at 45s),
+// and Oracle's deadline was defeated by a child holding the pipe open
+// (measured blocked at 50s with the child alive). Two stub behaviors,
+// both against Identity AND Oracle:
+//   - the probe never returns: bounded by the caller's (tighter)
+//     deadline via group kill;
+//   - the probe exits but leaves a child holding stdout: WaitDelay
+//     bounds the wait and the probe refuses with a typed error naming
+//     it (a toolchain that leaves background work holding its stdout is
+//     not one an identity should quietly vouch for).
+func TestIdentityProbesBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts subprocesses")
+	}
+	writeStub := func(t *testing.T, script string) string {
+		t.Helper()
+		bin := filepath.Join(t.TempDir(), "go")
+		if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return bin
+	}
+	probes := map[string]func(*GcAdapter, context.Context) error{
+		"identity": func(a *GcAdapter, ctx context.Context) error { _, err := a.Identity(ctx); return err },
+		"oracle":   func(a *GcAdapter, ctx context.Context) error { _, err := a.Oracle(ctx); return err },
+	}
+	t.Run("probe that never returns", func(t *testing.T) {
+		bin := writeStub(t, "#!/bin/sh\nsleep 300\n")
+		for name, probe := range probes {
+			ad := &GcAdapter{GoBin: bin, AdapterName: "stalled-" + name}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			start := time.Now()
+			err := probe(ad, ctx)
+			cancel()
+			if elapsed := time.Since(start); elapsed > 15*time.Second {
+				t.Fatalf("%s probe not bounded: %s", name, elapsed)
+			}
+			if err == nil {
+				t.Fatalf("%s probe returned success from a toolchain that never answered", name)
+			}
+		}
+	})
+	t.Run("probe exits but a child holds the pipe", func(t *testing.T) {
+		bin := writeStub(t, "#!/bin/sh\necho go version go1.26 linux/amd64\nsleep 300 &\nexit 0\n")
+		for name, probe := range probes {
+			ad := &GcAdapter{GoBin: bin, AdapterName: "pipeheld-" + name}
+			start := time.Now()
+			err := probe(ad, context.Background())
+			if elapsed := time.Since(start); elapsed > 15*time.Second {
+				t.Fatalf("%s probe waited out a pipe-holding child: %s", name, elapsed)
+			}
+			if !errors.Is(err, exec.ErrWaitDelay) {
+				t.Fatalf("%s probe: want the WaitDelay refusal, got %v", name, err)
+			}
+		}
+	})
 }
 
 func TestUnboundedSubjectOutputHitsTheCap(t *testing.T) {

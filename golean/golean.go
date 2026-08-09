@@ -37,7 +37,8 @@ type Config struct {
 	// nproc).
 	Jobs int
 	// LakeBuildTimeout raises GoLean's lake-build budget: a cold checkout
-	// builds for minutes, and their default budget is 120s. 0 means 20m.
+	// builds for minutes, and their default budget is 120s. 0 means
+	// DefaultLakeBuildTimeout.
 	LakeBuildTimeout time.Duration
 	// GoBin, when set, PINS the go binary GoLean's script oracle uses
 	// (evidence arc E2; audit P0: the script resolved `go` from ambient
@@ -48,6 +49,26 @@ type Config struct {
 	// an absolute path. Empty preserves the ambient resolution (and the
 	// audit finding) — the CLI always sets it.
 	GoBin string
+}
+
+// Campaign budgets, named so the batch report can record them (E5:
+// the 16MB cap was an inline literal absent from BatchBudgets, and
+// LakeBuildTimeout — the largest budget in the system — was unrecorded).
+const (
+	// DefaultLakeBuildTimeout is the lake-build budget when Config leaves
+	// LakeBuildTimeout zero.
+	DefaultLakeBuildTimeout = 20 * time.Minute
+	// LogCap bounds diff-coverage's captured output.
+	LogCap = 16 << 20
+)
+
+// RunCeiling is the hard outer bound on one diff-coverage invocation —
+// deliberately generous, a backstop rather than a pace-setter: the build
+// budget, a per-case allowance far above anything a passing case needs,
+// and slack. The script paces itself; this exists so a wedged script
+// cannot hang a campaign forever.
+func RunCeiling(lakeBudget time.Duration, nCases int) time.Duration {
+	return lakeBudget + time.Duration(nCases)*time.Minute + 10*time.Minute
 }
 
 // Profile applies GoLean's capability profile to a generator config
@@ -96,6 +117,19 @@ func gitEnv() []string {
 	return env
 }
 
+// gitProbe runs one identity query under its own budget and group
+// cancellation (E5, review C1: these probes ran on the caller's context,
+// which is Background in the campaign path — a wedged git, e.g. one
+// waiting on a filesystem monitor, hung the campaign before any case).
+func gitProbe(ctx context.Context, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, harness.IdentityTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = gitEnv()
+	harness.KillGroup(cmd)
+	return cmd.Output()
+}
+
 // Identity is the checkout's pinned identity: git commit, with a -dirty
 // suffix when the working tree differs (and -dirty-unknown when the
 // dirtiness check itself failed — a failed check must not read as clean).
@@ -107,9 +141,7 @@ func Identity(ctx context.Context, checkout string) (string, error) {
 	// The checkout must BE a repository root (or linked worktree root) —
 	// otherwise git resolves some ancestor repo (measured: grossmith's
 	// own HEAD recorded as the GoLean clone identity, err == nil).
-	top := exec.CommandContext(ctx, "git", "-C", absC, "rev-parse", "--show-toplevel")
-	top.Env = gitEnv()
-	topOut, err := top.Output()
+	topOut, err := gitProbe(ctx, "-C", absC, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("golean identity: %s is not a git checkout: %w", absC, err)
 	}
@@ -117,16 +149,12 @@ func Identity(ctx context.Context, checkout string) (string, error) {
 		return "", fmt.Errorf("golean identity: %s is not a repository root (git resolves %s)",
 			absC, strings.TrimSpace(string(topOut)))
 	}
-	rev := exec.CommandContext(ctx, "git", "-C", absC, "rev-parse", "HEAD")
-	rev.Env = gitEnv()
-	out, err := rev.Output()
+	out, err := gitProbe(ctx, "-C", absC, "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("golean identity: %w", err)
 	}
 	id := "golean@" + strings.TrimSpace(string(out))
-	status := exec.CommandContext(ctx, "git", "-C", absC, "status", "--porcelain")
-	status.Env = gitEnv()
-	if s, err := status.Output(); err != nil {
+	if s, err := gitProbe(ctx, "-C", absC, "status", "--porcelain"); err != nil {
 		id += "-dirty-unknown"
 	} else if len(bytes.TrimSpace(s)) > 0 {
 		id += "-dirty"
@@ -222,7 +250,10 @@ func Run(ctx context.Context, workDir string, cases []Case, cfg Config) (map[str
 			return nil, err
 		}
 	}
-	if err := invoke(ctx, script, cfg, absWork, manifestPath, resultsPath, metaPath); err != nil {
+	// The ceiling is computed over the HANDED case count, not the
+	// translated subset, so the producer can record the exact same
+	// figure in the batch report without knowing translation outcomes.
+	if err := invoke(ctx, script, cfg, absWork, manifestPath, resultsPath, metaPath, len(cases)); err != nil {
 		return nil, err
 	}
 	if err := checkMeta(metaPath, manifestBytes); err != nil {
@@ -333,11 +364,17 @@ func goShim(absWork, goBin string) (string, error) {
 // no-publish paths (lake build failure) — so invoke only distinguishes
 // "ran to some exit" from hard errors; freshness and publication are
 // checked by the caller against the meta file.
-func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPath, resultsPath, metaPath string) error {
+func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPath, resultsPath, metaPath string, nCases int) error {
 	lakeBudget := cfg.LakeBuildTimeout
 	if lakeBudget <= 0 {
-		lakeBudget = 20 * time.Minute
+		lakeBudget = DefaultLakeBuildTimeout
 	}
+	// The script enforces its own lake-build budget, but nothing bounded
+	// the invocation as a whole (E5, review C1): a script that wedges
+	// after the build — or ignores its budget — hung the campaign
+	// forever.
+	ctx, cancel := context.WithTimeout(ctx, RunCeiling(lakeBudget, nCases))
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", script, manifestPath)
 	cmd.Dir = cfg.Checkout
 	env := []string{
@@ -374,7 +411,7 @@ func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPat
 	}
 	cmd.Env = env
 	harness.KillGroup(cmd)
-	capped := harness.NewCappedBuffer(16 << 20)
+	capped := harness.NewCappedBuffer(LogCap)
 	cmd.Stdout, cmd.Stderr = capped, capped
 	err := cmd.Run()
 	out := capped.Bytes()

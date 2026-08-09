@@ -898,6 +898,14 @@ func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, work s
 		return fmt.Errorf("golean work: translated case %s is not in the report", id)
 	}
 	rep.CloneWorkFiles = workFiles
+	// The clone-side budgets that governed this campaign, in the record
+	// (E5: the log cap was an inline literal and the lake budget — the
+	// largest in the system — was unrecorded).
+	if rep.Budgets != nil {
+		rep.Budgets.CloneLogCap = golean.LogCap
+		rep.Budgets.LakeBuildTimeout = golean.DefaultLakeBuildTimeout.String()
+		rep.Budgets.CloneRunCeiling = golean.RunCeiling(golean.DefaultLakeBuildTimeout, len(cases)).String()
+	}
 	return nil
 }
 
@@ -998,30 +1006,39 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 // tree that built the binary; a prebuilt binary run elsewhere records
 // that elsewhere-tree, consistent with its own cwd-git rev. Sanitized
 // git env, same as generatorRev.
-func dirtyContentHash(dir string) (string, error) {
+// gitProbe runs one identity/dirtiness query under its own budget and
+// group cancellation with the sanitized env (E5, review C1 sweep: these
+// were bare exec.Command — a git waiting on a lock or filesystem monitor
+// stalled the run before any case existed).
+func gitProbe(args ...string) ([]byte, error) {
 	gitEnv := []string{}
 	for _, key := range []string{"PATH", "HOME"} {
 		if v := os.Getenv(key); v != "" {
 			gitEnv = append(gitEnv, key+"="+v)
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), harness.IdentityTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = gitEnv
+	harness.KillGroup(cmd)
+	return cmd.Output()
+}
+
+func dirtyContentHash(dir string) (string, error) {
 	h := sha256.New()
 	for _, args := range [][]string{
-		{"git", "-C", dir, "diff", "HEAD"},
-		{"git", "-C", dir, "status", "--porcelain"},
+		{"-C", dir, "diff", "HEAD"},
+		{"-C", dir, "status", "--porcelain"},
 	} {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Env = gitEnv
-		out, err := cmd.Output()
+		out, err := gitProbe(args...)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", strings.Join(args, " "), err)
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 		}
 		h.Write(out)
 	}
 	// Untracked file CONTENTS, in porcelain order.
-	statusCmd := exec.Command("git", "-C", dir, "status", "--porcelain")
-	statusCmd.Env = gitEnv
-	out, err := statusCmd.Output()
+	out, err := gitProbe("-C", dir, "status", "--porcelain")
 	if err != nil {
 		return "", err
 	}
@@ -1061,22 +1078,14 @@ func generatorRev() string {
 		}
 		return rev
 	}
-	gitEnv := []string{}
-	for _, key := range []string{"PATH", "HOME"} {
-		if v := os.Getenv(key); v != "" {
-			gitEnv = append(gitEnv, key+"="+v)
-		}
-	}
-	revCmd := exec.Command("git", "rev-parse", "HEAD")
-	revCmd.Env = gitEnv // hunt F4: an ambient GIT_DIR recorded a FOREIGN repo's HEAD here
-	out, err := revCmd.Output()
+	// Sanitized env inside gitProbe (hunt F4: an ambient GIT_DIR recorded
+	// a FOREIGN repo's HEAD here).
+	out, err := gitProbe("rev-parse", "HEAD")
 	if err != nil {
 		return "unknown"
 	}
 	rev = "cwd-git:" + strings.TrimSpace(string(out))
-	statusCmd := exec.Command("git", "status", "--porcelain")
-	statusCmd.Env = gitEnv
-	if s, err := statusCmd.Output(); err != nil {
+	if s, err := gitProbe("status", "--porcelain"); err != nil {
 		rev += "-dirty-unknown" // a failed check must not read as clean
 	} else if len(strings.TrimSpace(string(s))) > 0 {
 		rev += "-dirty"

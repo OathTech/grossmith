@@ -286,12 +286,19 @@ func (a *GcAdapter) resolveGo() (string, error) {
 }
 
 func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
+	// This probe gates EVERY batch, so it carries its own budget and
+	// group cancellation (E5, arc-end review C1: it had neither —
+	// measured still running at 45s on a toolchain that never returned,
+	// and a child holding the pipe outlived even a caller's deadline).
+	ctx, cancel := context.WithTimeout(ctx, IdentityTimeout)
+	defer cancel()
 	bin, err := a.resolveGo()
 	if err != nil {
 		return "", err
 	}
 	cmd := exec.CommandContext(ctx, bin, "version")
 	cmd.Env = a.buildEnv()
+	killGroup(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("%s version: %w", bin, err)
@@ -325,10 +332,12 @@ type OracleIdentity struct {
 }
 
 // Oracle returns the adapter's structured identity. The probe carries
-// its own deadline (E4: identity probes were unbounded).
+// its own deadline AND group cancellation (E4 gave it the deadline; E5
+// review C1 measured a child holding the pipe blocking past it —
+// WaitDelay via killGroup is what makes the deadline effective).
 func (a *GcAdapter) Oracle(ctx context.Context) (OracleIdentity, error) {
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel = context.WithTimeout(ctx, IdentityTimeout)
 	defer cancel()
 	bin, err := a.resolveGo()
 	if err != nil {
@@ -340,6 +349,7 @@ func (a *GcAdapter) Oracle(ctx context.Context) (OracleIdentity, error) {
 	}
 	cmd := exec.CommandContext(ctx, bin, "version")
 	cmd.Env = a.buildEnv()
+	killGroup(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return OracleIdentity{}, fmt.Errorf("%s version: %w", bin, err)
@@ -477,9 +487,15 @@ const (
 	SubjectOutputCap = 8 << 20
 	// BuildOutputCap bounds compiler/stderr diagnostics.
 	BuildOutputCap = 256 << 10
+	// IdentityTimeout bounds every toolchain identity probe (E5, review
+	// C1: the probe gating each batch had no budget at all).
+	IdentityTimeout = 30 * time.Second
 )
 
-// BatchBudgets records the phase limits in the artifact (E4).
+// BatchBudgets records the phase limits in the artifact (E4; E5 added
+// the identity and clone-side entries — the artifact should name every
+// budget that governed it, and the largest one in the system was
+// unrecorded).
 type BatchBudgets struct {
 	// RunTimeout is per-case, adapter-configured; recorded by the
 	// producer alongside (the CLI's -timeout).
@@ -487,6 +503,11 @@ type BatchBudgets struct {
 	BuildTimeout     string `json:"buildTimeout"`
 	SubjectOutputCap int    `json:"subjectOutputCap"`
 	BuildOutputCap   int    `json:"buildOutputCap"`
+	IdentityTimeout  string `json:"identityTimeout,omitempty"`
+	// Clone-side budgets, producer-recorded on judged golean batches.
+	CloneLogCap      int    `json:"cloneLogCap,omitempty"`
+	LakeBuildTimeout string `json:"lakeBuildTimeout,omitempty"`
+	CloneRunCeiling  string `json:"cloneRunCeiling,omitempty"`
 }
 
 // cappedBuffer stores at most cap bytes and records overflow instead of
@@ -547,6 +568,7 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 			BuildTimeout:     BuildTimeout.String(),
 			SubjectOutputCap: SubjectOutputCap,
 			BuildOutputCap:   BuildOutputCap,
+			IdentityTimeout:  IdentityTimeout.String(),
 		},
 		ReferenceName: ref.Name(), Started: time.Now().UTC().Format(time.RFC3339)}
 	if rep.ReferenceIdentity, err = ref.Identity(ctx); err != nil {
