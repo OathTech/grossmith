@@ -1,3 +1,6 @@
+*CLOSED/HISTORICAL (2026-08-09): delivered and merged. Replay-join hardening
+continues in the evidence arc (E3); sequencing in `docs/roadmap.md`.*
+
 # Phase 3: replay (2026-08-07)
 
 Audit Phase 3, done-when: "a report artifact reproduces byte-identical

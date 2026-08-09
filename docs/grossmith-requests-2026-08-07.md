@@ -1,3 +1,6 @@
+*REFERENCE (2026-08-09): input record — GoLean's request set. Delivery status
+lives in `docs/spec-ledger.md` and `TODO.md`; sequencing in `docs/roadmap.md`.*
+
 # GoLean → grossmith: prioritized generation requests (2026-08-07)
 
 From the GoLean project, following the 2026-08-07 campaign (grossmith

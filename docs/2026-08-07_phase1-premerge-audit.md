@@ -1,3 +1,7 @@
+*CLOSED/HISTORICAL (2026-08-09): Phase 1 merged; findings fixed or recorded.
+Residual work (recovered-event coverage, adapter shape (a)) lives in
+`docs/roadmap.md` (R7) and `TODO.md`.*
+
 # Phase 1 pre-merge audit — findings and dispositions (2026-08-07)
 
 Two adversarial Opus-class reviewers over `git diff main...product-phase01`

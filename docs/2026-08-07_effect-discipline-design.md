@@ -1,3 +1,7 @@
+*ACTIVE (2026-08-09): design authority for mechanisms 2/3 (pointer-parameter
+witness, per-type helpers); mechanism 1 (`order_witness`) is implemented
+(witness arc W2). Signed off 2026-08-08. Sequencing: `docs/roadmap.md` (R7).*
+
 # The effect discipline and the observability horizon (2026-08-07)
 
 Design note for R2b (order-witnessing generation) and the effect

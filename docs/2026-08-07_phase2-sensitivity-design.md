@@ -1,3 +1,7 @@
+*CLOSED/HISTORICAL (2026-08-09): delivered. Caveat of record: defer/recover was
+unmeasurable in this phase (later dissolved by the R1 recover wrapper), and
+recovered-event coverage remains open — `docs/roadmap.md` (R7).*
+
 # Phase 2 design: observation sensitivity (2026-08-07)
 
 Audit Phase 2, verbatim done-when: "every supported observation shape

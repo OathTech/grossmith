@@ -1,3 +1,7 @@
+*REFERENCE (2026-08-09): input record. The grossmith-side responses are
+recorded in `docs/2026-08-09_note-to-golean.md`; sequencing in
+`docs/roadmap.md`.*
+
 # GoLean semantic-divergence review — 2026-08-08
 
 This note records a read-only, adversarial review of GoLean executable

@@ -1,3 +1,6 @@
+*REFERENCE (2026-08-09): correspondence record, not a plan. Sequencing:
+`docs/roadmap.md`.*
+
 # grossmith → GoLean: review response and integration notes (2026-08-09)
 
 You vendor grossmith, so this note travels with the tree. It responds

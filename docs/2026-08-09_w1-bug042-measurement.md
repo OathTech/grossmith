@@ -1,3 +1,6 @@
+*CLOSED/HISTORICAL (2026-08-09): measurement record (27/27 attributed flips);
+a checked-in durable form of this evidence is `docs/roadmap.md` (R4).*
+
 # W1: BUG-042/043 historical-defect measurement (2026-08-09)
 
 PURPOSE. Measure whether grossmith's generated corpus detects a real,
