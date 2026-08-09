@@ -225,7 +225,9 @@ func TestStringFamilyEmitted(t *testing.T) {
 	varIndex := regexp.MustCompile(`\bv\d+\[v\d+\]`)
 	litSlice := regexp.MustCompile(`"[^"]*"\[\d+:\d+\]`)
 	hotSlice := regexp.MustCompile(`"[^"]*"\[v\d+:\]`)
-	fold := regexp.MustCompile(`(?m)^\t+for i\d+, r\d+ := range \w+ \{\n\t+\w+ \+= i\d+\*31 \+ int\(r\d+\)`)
+	// The fold's operand is a string variable (top level) or a string
+	// literal (inside loops and pure bodies, where E5 pins the trip count).
+	fold := regexp.MustCompile(`(?m)^\t+for i\d+, r\d+ := range (?:\w+|"[^"]*") \{\n\t+\w+ \+= i\d+\*31 \+ int\(r\d+\)`)
 	indexed, sliced, hotSliced, folds, hotIndexed := 0, 0, 0, 0, 0
 	for seed := int64(20000); seed < 20400; seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()

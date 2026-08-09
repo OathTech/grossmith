@@ -25,6 +25,13 @@ type value struct {
 	// the 32-bit window instead of on every plain-int touch (~98%
 	// saturation before W4).
 	bound int64
+	// strLen is the string analogue of bound (E5): for string-typed
+	// values, len(v) <= strLen in BYTES on every execution; 0 means
+	// UNKNOWN (conservative — an unknown-length string can never drive
+	// a range). Same arithmetic helpers as bound. The empty literal
+	// carries strLen 1, a one-byte over-bound that keeps the 0=unknown
+	// convention uniform.
+	strLen int64
 }
 
 // Bound arithmetic: saturating, unknown-propagating. widthDivergeAt is
@@ -83,6 +90,15 @@ func typeMagCap(t Type) int64 {
 		return 1 << 32
 	}
 	return boundCap
+}
+
+// litLen is a string literal's byte length as a strLen bound: at least 1,
+// so the empty word stays inside the 0=unknown convention.
+func litLen(w string) int64 {
+	if len(w) == 0 {
+		return 1
+	}
+	return int64(len(w))
 }
 
 func boolToInt(b bool) int {
@@ -157,7 +173,8 @@ func (g *Generator) literal(t Type) value {
 		}
 		return value{text: "false", constant: true}
 	case ShapeString:
-		return value{text: fmt.Sprintf("%q", pick(g.c, stringWords)), constant: true}
+		w := pick(g.c, stringWords)
+		return value{text: fmt.Sprintf("%q", w), constant: true, strLen: litLen(w)}
 	case ShapeArray:
 		// A composite literal is never a Go constant, so boundary elements
 		// are safe: no compile-time folding can reject them. The composite's
@@ -280,7 +297,13 @@ func (g *Generator) intLiteral(t Type, n int) value {
 func (g *Generator) variable(t Type) value {
 	if i, ok := g.pickVar(t); ok {
 		g.vars[i].reads++
-		return value{text: g.vars[i].name, constant: false, bound: g.vars[i].bound}
+		v := value{text: g.vars[i].name, constant: false, bound: g.vars[i].bound}
+		if t.Shape == ShapeString {
+			// maxLenBound doubles as the byte-length bound for strings
+			// (0 = unknown, e.g. a helper's string parameter).
+			v.strLen = g.vars[i].maxLenBound
+		}
+		return v
 	}
 	// Unreachable while declare() keeps the one-per-type floor; the literal
 	// keeps the leaf total anyway (every type carries a cheap total literal).
@@ -860,7 +883,8 @@ func (g *Generator) stringExpr(fuel int) value {
 					ai := g.c.draw(len(bounds))
 					bi := ai + g.c.draw(len(bounds)-ai)
 					g.mark("strings", "string_slice")
-					out = value{text: fmt.Sprintf("%q[%d:%d]", w, bounds[ai], bounds[bi])}
+					// A substring of a literal: at most the literal's bytes.
+					out = value{text: fmt.Sprintf("%q[%d:%d]", w, bounds[ai], bounds[bi]), strLen: litLen(w)}
 				}},
 				{name: "panicky", weight: 1 + 3*boolToInt(g.guardBias), ok: g.riskOK(), emit: func() {
 					g.spendRisk()
@@ -868,7 +892,7 @@ func (g *Generator) stringExpr(fuel int) value {
 					iv := g.variable(Int(0, false))
 					g.mark("strings", "string_slice")
 					g.note(tagPanicRisk)
-					out = value{text: fmt.Sprintf("%q[%s:]", w, iv.text)}
+					out = value{text: fmt.Sprintf("%q[%s:]", w, iv.text), strLen: litLen(w)}
 				}},
 			}).emit()
 		}},
@@ -883,19 +907,25 @@ func (g *Generator) stringExpr(fuel int) value {
 			// chain constant — constness must follow the actual operand,
 			// the same class as the len fix (audit finding 6, latent).
 			chainConst := true
+			total := int64(1)
 			for i := range parts {
+				var v value
 				if i == varPos {
-					v := g.variable(Str())
-					parts[i] = v.text
+					v = g.variable(Str())
 					chainConst = chainConst && v.constant
 				} else {
-					parts[i] = g.literal(Str()).text
+					v = g.literal(Str())
 				}
+				parts[i] = v.text
+				// Unknown-propagating: one unknown operand (a helper's
+				// string parameter) makes the chain's length unknown.
+				total = boundAdd(total, v.strLen)
 			}
 			g.mark("strings", "concat")
 			out = value{
 				text:     "(" + strings.Join(parts, " + ") + ")",
 				constant: varPos == operands || chainConst,
+				strLen:   total,
 			}
 		}},
 	}).emit()

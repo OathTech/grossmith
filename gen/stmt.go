@@ -197,7 +197,12 @@ func (g *Generator) block(out *emitter, depth, count int, inLoop bool) {
 		g.stmtIn(out, depth-1, inLoop, i == count-1 && inner == nil)
 	}
 	if inner != nil {
-		g.projectInner(out, *inner)
+		// Project from LIVE state, not the declaration-time copy: block
+		// statements may have written the inner variable, and a stale
+		// bound here under-tags (ints) or under-bounds (string lengths,
+		// E5). The inner variable is the last entry — every nested
+		// construct balances its own pushes before returning.
+		g.projectInner(out, g.vars[len(g.vars)-1])
 		g.vars = g.vars[:len(g.vars)-1]
 	}
 }
@@ -225,7 +230,11 @@ func (g *Generator) maybeDeclareInner(out *emitter) *binding {
 	g.mark(append([]string{"block_decl", "short_decl"}, t.Tags()...)...)
 	init := g.expr(t, g.cfg.ExprFuel)
 	out.line("%s := %s", name, init.text)
-	g.vars = append(g.vars, binding{name: name, typ: t, bound: init.bound})
+	b := binding{name: name, typ: t, bound: init.bound}
+	if t.Shape == ShapeString {
+		b.maxLenBound = init.strLen
+	}
+	g.vars = append(g.vars, b)
 	w := g.vars[len(g.vars)-1]
 	return &w
 }
@@ -242,11 +251,18 @@ func (g *Generator) projectInner(out *emitter, w binding) {
 	case ShapeString:
 		o := &g.vars[g.pickOuter(Str())]
 		g.mark("assignment", "strings")
+		// This write bypasses writeBound (strings carry no numeric
+		// bound), so the byte-length bound is recorded here directly —
+		// a replacement by the inner string, possibly plus a literal.
+		prev := o.maxLenBound
 		if g.enabled("concat") {
 			g.mark("concat")
-			out.line("%s = (%s + %s)", o.name, w.name, g.literal(Str()).text)
+			lit := g.literal(Str())
+			g.setStrLen(o, boundAdd(w.maxLenBound, lit.strLen), prev)
+			out.line("%s = (%s + %s)", o.name, w.name, lit.text)
 			return
 		}
+		g.setStrLen(o, w.maxLenBound, prev)
 		out.line("%s = %s", o.name, w.name)
 	default:
 		if g.enabled("conversions") && g.corner != "kinds" {
@@ -314,8 +330,32 @@ func (g *Generator) assign(out *emitter) {
 			rhs = g.literal(target.typ)
 		}
 	}
+	prevStrLen := target.maxLenBound
 	g.writeBound(target, rhs.bound, "=")
+	g.setStrLen(target, rhs.strLen, prevStrLen)
 	out.line("%s = %s", target.name, rhs.text)
+}
+
+// setStrLen records a string REPLACEMENT's byte-length bound; prev is
+// the bound from BEFORE the write (writeBound, when the site uses it,
+// has already clobbered it to unknown). Same staleness rules as bound
+// tracking: inside a loop the RHS length was computed from
+// pre-iteration state (another string the loop grows may feed it), so
+// it stays unknown; under a conditional the old value may survive, so
+// JOIN with prev.
+func (g *Generator) setStrLen(target *binding, newLen, prev int64) {
+	if target.typ.Shape != ShapeString {
+		return
+	}
+	if g.loopDepth > 0 {
+		target.maxLenBound = 0
+		return
+	}
+	if g.condDepth > 0 {
+		target.maxLenBound = boundMax(prev, newLen)
+		return
+	}
+	target.maxLenBound = newLen
 }
 
 func (g *Generator) compoundAssign(out *emitter) {
@@ -349,9 +389,21 @@ func (g *Generator) compoundAssign(out *emitter) {
 		// length every iteration while t may itself grow — the one
 		// self-amplifying form the linear-growth rule must exclude.
 		parts := make([]string, 1+g.c.draw(2))
+		litBytes := int64(0)
 		for i := range parts {
-			parts[i] = g.literal(Str()).text
+			lv := g.literal(Str())
+			parts[i] = lv.text
+			litBytes += lv.strLen
 		}
+		// Growth is literal bytes only — independent of any loop-mutated
+		// state, so it is the "+fixed" class: charge this site's
+		// worst-case executions (E5). Conditional bodies grow AT MOST
+		// this much, so plain accumulation covers them too.
+		grow := litBytes
+		if g.loopDepth > 0 {
+			grow = boundMul(litBytes, g.maxExec)
+		}
+		target.maxLenBound = boundAdd(target.maxLenBound, grow)
 		g.mark("assignment", "strings", "concat")
 		out.line("%s += %s", target.name, strings.Join(parts, " + "))
 		return
@@ -1082,13 +1134,16 @@ func (g *Generator) mapRangeFold(out *emitter) {
 	g.mark("maps", "range", "assignment", "control_flow", "short_decl")
 	g.note("map_range_fold")
 	// W4: a commutative sum of map values is bounded by the map's element
-	// bound times the execution cap. The whole-fold contribution goes
-	// through writeBound as "+fixed" — already multiplied for its own
-	// iterations, and NESTING inside an outer loop widens it to unknown there
-	// (arc-end review finding 8: the direct computation bypassed the
-	// loop rule). m's own writes cannot be stale here: the fold body
-	// writes nothing but acc.
-	g.writeBound(acc, boundMul(m.bound, g.maxExec), "+fixed")
+	// bound times its OWN trip count — the 4-key alphabet, len <= 4 by
+	// construction. The whole-fold contribution then goes through
+	// writeBound as "+fixed", which multiplies by the SITE's worst-case
+	// executions (arc-end review finding 8 made this take the loop rule;
+	// E5 separated the two factors: the old rhs used maxExec as the
+	// fold's OWN iteration count, conflating it with site executions —
+	// the alphabet is the honest iteration factor, and "+fixed" already
+	// supplies the site's). m's own writes cannot be stale here: the
+	// fold body writes nothing but acc.
+	g.writeBound(acc, boundMul(m.bound, 4), "+fixed")
 	g.markWidthDepBounded(acc.typ, acc.bound)
 	out.open("for _, %s := range %s {", e, m.name)
 	out.line("%s += %s", acc.name, e)
@@ -1105,8 +1160,27 @@ func (g *Generator) mapRangeFold(out *emitter) {
 // exactly the fold, so nothing executes in any order the spec leaves open.
 func (g *Generator) stringRangeFold(out *emitter) {
 	g.resetRisk()
-	s := &g.vars[pick(g.c, g.varsOfShape(ShapeString, nil))]
-	s.reads++
+	// The operand needs a known, small byte-length bound — a string range's
+	// trip count is its byte length, which the executed-statement cost
+	// model must cover (E5: string growth previously had no gate at all —
+	// the same growth-feeds-a-range family E4 closed for slices, measured
+	// live in 17 of 3,000 DefaultConfig seeds). Variable operands qualify
+	// only OUTSIDE loops: emission order is execution order at the top
+	// level, so the emission-time bound is the execution-time bound. Inside
+	// a loop (or a helper body, whose string parameters have caller-decided
+	// lengths) the fold ranges a LITERAL instead — immutable and small, so
+	// re-execution cannot move its trip count.
+	operand := ""
+	if g.loopDepth == 0 && !g.pureMode {
+		if cands := g.stringRangeableVars(); len(cands) > 0 {
+			sv := &g.vars[pick(g.c, cands)]
+			sv.reads++
+			operand = sv.name
+		}
+	}
+	if operand == "" {
+		operand = g.literal(Str()).text
+	}
 	// The accumulator is the guaranteed plain-int variable: the subject's
 	// pool floor, or a helper's p0 (methods have no string vars, so the arm
 	// never fires there).
@@ -1122,9 +1196,22 @@ func (g *Generator) stringRangeFold(out *emitter) {
 	// accumulator bound unknown.
 	g.markWidthDep(acc.typ)
 	g.writeBound(acc, 0, "+")
-	out.open("for %s, %s := range %s {", idx, r, s.name)
+	out.open("for %s, %s := range %s {", idx, r, operand)
 	out.line("%s += %s*31 + int(%s)", acc.name, idx, r)
 	out.close()
+}
+
+// stringRangeableVars are string variables whose byte-length bound is
+// known and inside the fold trip cap — the string analogue of
+// rangeableVars' slice gate.
+func (g *Generator) stringRangeableVars() []int {
+	var found []int
+	for _, i := range g.varsOfShape(ShapeString, nil) {
+		if b := g.vars[i].maxLenBound; b > 0 && b <= g.tripCap {
+			found = append(found, i)
+		}
+	}
+	return found
 }
 
 // fieldAssign writes one struct field. Like element writes, a field write
@@ -1160,6 +1247,18 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 		// duration of the body.
 		g.rangedSlices = append(g.rangedSlices, i)
 		defer func() { g.rangedSlices = g.rangedSlices[:len(g.rangedSlices)-1] }()
+		if g.loopDepth > 0 {
+			// An enclosing loop RE-EXECUTES this range (E5, the arc-end
+			// refutation): the gate in rangeableVars passed against the
+			// bound as of emission, so this slice must not grow again
+			// until the whole nest closes — an append emitted later in
+			// the nest, even after this range closes lexically, feeds the
+			// next iteration's trip count past the gate (measured: 39,750
+			// trips against a 48-trip gate, seed 174813). Released when
+			// loopDepth returns to 0; a LATER loop cannot re-execute this
+			// range.
+			g.loopFrozenSlices = append(g.loopFrozenSlices, i)
+		}
 		g.mark("slices", "range")
 	} else {
 		g.mark("arrays", "range")
@@ -1181,7 +1280,16 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 	g.consumeIndex(out, index, elemBase)
 	g.block(out, depth, 1+g.c.draw(2), true)
 	g.loopDepth--
+	g.releaseFrozenSlices()
 	out.close()
+}
+
+// releaseFrozenSlices clears the loop-nest append freeze once the whole
+// nest has closed: nothing can re-execute the ranges that froze them.
+func (g *Generator) releaseFrozenSlices() {
+	if g.loopDepth == 0 {
+		g.loopFrozenSlices = g.loopFrozenSlices[:0]
+	}
 }
 
 func (g *Generator) ifStmt(out *emitter, depth int, inLoop bool) {
@@ -1219,6 +1327,7 @@ func (g *Generator) forStmt(out *emitter, depth int) {
 	g.consumeIndex(out, index, nil)
 	g.block(out, depth, 1+g.c.draw(2), true)
 	g.loopDepth--
+	g.releaseFrozenSlices()
 	out.close()
 }
 

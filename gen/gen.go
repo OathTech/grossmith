@@ -138,15 +138,28 @@ func (c Config) Validate() error {
 	// emitted only over slices whose static maxLenBound is at most
 	// 8*LoopCap.
 	//
-	// THIS BOUND DOES NOT YET HOLD — arc-end review, 2026-08-09, refuted
-	// BY MEASUREMENT (docs/2026-08-09_evidence-arc-status.md): the mask is
-	// lexical, but emitted source is RE-EXECUTED by enclosing loops, so an
-	// append emitted after a range grows what that range walks on the next
-	// iteration, past a gate that already passed. Measured 14,372,767
-	// executed statements against the 4e6 below, at a config this function
-	// ACCEPTS (Stmts=1, Depth=2, LoopCap=250, seed 174813). String growth
-	// is ungated entirely. DefaultConfig is comfortably inside the bound;
-	// the exposure is explicit non-default configs. Fixing it is rung E5.
+	// E5 partially re-trued this. CLOSED: the arc-end review's measured
+	// refutation mechanism (an append emitted after a range in a shared
+	// loop nest grew what the next iteration walked — 14,372,767
+	// executed statements at an accepted config) is gone: a slice ranged
+	// inside a loop nest is frozen against appends until the nest
+	// closes, and string ranges are gated the same way slices are
+	// (variable operands only at top level under a byte-length bound,
+	// literal operands elsewhere).
+	//
+	// STILL NOT A GUARANTEE: this closed form prices only trip products.
+	// It prices a loop body's 3-5 statements per level as if they were
+	// one, and prices calls at zero — but helper and method bodies may
+	// carry loops (15.9% of DefaultConfig programs), call one another
+	// (15.2%), and nest calls in argument position (~7.5 sites/program),
+	// so the true worst-case tape exceeds any fixed ceiling this formula
+	// can check. Measured DefaultConfig reality is TINY (median 54, max
+	// 288 executed statements over 60 seeds) — the gap is worst-case
+	// tapes, not typical ones. The honest mechanism choice (a-priori
+	// cost model over the grammar vs an emission-time cost budget) is a
+	// design decision recorded in
+	// docs/2026-08-09_execution-bound-design-note.md; until it lands,
+	// this check is a plausibility screen, not a proof.
 	worst := float64(c.Stmts)
 	for i := 0; i < c.Depth; i++ {
 		worst *= 8 * float64(c.LoopCap)
@@ -240,12 +253,14 @@ type binding struct {
 	// every write site; a missed write site would UNDER-tag, which the
 	// runtime soundness witness and the cross-arch CI proof police.
 	bound int64
-	// maxLenBound is a slice's STATIC length upper bound (E4): initial
-	// composite length plus every append site's worst-case execution
-	// count. What makes slice ranges boundable — a range's trip count is
-	// at most this, so the executed-statement formula closes (the audit's
+	// maxLenBound is a container's STATIC length upper bound. For slices
+	// (E4): initial composite length plus every append site's worst-case
+	// execution count — what makes slice ranges boundable (the audit's
 	// amplification finding: cross-slice range/append compounding made
-	// the old formula unbounded by ~12 orders of magnitude).
+	// the old formula unbounded by ~12 orders of magnitude). For strings
+	// (E5): byte length, 0 = UNKNOWN (a helper's string parameter; any
+	// write site without precise tracking — writeBound defaults strings
+	// to unknown so a future write site fails SAFE, toward unrangeable).
 	maxLenBound int64
 	// minLen is a slice's guaranteed length lower bound: the initial
 	// composite length. Appends only grow and whole-slice assignment is
@@ -312,6 +327,22 @@ type Generator struct {
 	// into len*2^len executed statements — the second review's charter
 	// violation, found live in the corpus (case_00934: len 3->6->12->24).
 	rangedSlices []int
+	// loopFrozenSlices are slices that have been RANGED anywhere inside
+	// the currently-open loop nest (E5, the arc-end refutation): the
+	// range's emission-time gate read maxLenBound, but an enclosing loop
+	// re-executes the range, so an append emitted later in that nest —
+	// after the range closed lexically — grows what the next iteration
+	// walks (measured: 39,750 trips against a 48-trip gate, seed 174813).
+	// Appends to these stay masked until the whole nest closes
+	// (loopDepth back to 0); after that, the range cannot run again.
+	loopFrozenSlices []int
+	// tripCap is the per-level trip-count cap: the slice-range gate
+	// (rangeableVars) and the string-fold gate (stringRangeableVars)
+	// both use it, and every other loop kind sits under it by
+	// construction (for-loops <= LoopCap, array ranges and map folds
+	// <= 4 <= 8*LoopCap). With the freeze above, no gated trip count
+	// can move after its gate passes.
+	tripCap int64
 	// wrapped: this subject carries the recover-observation wrapper
 	// (GoLean R1): named results, a deferred recover encoding the panic
 	// kind into a dedicated int result and snapshotting the observed
@@ -476,17 +507,33 @@ func containsTag(tags []string, tag string) bool {
 // the tape.
 func (g *Generator) drawSetup() {
 	cfg := g.cfg
-	// The corrected E4 formula — W4's bound tracking multiplies by this,
-	// so it must dominate every realizable trip product (slice ranges are
-	// capped at 8*LoopCap trips by the emission gate — but see the
-	// refutation recorded in Validate: that per-level cap is not yet
-	// sound for non-default configs, so maxExec is an OPTIMISTIC bound
-	// there. W4's use of it over-approximates in the safe direction
-	// (over-tagging, never under-tagging), which the soundness screen
-	// confirms; E5 closes the underlying gate).
-	g.maxExec = int64(cfg.Stmts)
+	// maxExec (re-derived, E5) is the worst-case number of times ONE
+	// statement site can execute: the product of enclosing trip counts
+	// over at most Depth levels, each at most tripCap — for-loops trip
+	// <= LoopCap and slice ranges <= tripCap, held there by the gate
+	// plus the loop-nest freeze; fold loops carry no statement sites.
+	// This is what a loop-carried write's contribution is multiplied by
+	// in W4 bound arithmetic ("+fixed") and what an in-loop append or
+	// string concat charges maxLenBound. The old value (the
+	// whole-program worst, Stmts included) over-approximated per-site
+	// executions by orders of magnitude; every use is per-site, so the
+	// tight value is the honest one — and it is sound for
+	// helper-internal writes too, because their bounds are per-call
+	// values and helper bodies nest loops at most one level deep.
+	g.tripCap = 8 * int64(cfg.LoopCap)
+	g.maxExec = 1
 	for i := 0; i < cfg.Depth; i++ {
-		g.maxExec *= 8 * int64(cfg.LoopCap)
+		g.maxExec = boundMul(g.maxExec, g.tripCap)
+	}
+	if g.maxExec < g.tripCap {
+		// Helper and method bodies nest one loop level REGARDLESS of
+		// Depth (generateHelper emits at depth 1), and their bounds are
+		// per-call values: a helper-internal loop write still executes
+		// up to a full loop's trips per call, even at Depth=0. Floor at
+		// one level so those sites never under-multiply. (This floor
+		// also covers the old formula's Depth=0 gap, where Stmts <
+		// LoopCap under-multiplied the same sites.)
+		g.maxExec = g.tripCap
 	}
 	switch {
 	case cfg.Constructs != nil:
@@ -1147,6 +1194,15 @@ func (g *Generator) witness(v value, t Type) value {
 //     a loop the written value may itself be loop-grown, so it goes
 //     unknown there too.
 func (g *Generator) writeBound(target *binding, rhs int64, op string) {
+	// Strings: every write makes the byte-length bound UNKNOWN unless the
+	// site tracks it precisely afterwards (assign, the string compound
+	// concat, the inner-declaration projection). writeBound is the one
+	// chokepoint every variable write already passes through (the W4
+	// discipline), so a write site added without length tracking fails
+	// SAFE — the string just stops being rangeable.
+	if target.typ.Shape == ShapeString {
+		target.maxLenBound = 0
+	}
 	if g.loopDepth > 0 && op != "+fixed" {
 		target.bound = 0
 		return
@@ -1369,6 +1425,10 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 	} else {
 		lit := g.literal(typ)
 		b.bound = lit.bound
+		if typ.Shape == ShapeString {
+			// Byte-length bound, born known (the literal's length).
+			b.maxLenBound = lit.strLen
+		}
 		out.line("%s := %s", name, lit.text)
 	}
 	g.vars = append(g.vars, b)
@@ -1556,28 +1616,44 @@ func (g *Generator) sliceVars(elem *Type) []int { return g.varsOfShape(ShapeSlic
 // may grow (the audit's amplification finding — `for range a { b =
 // append(b, x) }` alternated with the converse compounds Fibonacci-wise
 // across statements, so growth under any slice range feeds some later
-// range's trip count). Growth happens only under literal-bounded control
-// flow, which is what makes maxLenBound sound.
+// range's trip count). Since E5 a slice ranged anywhere in the open loop
+// nest stays unappendable until the nest closes (loopFrozenSlices): the
+// nest re-executes the range, so a later append would grow what its next
+// iteration walks — past a gate that already passed.
 func (g *Generator) appendableSlices() []int {
 	if len(g.rangedSlices) > 0 {
 		return nil
 	}
-	return g.sliceVars(nil)
+	var found []int
+	for _, i := range g.sliceVars(nil) {
+		if !containsInt(g.loopFrozenSlices, i) {
+			found = append(found, i)
+		}
+	}
+	return found
+}
+
+func containsInt(xs []int, x int) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
 }
 
 // rangeableVars are the containers a range may iterate (E4): arrays
 // (fixed length) and slices whose STATIC length bound keeps the trip
-// count inside the executed-statement formula's per-level factor. A
-// heavily-grown slice stays observable and indexable — it just cannot
-// drive a loop.
+// count inside tripCap — a bound the loop-nest freeze holds still for as
+// long as the range can re-execute (E5). A heavily-grown slice stays
+// observable and indexable — it just cannot drive a loop.
 func (g *Generator) rangeableVars() []int {
 	var found []int
 	for _, i := range g.varsOfShape(ShapeArray, nil) {
 		found = append(found, i)
 	}
-	cap := 8 * int64(g.cfg.LoopCap)
 	for _, i := range g.sliceVars(nil) {
-		if g.vars[i].maxLenBound <= cap {
+		if g.vars[i].maxLenBound <= g.tripCap {
 			found = append(found, i)
 		}
 	}

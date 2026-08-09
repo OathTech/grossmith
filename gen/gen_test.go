@@ -138,8 +138,11 @@ func TestLoopsAreBoundedByConstruction(t *testing.T) {
 }
 
 // TestRangeLoopsAreOverVariables: a range loop terminates because its
-// operand is a fixed-length array VARIABLE — anything more exotic in range
-// position would need its own termination argument.
+// operand carries its own termination argument — a container VARIABLE
+// (fixed-length array, gated slice, alphabet-bounded map) or, since E5, a
+// STRING LITERAL (the in-loop and in-helper string fold form: immutable,
+// length fixed at emission). Anything more exotic in range position would
+// need a new argument.
 func TestRangeLoopsAreOverVariables(t *testing.T) {
 	ranges := 0
 	for seed := int64(1); seed <= 300; seed++ {
@@ -151,8 +154,14 @@ func TestRangeLoopsAreOverVariables(t *testing.T) {
 				return true
 			}
 			ranges++
-			if _, ok := r.X.(*ast.Ident); !ok {
-				t.Fatalf("seed %d: range over %T, not a variable", seed, r.X)
+			switch x := r.X.(type) {
+			case *ast.Ident:
+			case *ast.BasicLit:
+				if x.Kind != token.STRING {
+					t.Fatalf("seed %d: range over non-string literal %s", seed, x.Value)
+				}
+			default:
+				t.Fatalf("seed %d: range over %T, not a variable or string literal", seed, r.X)
 			}
 			return true
 		})

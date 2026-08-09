@@ -101,20 +101,31 @@ now first-party. Mapping onto this backlog:
   fix-pair work.
 - **Evidence arc E5 — the arc-end review's seven blockers** (full
   record and measurements: `docs/2026-08-09_evidence-arc-status.md`;
-  the arc does NOT merge until these close). A1: the E4
-  executed-statement bound is refuted by measurement — the growth mask
-  is lexical, emitted source is re-executed by enclosing loops, 14.4M
-  statements measured against a 4e6 guarantee at an accepted config.
-  A2: the mask is slice-only, so string concat feeding a string range
-  is ungated (17 of 3000 default seeds). B1: `golean-work/` — the
-  clone's actual source — is outside the descriptor. B2: `batch.json`
-  and `manifest.tsv` are undigested; a rewritten conformance statement
-  passes `gengo -verify` with exit 0. B3: `-verify` panics on a
-  truncated `complete.json` (unguarded `[:12]`). B4: the completion
-  binding is fail-open on an unreadable file. C1: `GcAdapter.Identity`,
-  the probe gating every batch, has no timeout. Plus: W4 saturation
-  drifted to 0.25pp of its failure threshold with a stale recorded
-  figure, and two E4 witnesses assert less than they read.
+  the arc does NOT merge until these close). A1 MECHANISM CLOSED
+  2026-08-09: the loop-nest freeze bans appends to a nest-ranged slice
+  until the nest closes (witnessed structurally, by a white-box
+  mechanism test, and by instrumented replay: the counterexample
+  neighborhood now peaks at 123,825 executed statements against the
+  review's 14.4M). A2 CLOSED the same day: string ranges take variable
+  operands only at the subject top level under a tracked byte-length
+  bound; literals inside loops and pure bodies. A1's UNIVERSAL-BOUND
+  half is a design decision, stopped at
+  `docs/2026-08-09_execution-bound-design-note.md` per the charter's
+  exit condition: a closed form must also price block branching, fold
+  trips, and above all CALLS (helper loops in 15.9% of programs,
+  helper-calls-helper in 15.2%, ~7.5 nested call sites/program), and
+  cannot fit 4e6 without deleting those populations — the note
+  recommends an emission-time cost budget instead; Validate's formula
+  is marked a plausibility screen until Mike decides. B1: `golean-work/`
+  — the clone's actual source — is outside the descriptor. B2:
+  `batch.json` and `manifest.tsv` are undigested; a rewritten
+  conformance statement passes `gengo -verify` with exit 0. B3:
+  `-verify` panics on a truncated `complete.json` (unguarded `[:12]`).
+  B4: the completion binding is fail-open on an unreadable file. C1:
+  `GcAdapter.Identity`, the probe gating every batch, has no timeout.
+  Plus: W4 saturation drifted to 0.25pp of its failure threshold with a
+  stale recorded figure, and two E4 witnesses assert less than they
+  read.
 - **The repo is not gofmt-clean and nothing gates it** (noticed during
   the 2026-08-09 wording pass): `gofmt -l` flags nine files, six of
   them untouched by recent work — mostly struct-tag alignment that

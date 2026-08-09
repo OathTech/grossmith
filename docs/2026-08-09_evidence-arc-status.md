@@ -177,9 +177,57 @@ any adapter runs (spy adapter: 0 invocations); budget values read the
 same constants the code uses, with no duplication; the E0 docs fold is
 solid and TODO honesty passed.
 
-## Recommended next rung (E5), not yet agreed
+## E5 progress (2026-08-09, the rung now running)
 
-Every finding has a local fix; none suggests a redesign.
+The user agreed to keep the arc whole; E5 executes under the charter's
+new rung. Recorded as items land:
+
+- **A1 mechanism CLOSED.** The loop-nest freeze (`loopFrozenSlices`)
+  bans appends to a nest-ranged slice until the nest closes. Witnesses:
+  `TestNoAppendAfterRangeInLoopNest` (structural, over DefaultConfig
+  and the review's config; catches seed 174813 exactly when the freeze
+  is disabled), `TestLoopNestFreezeMechanism` (white-box), and
+  `TestExecutedStatementsMeasured` (instrumented replay: the
+  counterexample neighborhood peaks at 123,825 executed statements
+  against the review's 14,372,767).
+- **Incidence corrected.** Our own re-measurement of the pre-freeze
+  generator at the review's config finds the append-after-range shape
+  in exactly ONE program in seeds 150,000-210,000 — seed 174813
+  itself, reproduced byte-for-byte. The review's "43 matching programs,
+  43/43 append-after" was evidently a broader filter; the direction of
+  its ordering claim stands (the converse order is blocked by the gate,
+  since an in-loop append makes the slice unrangeable), but the
+  frequency this document previously implied was ours to check and is
+  now measured.
+- **A2 CLOSED.** Strings carry a byte-length bound (`value.strLen`,
+  `binding.maxLenBound`) tracked at every write site with a fail-safe
+  unknown default at the `writeBound` chokepoint; string ranges take
+  variable operands only at the subject's top level under that bound,
+  and literals inside loops and pure bodies (helper string parameters
+  have caller-decided lengths). Witness:
+  `TestStringRangeOperandsGated`.
+- **Found in passing, fixed with the above:** the map-fold bound
+  conflated its own trip count with site executions; `projectInner`
+  read declaration-time bounds for an inner variable the block may
+  have written (under-tagging ints, and unsound for string lengths);
+  `maxExec` at Depth=0 under-multiplied helper-internal loop writes
+  (helper bodies nest one loop level regardless of Depth — floored).
+- **A1's universal-bound half STOPPED at a design note**
+  (`docs/2026-08-09_execution-bound-design-note.md`), per the
+  charter's exit condition. An honest closed form must price block
+  branching, fold trips, and calls (helper loops in 15.9% of
+  DefaultConfig programs, helper-calls-helper in 15.2%, ~7.5 nested
+  call sites per program), and cannot fit the 4e6 ceiling without
+  grammar restrictions nowhere pre-authorized. The note recommends an
+  emission-time cost budget; `Validate`'s formula is marked a
+  plausibility screen until the user decides. E4's exit condition
+  stays UNMET on this half.
+
+## The E5 scope (agreed 2026-08-09; progress above)
+
+As drafted before agreement: every finding has a local fix; none
+suggests a redesign. (A1's bound half has since proven the exception —
+see the design note referenced above.)
 
 1. **A1** — defer the range gate to a post-pass over the emitted body, or
    widen `maxLenBound` for any slice appended-to anywhere in an enclosing

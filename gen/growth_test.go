@@ -2,8 +2,10 @@ package gen
 
 import (
 	"go/ast"
-	"regexp"
+	"go/token"
 	"go/types"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -79,4 +81,212 @@ func TestValidateSourceSizeBound(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Stmts=4097 accepted")
 	}
+}
+
+// TestNoAppendAfterRangeInLoopNest is the E5 freeze witness, the arc-end
+// review's refutation made a permanent check. Generation emits source in
+// one pass, but enclosing loops RE-EXECUTE it: an append emitted after a
+// range, inside the same loop nest, grows what the range walks on the
+// next iteration — past a gate that already passed against the
+// pre-growth bound (the review's seed 174813: 39,750 trips against a
+// 2,000-trip gate, 14,372,767 executed statements at an accepted
+// config). The freeze (loopFrozenSlices) bans appends to a nest-ranged
+// slice until the nest closes, so the shape must not occur at all.
+//
+// Incidence, re-measured for this witness (pre-freeze generator, the
+// review's config): exactly ONE program in seeds 150,000-210,000 — seed
+// 174813 itself, reproduced byte-for-byte. The converse order never
+// occurs on a real slice, because an in-loop append charges maxExec to
+// the bound and the range gate then refuses it; slice_triple's
+// statement-local temps are the one exempt append target. The stress
+// sweep below covers the seed range the counterexample lives in.
+//
+// Pure-AST check, no typecheck needed: only slices are legal append
+// targets, so "ranged X that is also appended somewhere" identifies the
+// slice ranges that matter.
+func TestNoAppendAfterRangeInLoopNest(t *testing.T) {
+	sweep := func(t *testing.T, cfg func(int64) Config, first, seeds int64) {
+		nests := 0
+		for seed := first; seed < first+seeds; seed++ {
+			c, err := New(cfg(seed)).Generate()
+			if err != nil {
+				continue
+			}
+			_, file := parseCase(t, c.Source, seed)
+			ast.Inspect(file, func(n ast.Node) bool {
+				var body *ast.BlockStmt
+				switch l := n.(type) {
+				case *ast.ForStmt:
+					body = l.Body
+				case *ast.RangeStmt:
+					body = l.Body
+				default:
+					return true
+				}
+				// Outermost loop of a nest: scan its whole subtree once,
+				// then stop descending (inner loops are part of the nest).
+				nests++
+				rangedAt := map[string]token.Pos{}
+				ast.Inspect(body, func(m ast.Node) bool {
+					switch v := m.(type) {
+					case *ast.RangeStmt:
+						if id, ok := v.X.(*ast.Ident); ok {
+							if _, seen := rangedAt[id.Name]; !seen {
+								rangedAt[id.Name] = v.Pos()
+							}
+						}
+					case *ast.CallExpr:
+						id, ok := v.Fun.(*ast.Ident)
+						if !ok || id.Name != "append" || len(v.Args) == 0 {
+							return true
+						}
+						tgt, ok := v.Args[0].(*ast.Ident)
+						if !ok || tempSliceRe.MatchString(tgt.Name) {
+							return true // slice_triple's statement-local temp
+						}
+						if at, ranged := rangedAt[tgt.Name]; ranged && v.Pos() > at {
+							t.Fatalf("seed %d: append(%s) after a range over it in the same loop nest — the E5 freeze leaked\n%s",
+								seed, tgt.Name, c.Source)
+						}
+					}
+					return true
+				})
+				return false
+			})
+		}
+		if nests == 0 {
+			t.Fatal("no loop nests generated — the witness asserted nothing")
+		}
+		t.Logf("checked %d loop nests", nests)
+	}
+	t.Run("default config", func(t *testing.T) {
+		sweep(t, DefaultConfig, 1, 1500)
+	})
+	t.Run("review counterexample config", func(t *testing.T) {
+		// Stmts=1, Depth=2, LoopCap=250, seeds around 174813. The freeze
+		// legitimately changes that seed's tape, so the regenerated
+		// program differs from the review's artifact; the CLASS is what
+		// the sweep refuses.
+		sweep(t, func(seed int64) Config {
+			cfg := DefaultConfig(seed)
+			cfg.Stmts, cfg.Depth, cfg.LoopCap = 1, 2, 250
+			return cfg
+		}, 170000, 10000)
+	})
+}
+
+// TestLoopNestFreezeMechanism checks the freeze arithmetic directly —
+// the sweep above is an integration net, but the counterexample class is
+// a ~1-in-60,000 event, so the mechanism gets its own deterministic
+// check: a slice ranged inside an open loop nest leaves the appendable
+// set, and returns to it only when the nest closes.
+func TestLoopNestFreezeMechanism(t *testing.T) {
+	g := &Generator{}
+	g.vars = []binding{
+		{name: "v0", typ: Slice(Int(0, false)), minLen: 2, maxLenBound: 2},
+		{name: "v1", typ: Slice(Int(0, false)), minLen: 3, maxLenBound: 3},
+	}
+	if got := len(g.appendableSlices()); got != 2 {
+		t.Fatalf("clean state: %d appendable, want 2", got)
+	}
+	// A range over v0 inside a loop nest freezes v0 — and only v0.
+	g.loopDepth = 1
+	g.loopFrozenSlices = append(g.loopFrozenSlices, 0)
+	if got := g.appendableSlices(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("frozen state: appendable %v, want [1]", got)
+	}
+	// Closing an INNER loop does not release: the outer nest can still
+	// re-execute the range.
+	g.loopDepth = 1
+	g.releaseFrozenSlices()
+	if got := g.appendableSlices(); len(got) != 1 {
+		t.Fatalf("inner close released the freeze: appendable %v", got)
+	}
+	// Closing the whole nest releases.
+	g.loopDepth = 0
+	g.releaseFrozenSlices()
+	if got := len(g.appendableSlices()); got != 2 {
+		t.Fatalf("nest close: %d appendable, want 2", got)
+	}
+}
+
+// TestStringRangeOperandsGated is the E5 string-gate witness: string
+// growth previously had no gate at all — 17 of 3,000 DefaultConfig
+// seeds emitted a string range over a concat-grown string (the same
+// growth-feeds-a-range family E4 closed for slices). Now a string range
+// takes a VARIABLE operand only at the top level of the subject, where
+// emission order is execution order and the byte-length bound is
+// therefore trustworthy; inside loops and inside pure bodies (helpers,
+// methods — parameter lengths are caller-decided) the operand is a
+// LITERAL, whose trip count nothing can move.
+func TestStringRangeOperandsGated(t *testing.T) {
+	varFolds, litFolds := 0, 0
+	for seed := int64(1); seed <= 3000; seed++ {
+		c, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			continue
+		}
+		_, file := parseCase(t, c.Source, seed)
+		appended := map[string]bool{}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "append" && len(call.Args) > 0 {
+					if tgt, ok := call.Args[0].(*ast.Ident); ok {
+						appended[tgt.Name] = true
+					}
+				}
+			}
+			return true
+		})
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			pure := fn.Name.Name != "fuzzSubject"
+			var walk func(n ast.Node, loops int)
+			walk = func(n ast.Node, loops int) {
+				ast.Inspect(n, func(m ast.Node) bool {
+					switch v := m.(type) {
+					case *ast.ForStmt:
+						walk(v.Body, loops+1)
+						return false
+					case *ast.RangeStmt:
+						// String folds are the two-value `for i, r :=`
+						// form; slice/array/map ranges never bind a
+						// second variable named r<n>.
+						isStringFold := false
+						if val, ok := v.Value.(*ast.Ident); ok && strings.HasPrefix(val.Name, "r") {
+							isStringFold = true
+						}
+						if isStringFold {
+							switch x := v.X.(type) {
+							case *ast.BasicLit:
+								litFolds++
+							case *ast.Ident:
+								varFolds++
+								if loops > 0 || pure {
+									t.Fatalf("seed %d: string range over variable %s inside a loop or pure body (%s) — the E5 string gate leaked\n%s",
+										seed, x.Name, fn.Name.Name, c.Source)
+								}
+								if appended[x.Name] {
+									t.Fatalf("seed %d: string range over appended name %s\n%s", seed, x.Name, c.Source)
+								}
+							default:
+								t.Fatalf("seed %d: string range over %T\n%s", seed, v.X, c.Source)
+							}
+						}
+						walk(v.Body, loops+1)
+						return false
+					}
+					return true
+				})
+			}
+			walk(fn.Body, 0)
+		}
+	}
+	if varFolds == 0 || litFolds == 0 {
+		t.Fatalf("string-fold population starved: %d variable folds, %d literal folds — the witness asserted nothing", varFolds, litFolds)
+	}
+	t.Logf("string folds: %d over top-level variables, %d over literals", varFolds, litFolds)
 }
