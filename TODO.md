@@ -102,13 +102,16 @@ now first-party. Mapping onto this backlog:
   that channel, while our composition reports widths/defined_types as
   coverage. Ledger row notes it; the durable fix is their encoder
   (adapter shape (a) territory) — worth passing to their team.
-- **Tuple-forwarded call arguments rung** (2026-08-08 review §1): the
-  shape `sink(pair())` — a multi-result call forwarded as the argument
-  list, incl. variadic and mixed fixed/variadic destinations with
-  interface parameters — is ungenerated today, and the review found a
-  real GoLean interface-boxing bug living exactly there. The six-form
-  boundary matrix in the review doc is the rung's witness spec; needs
-  impure-free multi-result forwarding only, no effect discipline.
+- **Tuple-forwarded call arguments rung** (2026-08-08 review §1):
+  DELIVERED (witness arc W0, `tuple_forward` — sink(src()) pairs across
+  the dest×ptype matrix, minimal variadic-parameter sinks, all eight
+  cells witnessed plus per-cell runtime pins). The pincer over GoLean's
+  BUG-049 fix pair (2e05313 pre → 264520e post, same 300 subjects,
+  seeds 84000..84299) flipped 16 verdicts clone-infra→match, every one
+  tuple_forward-tagged with an any-slot sink and the pre-fix
+  "type assertion from non-interface value" signature; zero flips
+  elsewhere; cases-to-first-detection 22. General variadic calls/spread
+  remain deferred on the ledger (g24, c55).
 - **Recovered-event coverage rung** (audit deferral, measured 1/120
   cases): force a hot statement form inside guarded statements so
   statement-level catch is exercised end to end; re-measure, then
