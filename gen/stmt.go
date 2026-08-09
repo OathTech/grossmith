@@ -97,6 +97,13 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.callStmt(out) }},
 		{name: "bare-call", weight: 1, ok: g.enabled("helpers", "bare_call") && len(g.helpers) > 0,
 			emit: func() { g.bareCallStmt(out) }},
+		// Weight 3 (vs call's 2): the pincer's detection density rides on
+		// this arm — interface-typed slots receiving concrete forwarded
+		// components must be common enough for a 300-case campaign to hit
+		// the fix pair repeatedly. Subject-only: pairs are top-level and
+		// their creation swaps the variable environment.
+		{name: "tuple-forward", weight: 3, ok: g.enabled("helpers", "tuple_forward") && !g.pureMode,
+			emit: func() { g.tupleForwardStmt(out) }},
 		{name: "multi-assign", weight: 3, ok: g.enabled("multi_assign") && len(g.vars) >= 2,
 			emit: func() { g.multiAssign(out) }},
 		{name: "observe", weight: 2, ok: g.enabled("observe_point") && !g.pureMode,
