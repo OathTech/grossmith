@@ -131,6 +131,10 @@ func Identity(ctx context.Context, checkout string) (string, error) {
 // that cannot model the calls.
 var obsCallRe = regexp.MustCompile(`\bobs(Bool|Int|Uint|Str|Recovered)\(`)
 
+// caseIDRe: the safe case-ID shape — path-component only, no
+// separators, no dots (no traversal), TSV-safe.
+var caseIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // Run translates cases into workDir, invokes diff-coverage once, and
 // returns a verdict per case ID. workDir must be inside a directory
 // already fenced from the repo module (the campaign root's throwaway
@@ -161,7 +165,22 @@ func Run(ctx context.Context, workDir string, cases []Case, cfg Config) (map[str
 	var manifest strings.Builder
 	manifest.WriteString("# id\tgo_dir\tfunction\targs\texpected_status\tfeatures\texpected_reason\tlane\twhy\tparams\n")
 	translated := map[string]bool{}
+	seenID := map[string]bool{}
 	for _, c := range cases {
+		// IDs are API inputs (E1; audit P2/P3: a crafted ID could
+		// traverse out of the case root or inject TSV fields). The CLI
+		// generates safe IDs; the package validates for every caller.
+		if !caseIDRe.MatchString(c.ID) {
+			results[c.ID] = Result{Verdict: harness.VerdictHarnessError,
+				Detail: fmt.Sprintf("case ID %q is not manifest-safe (want %s)", c.ID, caseIDRe)}
+			continue
+		}
+		if seenID[c.ID] {
+			results[c.ID] = Result{Verdict: harness.VerdictHarnessError,
+				Detail: fmt.Sprintf("duplicate case ID %q", c.ID)}
+			continue
+		}
+		seenID[c.ID] = true
 		row, res, ok := translate(caseRoot, c)
 		if !ok {
 			results[c.ID] = res
@@ -261,6 +280,14 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 		return "", Result{Verdict: harness.VerdictHarnessError, Detail: err.Error()}, false
 	}
 
+	for _, f := range c.Features {
+		// Feature tags ride in a TSV column: a tab/newline would inject
+		// fields, a comma would split the list (E1).
+		if strings.ContainsAny(f, "\t\n\r,") || f == "" {
+			return "", Result{Verdict: harness.VerdictHarnessError,
+				Detail: fmt.Sprintf("feature tag %q is not manifest-safe", f)}, false
+		}
+	}
 	features := strings.Join(c.Features, ",")
 	if features == "" {
 		features = "none"

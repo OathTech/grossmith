@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"errors"
 	"fmt"
 	"go/format"
 	"sort"
@@ -9,6 +10,12 @@ import (
 
 // Subject is the name of the generated function under test.
 const Subject = "fuzzSubject"
+
+// ErrNothingObservable: the config's NoObserve mask left no declared
+// variable eligible for the observed floor on this seed — a typed
+// config/seed interaction error (E1), never a panic. Profiles that keep
+// any scalar shape observable can never hit it.
+var ErrNothingObservable = errors.New("nothing observable")
 
 // Config controls one generated program. Every bound exists to keep the case
 // SMALL: divergence value comes from construct composition, not length.
@@ -97,6 +104,24 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: Vars %d exceeds 128", c.Vars)
 	case c.ExprFuel > 12:
 		return fmt.Errorf("config: ExprFuel %d exceeds 12", c.ExprFuel)
+	}
+	// NoObserve is a closed enum (evidence arc E1; audit P0: Shape(255)
+	// was silently accepted and some subsets panicked the generator).
+	seenShape := map[Shape]bool{}
+	for _, s := range c.NoObserve {
+		switch s {
+		case ShapeInt, ShapeBool, ShapeString, ShapeArray, ShapeStruct,
+			ShapeMap, ShapeInterface, ShapeSlice:
+		default:
+			// Explicit closed set, not a range check — the enum's
+			// declaration order is not a contract (ShapeSlice postdates
+			// ShapeInterface and a range check silently rejected it).
+			return fmt.Errorf("config: NoObserve contains unknown shape %d", s)
+		}
+		if seenShape[s] {
+			return fmt.Errorf("config: NoObserve lists shape %d twice", s)
+		}
+		seenShape[s] = true
 	}
 	// "Halts" must include "halts before the heat death" AND "halts before
 	// the OOM killer": bound worst-case executed statements. The cap is
@@ -560,7 +585,9 @@ func (g *Generator) Generate() (c Case, err error) {
 	g.createDefinedTypes()
 	g.generateMethods()
 	g.createInterfaces()
-	g.declare(body)
+	if err := g.declare(body); err != nil {
+		return Case{}, err
+	}
 	g.mark("functions", "short_decl", "literals", "return")
 
 	if g.wrapped {
@@ -1181,7 +1208,14 @@ func (g *Generator) typePool() []Type {
 // declare emits the variable declarations: the one-per-type floor plus
 // cfg.Vars extras, each with a drawn liveness tier. Initializers are plain
 // literals so a declaration can never depend on generation order.
-func (g *Generator) declare(out *emitter) {
+//
+// The error return is the E1 totality fix (audit P0): the observed-floor
+// promotion below used to assume "scalars are never in a NoObserve
+// profile" — true for the profiles WE define, false for the public API,
+// and the empty candidate pool reached pick() and panicked (16/256 shape
+// subsets at one measured seed). An empty realized pool is now a typed
+// error the caller gets back from Generate.
+func (g *Generator) declare(out *emitter) error {
 	pool := g.typePool()
 	for _, typ := range pool {
 		g.declareOne(out, typ)
@@ -1193,7 +1227,7 @@ func (g *Generator) declare(out *emitter) {
 	// promotion is a deterministic fix-up drawn via the tape, not a retry.
 	anyObserved := false
 	for _, v := range g.vars {
-		if v.observed {
+		if v.observed || v.aggObserved {
 			anyObserved = true
 		}
 	}
@@ -1210,10 +1244,12 @@ func (g *Generator) declare(out *emitter) {
 				candidates = append(candidates, i)
 			}
 		}
-		// Scalars are never in a NoObserve profile, so candidates is
-		// non-empty for every profile we define.
+		if len(candidates) == 0 {
+			return fmt.Errorf("gen: %w: NoObserve masks every declared type for seed %d", ErrNothingObservable, g.cfg.Seed)
+		}
 		g.vars[pick(g.c, candidates)].observed = true
 	}
+	return nil
 }
 
 func (g *Generator) declareOne(out *emitter, typ Type) {

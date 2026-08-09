@@ -432,7 +432,7 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 	rep.Cases = results
 	rep.Total = len(results)
 	rep.Verdicts = map[Verdict]int{}
-	sizeMin, sizeSum, sizeMax := 1<<31, 0, 0
+	sizeMin, sizeSum, sizeMax, sizeStats := 1<<31, 0, 0, 0
 	for i, cr := range results {
 		if cr.Verdict != "" {
 			rep.Verdicts[cr.Verdict]++
@@ -453,6 +453,7 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 		if b, err := os.Stat(filepath.Join(dirs[i], "subject.go")); err == nil {
 			n := int(b.Size())
 			sizeSum += n
+			sizeStats++
 			if n < sizeMin {
 				sizeMin = n
 			}
@@ -461,10 +462,12 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 			}
 		}
 	}
-	if rep.Total > 0 && sizeMax > 0 {
-		// sizeMax == 0 means every stat failed; the 1<<31 min sentinel
-		// must not escape into the artifact (hunt F11).
-		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax = sizeMin, sizeSum/rep.Total, sizeMax
+	if sizeStats > 0 {
+		// The mean divides by SUCCESSFUL stats, not by Total (E1; audit
+		// P2/P3: a failed stat silently deflated the mean). sizeMax == 0
+		// means every stat failed; the 1<<31 min sentinel must not
+		// escape into the artifact (hunt F11).
+		rep.SubjectBytesMin, rep.SubjectBytesMean, rep.SubjectBytesMax = sizeMin, sizeSum/sizeStats, sizeMax
 	}
 	return rep, nil
 }

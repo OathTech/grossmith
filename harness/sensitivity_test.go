@@ -26,6 +26,13 @@ type control struct {
 	// requires returns true if this reference document exercises the
 	// shape this control perturbs.
 	requires func(observe.Document) bool
+	// wantInfra: this control corrupts the document's CANONICAL FORM
+	// rather than an observed value, so the fail-closed parse (E1,
+	// Document.Validate) must classify it as clone infrastructure — a
+	// producer speaking the protocol wrong is not a semantic divergence.
+	// The matrix witnesses BOTH channels: value corruption must
+	// mismatch, form corruption must fail closed.
+	wantInfra bool
 }
 
 // hasKind checks the RETURN tuple only: the scalar perturbations target
@@ -69,20 +76,28 @@ func walkReturnValues(d observe.Document, f func(observe.Value)) {
 
 func sensitivityControls() []control {
 	return []control{
-		{"int", `"int": v.Int()`, `"int": -(v.Int() + 1)`,
-			func(d observe.Document) bool { return hasKind(d, "int") }},
-		{"uint", `"uint": v.Uint()`, `"uint": v.Uint() ^ 1`,
-			func(d observe.Document) bool { return hasKind(d, "uint") }},
+		// Value shifts are ORDER-PRESERVING (+1, not negation/bit-flip):
+		// the mutation must corrupt values while leaving map keys sorted,
+		// or the fail-closed parse rejects the document before the value
+		// divergence can be judged (E1 made canonical form enforceable).
+		{"int", `"int": v.Int()`, `"int": v.Int() + 1`,
+			func(d observe.Document) bool { return hasKind(d, "int") }, false},
+		{"uint", `"uint": v.Uint()`, `"uint": v.Uint() + 1`,
+			func(d observe.Document) bool { return hasKind(d, "uint") }, false},
 		{"bool", `"bool": v.Bool()`, `"bool": !v.Bool()`,
-			func(d observe.Document) bool { return hasKind(d, "bool") }},
+			func(d observe.Document) bool { return hasKind(d, "bool") }, false},
 		{"string", `"str": v.String()`, `"str": v.String() + "x"`,
-			func(d observe.Document) bool { return hasKind(d, "string") }},
+			func(d observe.Document) bool { return hasKind(d, "string") }, false},
+		// len and map-order corrupt the CANONICAL FORM (len no longer
+		// matches the element count; keys no longer sorted): since E1
+		// these are documents the protocol cannot produce, and the
+		// expected outcome is the fail-closed infra classification.
 		{"len", `"len": v.Len()`, `"len": v.Len() + 1`,
 			func(d observe.Document) bool {
 				return hasKind(d, "slice") || hasKind(d, "array") || hasKind(d, "map")
-			}},
+			}, true},
 		{"field-name", `v.Type().Field(i).Name`, `v.Type().Field(i).Name + "X"`,
-			func(d observe.Document) bool { return hasKind(d, "struct") }},
+			func(d observe.Document) bool { return hasKind(d, "struct") }, false},
 		// Flipping every comparator reverses map entry order; canonical
 		// form makes order part of equality, so any observed map with two
 		// or more entries must diverge.
@@ -95,7 +110,7 @@ func sensitivityControls() []control {
 					}
 				})
 				return ok
-			}},
+			}, true},
 		{"dynType", `_gGoType(inner.Type())`, `_gGoType(inner.Type()) + "X"`,
 			func(d observe.Document) bool {
 				ok := false
@@ -105,7 +120,7 @@ func sensitivityControls() []control {
 					}
 				})
 				return ok
-			}},
+			}, false},
 		{"event-order",
 			`_gEvents = append(_gEvents, map[string]any{"at": at, "value": v})`,
 			`_gEvents = append([]map[string]any{{"at": at, "value": v}}, _gEvents...)`,
@@ -126,7 +141,7 @@ func sensitivityControls() []control {
 					}
 				}
 				return false
-			}},
+			}, false},
 		// Event POSITION identity (audit gap: Event.At was a compared
 		// field with no unequal-state witness): collapse every value
 		// event's at to "point"; a doc with a defer event diverges.
@@ -140,11 +155,11 @@ func sensitivityControls() []control {
 					}
 				}
 				return false
-			}},
+			}, false},
 		{"panic-kind", `return "divide"`, `return "other"`,
 			func(d observe.Document) bool {
 				return d.Panic != nil && d.Panic.Kind == observe.PanicDivide
-			}},
+			}, false},
 		// Width erasure: int8 reported as int16. (ReplaceAll also turns
 		// uint8 into uint16 — a broader goType perturbation, same shape.)
 		{"width",
@@ -158,15 +173,18 @@ func sensitivityControls() []control {
 					}
 				})
 				return ok
-			}},
+			}, false},
 	}
 }
 
 // TestSensitivityMatrix is Phase 2's per-shape positive control (audit:
 // "every supported observation shape has a targeted unequal-state
-// witness"): for each observation shape, a clone doctored in exactly
-// that shape must produce observation-mismatch on a case exercising it,
-// and must never leak an infra or harness verdict.
+// witness"), extended by E1 with a second channel: a clone doctored in
+// a VALUE shape must produce observation-mismatch, while a clone
+// doctored in the document's CANONICAL FORM (unsorted keys, wrong len)
+// must be stopped by the fail-closed parse as clone infrastructure —
+// each control declares which channel it witnesses, and neither may
+// leak into the other.
 //
 // The pool is requirement-driven: seeds are consumed in order and a
 // case is kept iff its REFERENCE document satisfies a still-unmet
@@ -281,22 +299,28 @@ func TestSensitivityMatrix(t *testing.T) {
 			root:    root,
 			altRoot: altRoot,
 		}
-		mismatches := 0
+		hits := 0
+		want, wantName := VerdictMismatch, "mismatch"
+		if ctl.wantInfra {
+			// Canonical-form corruption: the fail-closed parse must stop
+			// it BEFORE judging (E1) — infra, never a semantic verdict.
+			want, wantName = VerdictCloneInfra, "clone-infra (fail-closed)"
+		}
 		for _, pc := range pool {
 			v, d := Judge(pc.ref, doctored.Run(ctx, pc.dir), observe.PanicExact)
 			switch v {
 			case VerdictMatch:
-			case VerdictMismatch:
-				mismatches++
+			case want:
+				hits++
 			default:
-				t.Fatalf("control %s on %s: verdict %s leaked out of the semantic pair: %s",
-					ctl.name, pc.dir, v, d)
+				t.Fatalf("control %s on %s: verdict %s (want match or %s): %s",
+					ctl.name, pc.dir, v, wantName, d)
 			}
 		}
-		if mismatches == 0 {
-			t.Errorf("control %s: no case diverged — shape not proven injective end-to-end", ctl.name)
+		if hits == 0 {
+			t.Errorf("control %s: no case reached %s — shape not proven end-to-end", ctl.name, wantName)
 		} else {
-			t.Logf("control %-12s %d/%d cases diverged", ctl.name, mismatches, len(pool))
+			t.Logf("control %-12s %d/%d cases -> %s", ctl.name, hits, len(pool), wantName)
 		}
 	}
 }

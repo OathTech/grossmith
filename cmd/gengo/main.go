@@ -173,6 +173,17 @@ func run(cfg config) error {
 	judging := cfg.judge || cfg.clone != ""
 	rev := generatorRev()
 
+	// Preflight the toolchain BEFORE any write (E1; audit: a bad -go was
+	// discovered only after the batch existed, contradicting "validates
+	// every input before writing anything"). Probed whenever it will be
+	// used: judging, or an explicit -go for any purpose.
+	if judging || cfg.goBin != "" {
+		probe := &harness.GcAdapter{GoBin: cfg.goBin}
+		if _, err := probe.Identity(context.Background()); err != nil {
+			return fmt.Errorf("go toolchain preflight (-go %q): %w", cfg.goBin, err)
+		}
+	}
+
 	if err := os.MkdirAll(cfg.out, 0o755); err != nil {
 		return err
 	}
@@ -635,7 +646,7 @@ func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, checko
 }
 
 func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]string, tagCount map[string]int) {
-	fmt.Printf("\nconformance statement (out/batch.json is the record):\n")
+	fmt.Printf("\nconformance statement (%s is the record):\n", filepath.Join(cfg.out, "batch.json"))
 	fmt.Printf("  reference: %s\n", rep.ReferenceIdentity)
 	if rep.CloneName != "" {
 		fmt.Printf("  clone:     %s (%s)\n", rep.CloneName, rep.CloneIdentity)
@@ -695,10 +706,22 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 				fmt.Printf("  UNTAGGED divergence in %s (tag honesty violation)\n", cr.ID)
 			}
 		}
+		// The denominator is JUDGED cases (E1; audit: an all-infra batch
+		// printed a reassuring zero/zero). Zero judged is an incomplete
+		// campaign, said so.
+		judged := 0
+		for _, cr := range rep.Cases {
+			if cr.Verdict == harness.VerdictMatch || cr.Verdict == harness.VerdictMismatch {
+				judged++
+			}
+		}
 		widthTagged := tagCount["width_dependent"]
-		fmt.Printf("\ncross-arch discrimination: divergences in-tag %d, off-tag %d; width_dependent-tagged %d\n",
-			inTag, offTag, widthTagged)
-		if widthTagged > 0 {
+		if judged == 0 {
+			fmt.Printf("\ncross-arch discrimination: INCOMPLETE CAMPAIGN — 0 of %d cases reached a semantic verdict; the in-tag/off-tag counts below are vacuous\n", rep.Total)
+		}
+		fmt.Printf("\ncross-arch discrimination: divergences in-tag %d, off-tag %d over %d judged cases; width_dependent-tagged %d\n",
+			inTag, offTag, judged, widthTagged)
+		if widthTagged > 0 && judged > 0 {
 			fmt.Printf("  width_dependent yield: %d/%d (%.1f%%)\n",
 				inTag, widthTagged, 100*float64(inTag)/float64(widthTagged))
 		}
