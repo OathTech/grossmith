@@ -7,13 +7,16 @@ charter's plan and every finding is fixed or recorded on-branch.
 
 ## Rungs
 
-- **W0 (tuple forwarding)** — complete on branch `w0-tuple-forward`
-  (`703633b`), reviewed twice (main session + the mid-arc review),
-  including the review-response fixes (srcBoxed negative-control axis,
-  call-shape guarantee stated true and witnessed by paired index,
-  any_slot stratifier). Fix-pair cross-validation on BUG-049: 16 flips,
-  all in-tag, first detection at case 22. NOT YET FOLDED into
-  witness-arc — the fold awaits an explicit per-merge sign-off.
+- **W0 (tuple forwarding)** — FOLDED at `d0f4126` on explicit sign-off,
+  after two review passes (main session + the mid-arc review) and the
+  review-response fixes (srcBoxed negative-control axis, call-shape
+  guarantee stated true and witnessed by paired index, any_slot
+  stratifier). Fix-pair cross-validation on BUG-049: 16 flips, all
+  in-tag, first detection at case 22. The merge resolution reconciled
+  W0 with W4's bound tracking (sink results unknown-bounded).
+  Post-fold campaign (n=300, seed 94000): 287 match / 13 clone-infra /
+  0 mismatch — all the one quarantine class; tuple_forward judged
+  53/54, any_slot 16/16, wrapper 15 = 15 + 0.
 - **W1 (BUG-042/043 measurement)** — 27/27 attributed flips, first
   detection at case 36 (`docs/2026-08-09_w1-bug042-measurement.md`).
 - **W2 (R2b order witnessing)** — the order corner, the wit/wOrd
@@ -66,8 +69,7 @@ zero semantic divergence.
 
 ## Awaiting sign-off
 
-1. Fold `w0-tuple-forward` into `witness-arc` (twice-reviewed; the
-   permission boundary requires the user to name this merge).
+1. ~~Fold `w0-tuple-forward` into `witness-arc`~~ — DONE at `d0f4126`.
 2. Merge `witness-arc` to `main`.
 3. Push (local `main` is ahead of origin; the note to the GoLean team
    only reaches them via the pushed tree).
