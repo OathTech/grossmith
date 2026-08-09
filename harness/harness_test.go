@@ -142,10 +142,10 @@ func TestVerdictTaxonomy(t *testing.T) {
 	}
 }
 
-// TestBuildSurvivesHostileGit (2026-08-08 review G2 + tight audit F1):
+// TestBuildSurvivesUnreadableGitMetadata (2026-08-08 review G2 + audit F1):
 // a corrupt repository above a case dir must not break the reference
 // build — case binaries carry no VCS stamp by policy.
-func TestBuildSurvivesHostileGit(t *testing.T) {
+func TestBuildSurvivesUnreadableGitMetadata(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds binaries")
 	}
@@ -164,7 +164,7 @@ func TestBuildSurvivesHostileGit(t *testing.T) {
 	ref := &GcAdapter{AdapterName: "ref", Timeout: 20 * time.Second}
 	out := ref.Run(context.Background(), dir)
 	if out.Status != StatusRan {
-		t.Fatalf("hostile git broke the build: %s: %s", out.Status, out.Detail)
+		t.Fatalf("unreadable git metadata broke the build: %s: %s", out.Status, out.Detail)
 	}
 }
 

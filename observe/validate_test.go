@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The E1 adversarial table: every status/payload and kind/field
+// The E1 rejection table: every status/payload and kind/field
 // combination the protocol cannot produce must be rejected by Validate
 // (and therefore by Parse and Equal). The audit's replications lead the
 // table — `status:"panic"` with no payload and an empty goType both

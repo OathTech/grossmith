@@ -46,6 +46,17 @@ experiment identity and atomicity, E4 resource guarantees made true.
 No language surface. Branch `evidence-arc`; merge waits for arc-end
 sign-off.
 
+## House convention: wording
+
+Grossmith checks that a MEASUREMENT is honest; it does not defend
+against an adversary. Describe failures by their ordinary cause — a
+leftover file, a second toolchain on the PATH, a hand-edit, a stalled
+compiler, unbounded output — not in security-incident vocabulary
+(injection, tampering, decoys, hostility). This was learned twice: the
+witness arc's charter and the evidence arc's first draft both drifted
+into that register and were rewritten. New rungs and delegated briefs
+inherit the convention.
+
 ## Deferred queue, in order (the audit's R4-R7)
 
 1. **R4 — durable evidence corpus and operational CI.** Checked-in

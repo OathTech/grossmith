@@ -283,8 +283,9 @@ func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
 	}
 	id := strings.TrimSpace(string(out)) + " (" + bin
 	// The EFFECTIVE arch, always — Identity previously named it only for
-	// explicit cross-arch adapters, so an env-poisoned reference (hunt
-	// F1) carried an identity that could not falsify the poison.
+	// explicit cross-arch adapters, so a reference built under an
+	// overridden GOARCH (hunt F1) carried an identity that could not
+	// reveal the override.
 	arch := a.GOARCH
 	if arch == "" {
 		arch = runtime.GOARCH
@@ -509,9 +510,10 @@ func (c *cappedBuffer) String() string { return c.buf.String() }
 // reference and optional clone adapter.
 func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, policy observe.PanicPolicy, workers int) (BatchReport, error) {
 	// The descriptor is authoritative (E3; audit P0: glob discovery
-	// judged whatever was on disk — injected files included — and
-	// verified nothing). Validation happens HERE, immediately before
-	// execution: extra, missing, tampered, or symlinked inputs refuse
+	// judged whatever happened to be on disk and verified nothing).
+	// Validation happens HERE, immediately before execution — because
+	// each of extra, missing, changed, or symlinked inputs means the
+	// programs judged are not the programs recorded: they refuse
 	// the whole batch.
 	ids, err := ValidateBatch(root)
 	if err != nil {

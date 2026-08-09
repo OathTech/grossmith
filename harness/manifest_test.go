@@ -1,18 +1,20 @@
 package harness
 
 import (
-	"time"
-	"os/exec"
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
-// The E3 witnesses: the audit's replicated probes, permanent. A batch is
-// exactly its descriptor — anything else on disk, anything missing,
-// anything changed, refuses BEFORE execution.
+// The E3 witnesses: the audit's reproductions, made permanent. A batch
+// is exactly its descriptor — anything else on disk, anything missing,
+// anything changed refuses BEFORE execution, because each of those
+// means the programs judged are not the programs recorded.
 
 func manifestFixture(t *testing.T) string {
 	t.Helper()
@@ -52,17 +54,18 @@ func TestBatchValidation(t *testing.T) {
 		t.Fatalf("clean batch refused: %v", err)
 	}
 
-	// The audit's replication: an injected file beside the inputs (its
-	// probe used an extra.go with an init panic that was built and
-	// judged) refuses the batch before anything executes.
-	t.Run("injected file", func(t *testing.T) {
+	// The audit's reproduction: an unlisted .go file beside the inputs
+	// compiles into the case — its probe used an extra.go whose init
+	// panicked, which changed the outcome while the recorded hash
+	// stayed clean. Refused before anything executes.
+	t.Run("extra file in case dir", func(t *testing.T) {
 		root := manifestFixture(t)
-		if err := os.WriteFile(filepath.Join(root, "case_00000", "extra.go"), []byte("package main\n\nfunc init() { panic(\"injected\") }\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "case_00000", "extra.go"), []byte("package main\n\nfunc init() { panic(\"from an unlisted file\") }\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		wantRefusal(t, root, "not in the manifest")
 	})
-	t.Run("tampered subject", func(t *testing.T) {
+	t.Run("subject edited after generation", func(t *testing.T) {
 		root := manifestFixture(t)
 		if err := os.WriteFile(filepath.Join(root, "case_00000", "subject.go"), []byte("package main\n\nfunc fuzzSubject() int { return 2 }\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -83,7 +86,7 @@ func TestBatchValidation(t *testing.T) {
 		}
 		wantRefusal(t, root, "neither a declared case nor a batch artifact")
 	})
-	t.Run("symlinked input", func(t *testing.T) {
+	t.Run("input file is a symlink", func(t *testing.T) {
 		root := manifestFixture(t)
 		target := filepath.Join(t.TempDir(), "elsewhere.go")
 		if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
@@ -98,7 +101,7 @@ func TestBatchValidation(t *testing.T) {
 		}
 		wantRefusal(t, root, "not a regular file")
 	})
-	t.Run("tampered root go.mod", func(t *testing.T) {
+	t.Run("root go.mod edited", func(t *testing.T) {
 		root := manifestFixture(t)
 		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x\n\ngo 1.26\n\nreplace a => ../b\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -119,8 +122,9 @@ func TestBatchValidation(t *testing.T) {
 	})
 }
 
-// Mid-arc review findings 3, 4, 6: symlinked case DIRECTORIES, foreign
-// root entries, and a completion descriptor that must bind the manifest.
+// Mid-arc review findings 3, 4, 6: symlinked case DIRECTORIES, unlisted
+// root entries, and a completion descriptor that must bind the manifest
+// it was written for.
 func TestBatchValidationHardening(t *testing.T) {
 	t.Run("symlinked case dir", func(t *testing.T) {
 		root := manifestFixture(t)
@@ -133,21 +137,21 @@ func TestBatchValidationHardening(t *testing.T) {
 		}
 		wantRefusal(t, root, "symlink")
 	})
-	t.Run("foreign root file", func(t *testing.T) {
+	t.Run("unlisted root file", func(t *testing.T) {
 		root := manifestFixture(t)
 		if err := os.WriteFile(filepath.Join(root, "extra.go"), []byte("package main\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		wantRefusal(t, root, "neither a declared case nor a batch artifact")
 	})
-	t.Run("foreign root dir", func(t *testing.T) {
+	t.Run("unlisted root directory", func(t *testing.T) {
 		root := manifestFixture(t)
 		if err := os.MkdirAll(filepath.Join(root, "vendor"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		wantRefusal(t, root, "neither a declared case nor a batch artifact")
 	})
-	t.Run("stale completion descriptor", func(t *testing.T) {
+	t.Run("completion descriptor names another manifest", func(t *testing.T) {
 		root := manifestFixture(t)
 		if err := os.WriteFile(filepath.Join(root, "complete.json"), []byte(`{"schema":"grossmith-complete-v1","manifestSha256":"0000000000000000"}`), 0o644); err != nil {
 			t.Fatal(err)
@@ -162,49 +166,62 @@ func TestBatchValidationHardening(t *testing.T) {
 	})
 }
 
-// The E4 harness witnesses: a wedged compiler is bounded by the build
-// budget with its process TREE killed, and a flooding subject is
-// classified as the output cap, not a parse mystery.
-func TestWedgedCompilerIsBounded(t *testing.T) {
+// The E4 harness witnesses: a compiler that never returns is bounded by
+// the build budget and does not leave background work running, and a
+// subject that writes without bound is classified by the output cap
+// rather than as a parse failure.
+//
+// Both are ordinary hang/runaway modes for a tool that compiles and
+// runs thousands of generated programs unattended — a toolchain that
+// wedges on a pathological input, a generated program that loops on
+// output. The harness has to survive them and say which phase failed.
+func TestStalledCompilerIsBounded(t *testing.T) {
 	if testing.Short() {
-		t.Skip("spawns processes")
+		t.Skip("starts subprocesses")
 	}
-	// A fake "go" that spawns a child and sleeps forever: the old code
-	// hung on it and leaked the child past cancellation.
+	// A stub toolchain that starts background work and then never
+	// returns. Before E4 the build phase had no deadline at all, so
+	// this hung the campaign, and cancellation reached only the direct
+	// child — background work outlived it.
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "child.pid")
-	fake := "#!/bin/sh\nsleep 300 &\necho $! > " + pidFile + "\nsleep 300\n"
+	stub := "#!/bin/sh\nsleep 300 &\necho $! > " + pidFile + "\nsleep 300\n"
 	bin := filepath.Join(dir, "go")
-	if err := os.WriteFile(bin, []byte(fake), 0o755); err != nil {
+	if err := os.WriteFile(bin, []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	caseDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(caseDir, "main.go"), []byte("package main\nfunc main(){}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ad := &GcAdapter{GoBin: bin, AdapterName: "wedged"}
+	ad := &GcAdapter{GoBin: bin, AdapterName: "stalled"}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	start := time.Now()
 	out := ad.Run(ctx, caseDir)
 	if elapsed := time.Since(start); elapsed > 15*time.Second {
-		t.Fatalf("wedged compiler not bounded: %s", elapsed)
+		t.Fatalf("stalled compiler not bounded by the build budget: %s", elapsed)
 	}
 	if out.Status != StatusBuildFailed {
-		t.Fatalf("wedged compiler classified %s, want build-failed", out.Status)
+		t.Fatalf("stalled compiler classified %s, want build-failed", out.Status)
 	}
-	// The spawned CHILD must be dead too (process-group kill).
+	// The background work must be gone too: cancellation covers the
+	// process group, so nothing the toolchain started keeps running
+	// after the case is done with. Signal 0 is a liveness probe.
 	if b, err := os.ReadFile(pidFile); err == nil {
-		pid := strings.TrimSpace(string(b))
+		pid, convErr := strconv.Atoi(strings.TrimSpace(string(b)))
+		if convErr != nil {
+			t.Fatalf("stub pid file: %v", convErr)
+		}
 		time.Sleep(200 * time.Millisecond)
-		if err := exec.Command("kill", "-0", pid).Run(); err == nil {
-			exec.Command("kill", "-9", pid).Run()
-			t.Fatalf("compiler's child %s survived cancellation — group kill leaked", pid)
+		if err := syscall.Kill(pid, 0); err == nil {
+			_ = syscall.Kill(pid, syscall.SIGKILL) // clean up the leak
+			t.Fatalf("background work (pid %d) outlived the build deadline", pid)
 		}
 	}
 }
 
-func TestFloodingSubjectHitsTheCap(t *testing.T) {
+func TestUnboundedSubjectOutputHitsTheCap(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs a binary")
 	}
@@ -216,7 +233,7 @@ func TestFloodingSubjectHitsTheCap(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	flood := `package main
+	runaway := `package main
 
 import "os"
 
@@ -230,12 +247,12 @@ func main() {
 	}
 }
 `
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(flood), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(runaway), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ad := &GcAdapter{AdapterName: "flood", Timeout: 30 * time.Second}
+	ad := &GcAdapter{AdapterName: "runaway", Timeout: 30 * time.Second}
 	out := ad.Run(context.Background(), dir)
 	if out.Status != StatusRunFailed || !strings.Contains(out.Detail, "cap") {
-		t.Fatalf("flooding subject classified %s (%s), want the output-cap refusal", out.Status, out.Detail)
+		t.Fatalf("runaway output classified %s (%s), want the output-cap refusal", out.Status, out.Detail)
 	}
 }

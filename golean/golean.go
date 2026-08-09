@@ -177,7 +177,7 @@ func Run(ctx context.Context, workDir string, cases []Case, cfg Config) (map[str
 	seenID := map[string]bool{}
 	for _, c := range cases {
 		// IDs are API inputs (E1; audit P2/P3: a crafted ID could
-		// traverse out of the case root or inject TSV fields). The CLI
+		// escape the case root or break the TSV field structure). The CLI
 		// generates safe IDs; the package validates for every caller.
 		if !caseIDRe.MatchString(c.ID) {
 			results[c.ID] = Result{Verdict: harness.VerdictHarnessError,
@@ -290,8 +290,8 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 	}
 
 	for _, f := range c.Features {
-		// Feature tags ride in a TSV column: a tab/newline would inject
-		// fields, a comma would split the list (E1).
+		// Feature tags ride in a TSV column: a tab/newline would break
+		// the field structure, a comma would split the list (E1).
 		if strings.ContainsAny(f, "\t\n\r,") || f == "" {
 			return "", Result{Verdict: harness.VerdictHarnessError,
 				Detail: fmt.Sprintf("feature tag %q is not manifest-safe", f)}, false
@@ -347,8 +347,8 @@ func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPat
 		fmt.Sprintf("LAKE_BUILD_TIMEOUT_SECONDS=%d", int(lakeBudget.Seconds())),
 		"GOTOOLCHAIN=local", "CGO_ENABLED=0",
 		// Pin the go environment for THEIR go-run oracle too (hunt F1:
-		// a $HOME/.config/go/env GOARCH/GOFLAGS poisons both sides
-		// identically through the HOME passthrough).
+		// a $HOME/.config/go/env GOARCH/GOFLAGS silently overrides both
+		// sides identically through the HOME passthrough).
 		"GOENV=off", "GOWORK=off",
 	}
 	if cfg.Jobs > 0 {

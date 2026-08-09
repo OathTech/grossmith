@@ -1084,7 +1084,7 @@ func (g *Generator) mapRangeFold(out *emitter) {
 	// W4: a commutative sum of map values is bounded by the map's element
 	// bound times the execution cap. The whole-fold contribution goes
 	// through writeBound as "+fixed" — already multiplied for its own
-	// iterations, and NESTING inside an outer loop poisons it there
+	// iterations, and NESTING inside an outer loop widens it to unknown there
 	// (arc-end review finding 8: the direct computation bypassed the
 	// loop rule). m's own writes cannot be stale here: the fold body
 	// writes nothing but acc.

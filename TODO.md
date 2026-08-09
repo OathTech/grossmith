@@ -66,7 +66,7 @@ now first-party. Mapping onto this backlog:
   conditional writes replacing instead of joining bounds; loop-body
   staleness) with reproduced 32-vs-64 divergences; all fixed
   (unconditional unsigned-minus keep-set, condDepth joins, loop writes
-  poison to unknown except construction-derived "+fixed"
+  widen to unknown except construction-derived "+fixed"
   contributions, the soundness screen widened 25→120 samples over the
   breach range). Final saturation 87.5% (n=2000) vs 97.6% before;
   off-tag population 2.4% → 12.5% (5x the cross-arch discrimination
@@ -99,6 +99,12 @@ now first-party. Mapping onto this backlog:
   (same-revision contract — now warned up front) and the durable
   regression corpus that would survive arcs is R4's checked-in
   fix-pair work.
+- **The repo is not gofmt-clean and nothing gates it** (noticed during
+  the 2026-08-09 wording pass): `gofmt -l` flags nine files, six of
+  them untouched by recent work — mostly struct-tag alignment that
+  drifted as fields were added. One mechanical commit plus a tier-1 CI
+  step; kept out of unrelated commits so the reformat does not bury a
+  real diff.
 - **nonConstExpr pureMode fallback lacks a conversions gate** (mid-arc
   review, pre-existing note): the `T(pureBase)` fallback emits a
   conversion without gating or marking `conversions` — visible inside

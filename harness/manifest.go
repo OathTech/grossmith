@@ -1,16 +1,23 @@
-// Batch descriptor and pre-execution validation (evidence arc E3; audit
-// P0: RunBatch discovered cases by glob and never verified file
-// integrity, so an injected extra.go was built and judged while the
-// recorded subject hash stayed clean, and a tampered subject was simply
-// rehashed).
+// Batch descriptor and pre-execution validation (evidence arc E3).
 //
-// The descriptor is the AUTHORITATIVE statement of what a batch is:
-// exact case IDs and the sha256 of every build input, including the
-// batch-root go.mod. ValidateBatch checks the tree against it — extra,
-// missing, duplicate, digest-mismatched, or symlinked entries refuse the
-// batch BEFORE anything executes. The remaining exposure is a concurrent
-// mutator racing validation against the build (documented residual;
-// closing it needs content-addressed snapshots — roadmap R4 territory).
+// A batch is meant to be a REPRODUCIBLE EXPERIMENT: batch.json names
+// the exact programs a verdict was computed over. The audit found that
+// claim unenforced — RunBatch discovered cases by glob and verified
+// nothing, so whatever sat in a case directory got compiled while the
+// recorded hash described only subject.go. Trees drift for ordinary
+// reasons: a leftover file from a previous run, a half-written case
+// from an interrupted one, an editor backup, a hand-edit during
+// debugging. Any of them silently changes what was measured.
+//
+// The descriptor is therefore the AUTHORITATIVE statement of what a
+// batch is: exact case IDs and the sha256 of every build input,
+// including the batch-root go.mod. ValidateBatch checks the tree
+// against it — extra, missing, duplicate, digest-mismatched, or
+// symlinked entries refuse the batch BEFORE anything executes, so a
+// drifted tree is a loud refusal instead of a quiet misattribution.
+// Residual: validation and the build are separate steps, so a tree
+// edited BETWEEN them is not covered; closing that needs
+// content-addressed snapshots (roadmap R4 territory).
 package harness
 
 import (
@@ -40,9 +47,9 @@ type ManifestCase struct {
 // Manifest is the batch descriptor, written after the last case and
 // before any judging.
 type Manifest struct {
-	Schema       string            `json:"schema"`
-	GeneratorRev string            `json:"generatorRev"`
-	GoVersion    string            `json:"goVersion"`
+	Schema       string `json:"schema"`
+	GeneratorRev string `json:"generatorRev"`
+	GoVersion    string `json:"goVersion"`
 	// RootFiles digests batch-root build inputs (go.mod).
 	RootFiles map[string]string `json:"rootFiles"`
 	Cases     []ManifestCase    `json:"cases"`
@@ -110,15 +117,16 @@ func ReadManifest(root string) (Manifest, error) {
 // ValidateBatch checks the tree against its descriptor and returns the
 // ordered case IDs. Refusals, all pre-execution:
 //   - a listed case directory or file missing, or its digest changed;
-//   - a file on disk beside the listed inputs (the injected-extra.go
-//     replication);
+//   - a file on disk beside the listed inputs (the extra-file case the
+//     audit reproduced: an unlisted .go file compiles into the case);
 //   - duplicate case IDs, or a case directory the descriptor never named;
 //   - any symlink among the case files or root inputs.
 func ValidateBatch(root string) ([]string, error) {
 	// The root itself and every case directory must be REAL directories
 	// (mid-arc review finding 3: a symlinked case dir passed — ReadDir
-	// follows it and Lstat only ever saw the final components, so a
-	// mutator could swap the target without touching the batch tree).
+	// follows it while Lstat only ever saw the final components, so the
+	// bytes actually compiled could live anywhere and change without
+	// the batch tree showing it).
 	if err := realDir(root); err != nil {
 		return nil, err
 	}
@@ -153,7 +161,7 @@ func ValidateBatch(root string) ([]string, error) {
 			}
 			onDisk[e.Name()] = true
 			if _, listed := mc.Files[e.Name()]; !listed {
-				return nil, fmt.Errorf("batch: %s/%s exists on disk but is not in the manifest — refusing the batch", mc.ID, e.Name())
+				return nil, fmt.Errorf("batch: %s/%s exists on disk but is not in the manifest — it would be compiled into the case, so the batch is refused", mc.ID, e.Name())
 			}
 		}
 		for name, want := range mc.Files {
@@ -167,9 +175,10 @@ func ValidateBatch(root string) ([]string, error) {
 		ids = append(ids, mc.ID)
 	}
 	// The ROOT is closed too (mid-arc review finding 4: "every build
-	// input digested" was overbroad — an injected root extra.go, go.work,
-	// or vendor/ was accepted; none changes a judged build under the
-	// pinned env today, but the descriptor's claim is the whole tree).
+	// input digested" was overbroad — an unlisted root extra.go,
+	// go.work, or vendor/ was accepted; none changes a judged build
+	// under the pinned env today, but the descriptor's claim is the
+	// whole tree, so it should mean the whole tree).
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -270,7 +279,7 @@ func checkFile(dir, name, want string) error {
 		return err
 	}
 	if got != want {
-		return fmt.Errorf("batch: %s digest %s does not match the manifest's %s — the tree changed after generation", path, got[:12], want[:12])
+		return fmt.Errorf("batch: %s digest %s does not match the manifest's %s — this file changed after the batch was generated", path, got[:12], want[:12])
 	}
 	return nil
 }

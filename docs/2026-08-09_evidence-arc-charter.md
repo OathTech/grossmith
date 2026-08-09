@@ -26,13 +26,26 @@ All work accumulates on branch `evidence-arc`; nothing merges to main
 until the arc-end sign-off. Decisions are pre-made HERE; the exit
 conditions say when to stop anyway.
 
+## Wording
+
+This arc's subject matter — file integrity, toolchain provenance,
+process supervision — invites security-incident vocabulary, and the
+first draft used it (decoy, injection, tampering, hostile). That
+register is wrong for the work and is banned here: nothing in this
+project defends against an adversary. It keeps a MEASUREMENT honest
+against ordinary causes — a leftover file from an earlier run, a
+second Go on the PATH, a hand-edit during debugging, a compiler that
+wedges. Write those causes plainly: unlisted file, changed after
+generation, PATH precedence, stalled, unbounded output. The same
+convention already applies project-wide after the witness arc.
+
 ## Ground rules
 
 - The three by-construction invariants and the E1-E4 effect discipline
   are unchanged. deps/golean is READ-ONLY: if a fix requires changing
   their script, the rung stops at a drafted request note instead.
-- Every fix lands with its adversarial witness in the same commit —
-  the audit's reproductions become permanent tests (its method IS the
+- Every fix lands with its negative witness in the same commit — the
+  audit's reproductions become permanent tests (its method IS the
   witness spec).
 - Campaign after every harness-touching rung (n=300 vs deps/golean at
   tip; the residual-failure floor is the one short-circuit class, two
@@ -77,8 +90,8 @@ audit's reproduction as its witness.
   nonempty goType, container-length consistency. Called from `Parse`
   AND from `Judge`/`Equal` (adapters hand back exported Documents).
   Invalid documents are infra failures, never matches or mismatches.
-  Witness: an adversarial table covering every forbidden combination
-  (replication: panic-without-payload and empty-goType judged match).
+  Witness: a rejection table covering every forbidden combination
+  (reproduced: panic-without-payload and empty-goType judged match).
 - `PanicPolicy`: exhaustive switch; unknown values are errors, not
   silent exact comparison.
 - golean API inputs validated: case IDs (shape, uniqueness, path
@@ -103,10 +116,12 @@ audit's reproduction as its witness.
   Record BOTH as explicit fields on the batch (making the language
   target a configurable campaign dimension is R5-territory; this arc
   records what is true).
-Witness: a decoy `go` executable placed FIRST in the ambient PATH must
-never be invoked during a campaign (the decoy records invocations to a
-file; the witness asserts the file stays empty and the verdicts match
-a clean run).
+Witness: a stand-in `go` placed EARLIER in PATH than the real one must
+not be the toolchain a campaign uses (it records its own invocations,
+so the witness proves both that ordinary lookup would have taken it and
+that the pinned resolution does not). Build hosts routinely carry
+several toolchains; the property is that the report names the one that
+ran.
 
 **E3 — experiment identity and atomicity.** The architecture rung.
 - Batches build in a STAGING sibling directory and publish by atomic
@@ -118,8 +133,9 @@ a clean run).
   driver, per-case go.mod, anything else in the case root).
   `RunBatch` validates the descriptor before executing anything:
   extra, missing, duplicate, or digest-mismatched files refuse the
-  batch (replication: an injected `extra.go` with an init panic was
-  built and judged while the recorded subject hash stayed clean).
+  batch (reproduced: an unlisted `extra.go` whose init panicked was
+  compiled into the case and changed its outcome, while the recorded
+  subject hash stayed clean).
   Both adapters run against the validated tree; the batch report
   binds to the descriptor digest, not just subject hashes.
 - Replay joins strengthened: strict-decode case records, directory
@@ -130,8 +146,8 @@ a clean run).
 - Campaigns of record refuse a dirty generator or clone tree unless
   `-allow-dirty` is passed, and a dirty run records the tree's content
   hash rather than the bare `-dirty` label.
-Exit (the audit's, verbatim): injected/extra/missing/changed files
-fail before execution; interruption preserves the previous batch;
+Exit (the audit's, in the arc's wording): extra, missing, or changed
+files fail before execution; interruption preserves the previous batch;
 offline inspection can prove which bytes both adapters executed.
 
 **E4 — resource guarantees made true.** Measure first, then fix.
@@ -160,9 +176,9 @@ offline inspection can prove which bytes both adapters executed.
   already watch becomes a generation-time guarantee), and a
   Stmts-vs-source-cost sanity bound in Validate (Stmts=4e6, Depth=0
   currently passes).
-Exit: the adversarial resource witnesses (cross-slice pattern, wedged
-compiler, output flood) return typed errors or stay inside measured,
-persisted budgets.
+Exit: the resource witnesses (cross-slice growth pattern, a compiler
+that never returns, unbounded subject output) return typed errors or
+stay inside measured, persisted budgets.
 
 ## Review plan (pre-authorized)
 
@@ -173,7 +189,7 @@ persisted budgets.
   atomicity under kill -9 at arbitrary points.
 - Arc end: one Opus review of the full branch diff plus a survey pass
   re-running the audit's own probes (malformed-document corpus,
-  NoObserve matrix, PATH shadow, injection, interruption).
+  NoObserve matrix, PATH precedence, extra-file, interruption).
 - Findings fixed on-branch; the merge itself waits for the user.
 
 ## Exit conditions

@@ -67,7 +67,7 @@ func TestWidthDepUntaggedObservesInWindow(t *testing.T) {
 // job's discrimination check runs against — stays a real minority, not
 // a rounding error. Measured 87.5% (n=2000) after the arc-end review's
 // soundness hardening (unsigned underflow, conditional-write joins,
-// loop-staleness poisoning); the pre-hardening decomposition (n=1000,
+// loop-staleness widening); the pre-hardening decomposition (n=1000,
 // 82.8%) attributed 287 tagged programs to window-fold constructs and
 // 537 to boundary/unknown-value arithmetic, and the hardening moved a
 // further ~5% from unsound-untagged to tagged. The charter's <50%
