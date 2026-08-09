@@ -549,6 +549,9 @@ func run(cfg config) error {
 	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(len(specs)) - 1}
 	rep.Composition = tagCount
 	rep.ReferenceOracle = refOracle
+	if rep.Budgets != nil {
+		rep.Budgets.RunTimeout = cfg.timeout.String()
+	}
 
 	if checkout != "" {
 		if err := runGoLean(ctx, &rep, cfg, work, checkout, featuresByID); err != nil {

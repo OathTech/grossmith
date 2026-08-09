@@ -373,7 +373,14 @@ func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPat
 		}
 	}
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	harness.KillGroup(cmd)
+	capped := harness.NewCappedBuffer(16 << 20)
+	cmd.Stdout, cmd.Stderr = capped, capped
+	err := cmd.Run()
+	out := capped.Bytes()
+	if capped.Truncated() {
+		out = append(out, []byte("\n[log truncated at the 16MB E4 cap]\n")...)
+	}
 	// The script's own narration (lake failures, worker-pool warnings, the
 	// pass/fail summary) is a campaign artifact, not noise (audit F2).
 	if werr := os.WriteFile(filepath.Join(absWork, "diff-coverage.log"), out, 0o644); werr != nil {

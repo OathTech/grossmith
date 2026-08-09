@@ -192,6 +192,9 @@ type BatchReport struct {
 	// natural-population batch (hunt F11: the artifact was previously
 	// indistinguishable from a plain batch).
 	Pairs int `json:"pairsPerCombo,omitempty"`
+	// Budgets are the E4 phase limits that governed this batch — the
+	// artifact states what bounded it.
+	Budgets *BatchBudgets `json:"budgets,omitempty"`
 	// ReferenceOracle / CloneNestedOracle: the STRUCTURED toolchain
 	// identities (E2). ReferenceOracle is the binary the reference
 	// adapter resolved and hashed; CloneNestedOracle is the SAME binary
@@ -305,8 +308,12 @@ type OracleIdentity struct {
 	ScriptSHA256 string `json:"scriptSha256,omitempty"`
 }
 
-// Oracle returns the adapter's structured identity.
+// Oracle returns the adapter's structured identity. The probe carries
+// its own deadline (E4: identity probes were unbounded).
 func (a *GcAdapter) Oracle(ctx context.Context) (OracleIdentity, error) {
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	bin, err := a.resolveGo()
 	if err != nil {
 		return OracleIdentity{}, err
@@ -389,11 +396,24 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	// (exit 128) under scratch HOMEs, foreign-owned checkouts, or
 	// corrupted repos above the case dir, killing the build for reasons
 	// that have nothing to do with the case.
-	build := exec.CommandContext(ctx, bin, "build", "-buildvcs=false", "-o", exe, ".")
+	// The BUILD gets its own deadline (E4; audit P1: -timeout wrapped
+	// only the run, so a wedged compiler hung a campaign forever), and
+	// every subprocess dies as a PROCESS GROUP (exec.CommandContext
+	// kills the direct child only; a compiler or subject that spawns
+	// ignores that).
+	buildCtx, buildCancel := context.WithTimeout(ctx, BuildTimeout)
+	defer buildCancel()
+	build := exec.CommandContext(buildCtx, bin, "build", "-buildvcs=false", "-o", exe, ".")
 	build.Dir = caseDir
 	build.Env = a.buildEnv()
-	if out, err := build.CombinedOutput(); err != nil {
-		return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build: %v: %s", err, out)}
+	buildOut := newCappedBuffer(BuildOutputCap)
+	build.Stdout, build.Stderr = buildOut, buildOut
+	killGroup(build)
+	if err := build.Run(); err != nil {
+		if buildCtx.Err() == context.DeadlineExceeded {
+			return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build timeout after %s (E4 phase budget)", BuildTimeout)}
+		}
+		return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build: %v: %s", err, buildOut.String())}
 	}
 	timeout := a.Timeout
 	if timeout <= 0 {
@@ -407,8 +427,13 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	}
 	run := exec.CommandContext(runCtx, abs)
 	run.Env = []string{}
-	var stdout, stderr bytes.Buffer
-	run.Stdout, run.Stderr = &stdout, &stderr
+	// Output caps (E4; audit P1: unbounded buffers let a flooding
+	// subject exhaust the harness before timeout classification). A
+	// truncated observation stream can never parse — classified below
+	// as the cap, not as a parse mystery.
+	stdout, stderr := newCappedBuffer(SubjectOutputCap), newCappedBuffer(BuildOutputCap)
+	run.Stdout, run.Stderr = stdout, stderr
+	killGroup(run)
 	err = run.Run()
 	switch {
 	case runCtx.Err() == context.DeadlineExceeded:
@@ -416,12 +441,69 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	case err != nil:
 		return Outcome{Status: StatusRunFailed, Detail: fmt.Sprintf("run: %v: %s", err, stderr.String())}
 	}
+	if stdout.truncated {
+		return Outcome{Status: StatusRunFailed, Detail: fmt.Sprintf("subject output exceeded the %dMB cap (E4 phase budget) — flooding, not an observation", SubjectOutputCap>>20)}
+	}
 	doc, err := observe.Parse(bytes.TrimSpace(stdout.Bytes()))
 	if err != nil {
 		return Outcome{Status: StatusRunFailed, Detail: "observation parse: " + err.Error()}
 	}
 	return Outcome{Status: StatusRan, Document: doc}
 }
+
+// E4 phase budgets — persisted in the batch report so the artifact says
+// what limits governed it.
+const (
+	// BuildTimeout bounds one case's compile phase.
+	BuildTimeout = 2 * time.Minute
+	// SubjectOutputCap bounds the observation stream (documents are
+	// small; the cap is flooding detection, not a size target).
+	SubjectOutputCap = 8 << 20
+	// BuildOutputCap bounds compiler/stderr diagnostics.
+	BuildOutputCap = 256 << 10
+)
+
+// BatchBudgets records the phase limits in the artifact (E4).
+type BatchBudgets struct {
+	// RunTimeout is per-case, adapter-configured; recorded by the
+	// producer alongside (the CLI's -timeout).
+	RunTimeout       string `json:"runTimeout,omitempty"`
+	BuildTimeout     string `json:"buildTimeout"`
+	SubjectOutputCap int    `json:"subjectOutputCap"`
+	BuildOutputCap   int    `json:"buildOutputCap"`
+}
+
+// cappedBuffer stores at most cap bytes and records overflow instead of
+// growing without bound.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	cap       int
+	truncated bool
+}
+
+func newCappedBuffer(cap int) *cappedBuffer { return &cappedBuffer{cap: cap} }
+
+// NewCappedBuffer / KillGroup: the E4 primitives, exported for sibling
+// adapters (golean's script invocation).
+func NewCappedBuffer(cap int) *cappedBuffer     { return newCappedBuffer(cap) }
+func (c *cappedBuffer) Truncated() bool         { return c.truncated }
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	room := c.cap - c.buf.Len()
+	if room <= 0 {
+		c.truncated = true
+		return len(p), nil // swallow, never block the child
+	}
+	if len(p) > room {
+		c.buf.Write(p[:room])
+		c.truncated = true
+		return len(p), nil
+	}
+	return c.buf.Write(p)
+}
+
+func (c *cappedBuffer) Bytes() []byte  { return c.buf.Bytes() }
+func (c *cappedBuffer) String() string { return c.buf.String() }
 
 // RunBatch judges every case directory under root (sorted) with the
 // reference and optional clone adapter.
@@ -444,6 +526,11 @@ func RunBatch(ctx context.Context, root string, ref Adapter, clone Adapter, poli
 	}
 
 	rep := BatchReport{Schema: BatchSchema, PanicPolicy: string(policy),
+		Budgets: &BatchBudgets{
+			BuildTimeout:     BuildTimeout.String(),
+			SubjectOutputCap: SubjectOutputCap,
+			BuildOutputCap:   BuildOutputCap,
+		},
 		ReferenceName: ref.Name(), Started: time.Now().UTC().Format(time.RFC3339)}
 	if rep.ReferenceIdentity, err = ref.Identity(ctx); err != nil {
 		return BatchReport{}, fmt.Errorf("reference identity: %w", err)

@@ -1,6 +1,9 @@
 package harness
 
 import (
+	"time"
+	"os/exec"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,4 +160,82 @@ func TestBatchValidationHardening(t *testing.T) {
 			t.Fatal("VerifyBatch accepted a batch without complete.json")
 		}
 	})
+}
+
+// The E4 harness witnesses: a wedged compiler is bounded by the build
+// budget with its process TREE killed, and a flooding subject is
+// classified as the output cap, not a parse mystery.
+func TestWedgedCompilerIsBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns processes")
+	}
+	// A fake "go" that spawns a child and sleeps forever: the old code
+	// hung on it and leaked the child past cancellation.
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	fake := "#!/bin/sh\nsleep 300 &\necho $! > " + pidFile + "\nsleep 300\n"
+	bin := filepath.Join(dir, "go")
+	if err := os.WriteFile(bin, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	caseDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(caseDir, "main.go"), []byte("package main\nfunc main(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ad := &GcAdapter{GoBin: bin, AdapterName: "wedged"}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	out := ad.Run(ctx, caseDir)
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Fatalf("wedged compiler not bounded: %s", elapsed)
+	}
+	if out.Status != StatusBuildFailed {
+		t.Fatalf("wedged compiler classified %s, want build-failed", out.Status)
+	}
+	// The spawned CHILD must be dead too (process-group kill).
+	if b, err := os.ReadFile(pidFile); err == nil {
+		pid := strings.TrimSpace(string(b))
+		time.Sleep(200 * time.Millisecond)
+		if err := exec.Command("kill", "-0", pid).Run(); err == nil {
+			exec.Command("kill", "-9", pid).Run()
+			t.Fatalf("compiler's child %s survived cancellation — group kill leaked", pid)
+		}
+	}
+}
+
+func TestFloodingSubjectHitsTheCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs a binary")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "case_00000")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flood := `package main
+
+import "os"
+
+func main() {
+	chunk := make([]byte, 1<<20)
+	for i := range chunk {
+		chunk[i] = 'x'
+	}
+	for i := 0; i < 32; i++ {
+		os.Stdout.Write(chunk)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(flood), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ad := &GcAdapter{AdapterName: "flood", Timeout: 30 * time.Second}
+	out := ad.Run(context.Background(), dir)
+	if out.Status != StatusRunFailed || !strings.Contains(out.Detail, "cap") {
+		t.Fatalf("flooding subject classified %s (%s), want the output-cap refusal", out.Status, out.Detail)
+	}
 }
