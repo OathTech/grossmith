@@ -193,6 +193,14 @@ type BatchReport struct {
 	// natural-population batch (hunt F11: the artifact was previously
 	// indistinguishable from a plain batch).
 	Pairs int `json:"pairsPerCombo,omitempty"`
+	// ReferenceOracle / CloneNestedOracle: the STRUCTURED toolchain
+	// identities (E2). ReferenceOracle is the binary the reference
+	// adapter resolved and hashed; CloneNestedOracle is the SAME binary
+	// as threaded into the clone's script oracle (plus the script hash) —
+	// recorded so "which go did the value comparison" is answerable from
+	// the artifact alone.
+	ReferenceOracle   *OracleIdentity `json:"referenceOracle,omitempty"`
+	CloneNestedOracle *OracleIdentity `json:"cloneNestedOracle,omitempty"`
 	// Composition is the per-tag program-presence histogram — the charter
 	// lists it as part of the conformance statement (rung 5 closed the
 	// gap: it was stdout-only). Populated by the producer from generated
@@ -281,6 +289,57 @@ func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
 	}
 	id += ", GOARCH=" + arch
 	return id + ")", nil
+}
+
+// OracleIdentity is the STRUCTURED toolchain identity (evidence arc E2;
+// audit P0: the report named a reference the nested oracle need not have
+// used). Path is absolute post-resolution; SHA256 is the binary's
+// content hash — the field that makes "which go judged this batch"
+// checkable offline. ScriptSHA256 is set only for nested script oracles.
+type OracleIdentity struct {
+	Path         string `json:"path"`
+	SHA256       string `json:"sha256"`
+	Version      string `json:"version"`
+	GOOS         string `json:"goos"`
+	GOARCH       string `json:"goarch"`
+	ModuleMode   string `json:"moduleMode"`
+	ScriptSHA256 string `json:"scriptSha256,omitempty"`
+}
+
+// Oracle returns the adapter's structured identity.
+func (a *GcAdapter) Oracle(ctx context.Context) (OracleIdentity, error) {
+	bin, err := a.resolveGo()
+	if err != nil {
+		return OracleIdentity{}, err
+	}
+	sum, err := FileSHA256(bin)
+	if err != nil {
+		return OracleIdentity{}, err
+	}
+	cmd := exec.CommandContext(ctx, bin, "version")
+	cmd.Env = a.buildEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return OracleIdentity{}, fmt.Errorf("%s version: %w", bin, err)
+	}
+	arch := a.GOARCH
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	return OracleIdentity{
+		Path: bin, SHA256: sum, Version: strings.TrimSpace(string(out)),
+		GOOS: runtime.GOOS, GOARCH: arch,
+		ModuleMode: "module (go 1.26)",
+	}, nil
+}
+
+// FileSHA256 hashes a file's content — the oracle-identity primitive.
+func FileSHA256(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(b)), nil
 }
 
 func (a *GcAdapter) buildEnv() []string {

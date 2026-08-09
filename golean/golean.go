@@ -39,6 +39,15 @@ type Config struct {
 	// LakeBuildTimeout raises GoLean's lake-build budget: a cold checkout
 	// builds for minutes, and their default budget is 120s. 0 means 20m.
 	LakeBuildTimeout time.Duration
+	// GoBin, when set, PINS the go binary GoLean's script oracle uses
+	// (evidence arc E2; audit P0: the script resolved `go` from ambient
+	// PATH, so the value comparison could run against a different Go
+	// than the recorded reference). deps/golean is read-only, so the pin
+	// is a PATH SHIM: a private directory whose only entry is a `go`
+	// symlink to this binary, placed FIRST on the script's PATH. Must be
+	// an absolute path. Empty preserves the ambient resolution (and the
+	// audit finding) — the CLI always sets it.
+	GoBin string
 }
 
 // Profile applies GoLean's capability profile to a generator config
@@ -298,6 +307,26 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 	return row, Result{}, true
 }
 
+// goShim builds the pin directory: exactly one entry, `go`, a symlink to
+// the pinned binary. Rebuilt idempotently per run.
+func goShim(absWork, goBin string) (string, error) {
+	if !filepath.IsAbs(goBin) {
+		return "", fmt.Errorf("golean: GoBin %q must be absolute", goBin)
+	}
+	dir := filepath.Join(absWork, "goshim")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	link := filepath.Join(dir, "go")
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := os.Symlink(goBin, link); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 // invoke runs diff-coverage against the manifest with a sanitized
 // environment, persisting its full output as a campaign artifact. Exit 1
 // alone does NOT mean FAIL rows exist — the script also exits 1 on
@@ -325,7 +354,20 @@ func invoke(ctx context.Context, script string, cfg Config, absWork, manifestPat
 	if cfg.Jobs > 0 {
 		env = append(env, fmt.Sprintf("GOLEAN_COVERAGE_JOBS=%d", cfg.Jobs))
 	}
-	for _, key := range []string{"PATH", "HOME", "TMPDIR", "GOCACHE", "GOPATH", "GOMODCACHE", "ELAN_HOME"} {
+	pathVal := os.Getenv("PATH")
+	if cfg.GoBin != "" {
+		shimDir, err := goShim(absWork, cfg.GoBin)
+		if err != nil {
+			return err
+		}
+		// Shim FIRST; the ambient tail stays for bash/lake/elan. Every
+		// `go` the script resolves is now the pinned binary.
+		pathVal = shimDir + string(os.PathListSeparator) + pathVal
+	}
+	if pathVal != "" {
+		env = append(env, "PATH="+pathVal)
+	}
+	for _, key := range []string{"HOME", "TMPDIR", "GOCACHE", "GOPATH", "GOMODCACHE", "ELAN_HOME"} {
 		if v := os.Getenv(key); v != "" {
 			env = append(env, key+"="+v)
 		}

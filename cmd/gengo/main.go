@@ -175,13 +175,20 @@ func run(cfg config) error {
 
 	// Preflight the toolchain BEFORE any write (E1; audit: a bad -go was
 	// discovered only after the batch existed, contradicting "validates
-	// every input before writing anything"). Probed whenever it will be
-	// used: judging, or an explicit -go for any purpose.
+	// every input before writing anything"), and resolve it ONCE to an
+	// absolute binary (E2; audit P0: the clone's nested oracle resolved
+	// `go` from ambient PATH — a different Go could do the value
+	// comparison than the one the report named). Everything downstream —
+	// both GcAdapters and the GoLean script shim — uses this one path.
+	var refOracle *harness.OracleIdentity
 	if judging || cfg.goBin != "" {
 		probe := &harness.GcAdapter{GoBin: cfg.goBin}
-		if _, err := probe.Identity(context.Background()); err != nil {
+		oid, err := probe.Oracle(context.Background())
+		if err != nil {
 			return fmt.Errorf("go toolchain preflight (-go %q): %w", cfg.goBin, err)
 		}
+		cfg.goBin = oid.Path
+		refOracle = &oid
 	}
 
 	if err := os.MkdirAll(cfg.out, 0o755); err != nil {
@@ -406,6 +413,7 @@ func run(cfg config) error {
 	rep.GeneratorRev = rev
 	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(len(specs)) - 1}
 	rep.Composition = tagCount
+	rep.ReferenceOracle = refOracle
 
 	if checkout != "" {
 		if err := runGoLean(ctx, &rep, cfg, checkout, featuresByID); err != nil {
@@ -623,8 +631,21 @@ func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, checko
 		cases[i] = golean.Case{ID: cr.ID, Dir: filepath.Join(cfg.out, cr.ID),
 			Features: featuresByID[cr.ID], Reference: cr.Reference}
 	}
+	// The nested oracle is the SAME pinned binary, in their module mode,
+	// via the PATH shim; the script's own hash makes the oracle pair
+	// checkable offline (E2).
+	if rep.ReferenceOracle != nil {
+		nested := *rep.ReferenceOracle
+		nested.ModuleMode = "GOPATH (GO111MODULE=off)"
+		scriptSum, err := harness.FileSHA256(filepath.Join(checkout, "scripts", "diff-coverage"))
+		if err != nil {
+			return fmt.Errorf("hashing the clone oracle script: %w", err)
+		}
+		nested.ScriptSHA256 = scriptSum
+		rep.CloneNestedOracle = &nested
+	}
 	results, err := golean.Run(ctx, filepath.Join(cfg.out, "golean-work"), cases, golean.Config{
-		Checkout: checkout, Jobs: cfg.workers,
+		Checkout: checkout, Jobs: cfg.workers, GoBin: cfg.goBin,
 	})
 	if err != nil {
 		return err
