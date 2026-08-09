@@ -1,3 +1,8 @@
+*REFERENCE (2026-08-09): external project-level audit; its replicated
+findings are being addressed by the evidence arc
+(`docs/2026-08-09_evidence-arc-charter.md`) with R4-R7 deferred on
+`docs/roadmap.md`, which owns sequencing.*
+
 # Grossmith comprehensive technical audit (2026-08-09)
 
 ## Executive assessment

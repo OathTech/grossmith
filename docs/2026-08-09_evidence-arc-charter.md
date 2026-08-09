@@ -1,3 +1,6 @@
+*ACTIVE (2026-08-09): governing the evidence arc, branch `evidence-arc`.
+Sequencing: `docs/roadmap.md`.*
+
 # The evidence arc: charter (2026-08-09)
 
 PURPOSE. grossmith is a Go program generator used for differential
