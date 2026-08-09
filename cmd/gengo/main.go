@@ -62,6 +62,12 @@ type config struct {
 	// tree (E3; audit P1: "-dirty" collapses arbitrary changes to one
 	// label). The dirty tree's content hash is recorded instead.
 	allowDirty bool
+	// allowLegacyVerify: let -verify exit 0 on a batch whose descriptors
+	// predate the E5 bindings (no reportFiles, no clone digests). The
+	// DEFAULT is a refusal: those fields are also absent after a
+	// hand-edit removed them, and an exit-0 with a reduced-scope print
+	// is exactly what a script consumer would miss (E5 re-review).
+	allowLegacyVerify bool
 	// explicit records which flags the user actually set (audit F5:
 	// -replay must refuse generation flags rather than ignore them).
 	explicit map[string]bool
@@ -84,6 +90,7 @@ func main() {
 	flag.StringVar(&cfg.verify, "verify", "", "batch directory to VERIFY offline against its descriptor (complete.json required; no generation)")
 	flag.IntVar(&cfg.pairs, "pairs", 0, "pairwise-coverage mode: generate this many cases per optional-construct PAIR (replaces -n)")
 	flag.BoolVar(&cfg.allowDirty, "allow-dirty", false, "permit judged campaigns from a dirty tree (records a content hash instead of refusing)")
+	flag.BoolVar(&cfg.allowLegacyVerify, "allow-legacy-verify", false, "let -verify accept a pre-E5 batch whose report/clone digests are absent (default: refuse the reduced scope)")
 	flag.Parse()
 	cfg.explicit = map[string]bool{}
 	flag.Visit(func(f *flag.Flag) {
@@ -284,7 +291,7 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 func run(cfg config) error {
 	if cfg.verify != "" {
 		for name := range cfg.explicit {
-			if name != "verify" {
+			if name != "verify" && name != "allow-legacy-verify" {
 				return fmt.Errorf("-%s does not apply to -verify", name)
 			}
 		}
@@ -295,10 +302,14 @@ func run(cfg config) error {
 		fmt.Printf("batch %s verified: %d cases, every case-input digest intact and bound to the manifest\n", cfg.verify, len(info.IDs))
 		if info.ReportsBound {
 			fmt.Printf("  report bound: batch.json/manifest.tsv digests match complete.json\n")
+		} else if cfg.allowLegacyVerify {
+			// reportFiles absent: written before the binding existed, or
+			// removed by a later hand-edit — indistinguishable offline.
+			// Only the explicit flag turns that into a pass, and the
+			// reduced scope is stated either way (review B1's lesson).
+			fmt.Printf("  report NOT bound (-allow-legacy-verify): reportFiles absent — batch.json and manifest.tsv are unchecked\n")
 		} else {
-			// A batch written before reportFiles existed — say what was
-			// NOT checked instead of overclaiming (review B1's lesson).
-			fmt.Printf("  report NOT bound: this batch predates reportFiles — batch.json and manifest.tsv are unchecked\n")
+			return fmt.Errorf("complete.json carries no reportFiles, so batch.json and manifest.tsv are unchecked — a pre-E5 batch or a later edit; pass -allow-legacy-verify to accept the reduced scope")
 		}
 		// The clone's side (E5, review B2): the work tree the clone
 		// compiled from, checked against the report's recorded digests.
@@ -327,8 +338,10 @@ func run(cfg config) error {
 					return err
 				}
 				fmt.Printf("  clone tree bound: every recorded clone source and work file matches golean-work/\n")
+			case rep.CloneName != "" && cfg.allowLegacyVerify:
+				fmt.Printf("  clone tree NOT bound (-allow-legacy-verify): no clone digests in the report — golean-work/ is unchecked\n")
 			case rep.CloneName != "":
-				fmt.Printf("  clone tree NOT bound: this batch predates clone source digests — golean-work/ is unchecked\n")
+				return fmt.Errorf("the report names clone %s but carries no clone source digests, so golean-work/ is unchecked — a pre-E5 batch or a later edit; pass -allow-legacy-verify to accept the reduced scope", rep.CloneName)
 			default:
 				fmt.Printf("  no clone in this batch\n")
 			}

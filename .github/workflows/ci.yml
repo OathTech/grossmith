@@ -26,6 +26,11 @@ jobs:
         run: go test -count=1 ./...
       - name: race (pure logic; -short skips the binary-building witnesses)
         run: go test -race -short -count=1 ./...
+      - name: race, resource witnesses
+        # The E4/E5 subprocess witnesses under the race detector too —
+        # the plain -short race leg skips them (E5: previously they ran
+        # only without -race).
+        run: go test -race -count=1 -run 'TestStalledCompilerIsBounded|TestUnboundedSubjectOutputHitsTheCap|TestIdentityProbesBounded' ./harness/
       - name: conformance smoke
         # A 50-case judged batch must run 50/50 on the reference — catches
         # driver/toolchain regressions the unit witnesses cannot (the

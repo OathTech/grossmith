@@ -7,6 +7,18 @@ package golean
 // was only half answerable offline. translate() writes main.go as a
 // byte copy of subject.go; these digests turn that from an assumption
 // into a recorded, re-checkable fact.
+//
+// SCOPE (E5 re-review): the digests cover the translated case sources
+// under cases/ and the three named run artifacts at the work root —
+// nothing else. In particular, diff-coverage makes its OWN copy of each
+// main.go under artifacts/go-run/<id>/ (alongside its harness file) and
+// hands THAT to `go run`; artifacts/ and diff-coverage.log are
+// diagnostics outside every digest. The bytes executed on that nested
+// path are provable only TRANSITIVELY: the recorded script sha256 plus
+// the checkout identity pin the copier, and the copier's input is the
+// digested cases/<id>/main.go. Direct coverage of the nested copies
+// would digest a tree their script owns the layout of — deferred, and
+// the batch's verification summary claims only what is direct.
 
 import (
 	"fmt"

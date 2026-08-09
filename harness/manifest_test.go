@@ -146,6 +146,21 @@ func TestBatchValidationHardening(t *testing.T) {
 		}
 		wantRefusal(t, root, "neither a declared case nor a batch artifact")
 	})
+	t.Run("root symlink under an allowlisted name", func(t *testing.T) {
+		// A symlink NAMED like a batch artifact (batch.json here, but
+		// manifest.json is the same rule) would point the artifact
+		// somewhere the batch tree cannot vouch for (E5 re-review nit:
+		// the refusal landed without this witness).
+		root := manifestFixture(t)
+		target := filepath.Join(t.TempDir(), "elsewhere.json")
+		if err := os.WriteFile(target, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(root, "batch.json")); err != nil {
+			t.Fatal(err)
+		}
+		wantRefusal(t, root, "symlink")
+	})
 	t.Run("unlisted root directory", func(t *testing.T) {
 		root := manifestFixture(t)
 		if err := os.MkdirAll(filepath.Join(root, "vendor"), 0o755); err != nil {

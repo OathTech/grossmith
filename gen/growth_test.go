@@ -210,6 +210,43 @@ func TestLoopNestFreezeMechanism(t *testing.T) {
 	}
 }
 
+// TestSwapMovesStringLengthBounds (E5 re-review, the blocking finding):
+// the multi-assign swap bypassed both writeBound and setStrLen, so
+// `s1, s2 = s2, s1` moved a loop-grown string into a binding still
+// carrying its small pre-swap byte bound — and the top-level fold gate
+// then admitted the grown string (measured: 52 trips past a 48-trip
+// gate at an accepted config). The bound must move with the value,
+// under the same context rules as the numeric bound. White-box, like
+// the freeze mechanism test: the structural gate witness cannot see
+// bounds, so the arithmetic gets its own deterministic check.
+func TestSwapMovesStringLengthBounds(t *testing.T) {
+	mk := func() (*Generator, *binding, *binding) {
+		g := &Generator{}
+		g.vars = []binding{
+			{name: "s0", typ: Str(), maxLenBound: 4},
+			{name: "s1", typ: Str(), maxLenBound: 500},
+		}
+		return g, &g.vars[0], &g.vars[1]
+	}
+	g, a, b := mk()
+	g.swapStrLen(a, b)
+	if a.maxLenBound != 500 || b.maxLenBound != 4 {
+		t.Fatalf("top-level swap: bounds %d/%d, want exchanged 500/4", a.maxLenBound, b.maxLenBound)
+	}
+	g, a, b = mk()
+	g.condDepth = 1
+	g.swapStrLen(a, b)
+	if a.maxLenBound != 500 || b.maxLenBound != 500 {
+		t.Fatalf("conditional swap: bounds %d/%d, want joined 500/500", a.maxLenBound, b.maxLenBound)
+	}
+	g, a, b = mk()
+	g.loopDepth = 1
+	g.swapStrLen(a, b)
+	if a.maxLenBound != 0 || b.maxLenBound != 0 {
+		t.Fatalf("in-loop swap: bounds %d/%d, want unknown 0/0", a.maxLenBound, b.maxLenBound)
+	}
+}
+
 // TestStringRangeOperandsGated is the E5 string-gate witness: string
 // growth previously had no gate at all — 17 of 3,000 DefaultConfig
 // seeds emitted a string range over a concat-grown string (the same

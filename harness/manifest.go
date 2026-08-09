@@ -247,8 +247,11 @@ func ValidateBatch(root string) ([]string, error) {
 type VerifyInfo struct {
 	IDs []string
 	// ReportsBound: complete.json carried report digests and they all
-	// matched. False only for a batch written before reportFiles existed;
-	// the caller must say the report is unchecked in that case.
+	// matched. False when reportFiles is absent — a batch written before
+	// the binding existed, or a descriptor a later hand-edit removed the
+	// field from; the two are indistinguishable offline, so the caller
+	// must treat the reduced scope as a refusal unless explicitly told
+	// otherwise, and say what went unchecked either way.
 	ReportsBound bool
 }
 
@@ -281,9 +284,12 @@ type Complete struct {
 	Schema         string `json:"schema"`
 	ManifestSHA256 string `json:"manifestSha256"`
 	// ReportFiles digests the batch's report artifacts (batch.json when
-	// the batch was judged, manifest.tsv always). Absent only in batches
-	// written before E5; when present it is CLOSED — a report artifact on
-	// disk that it does not name refuses.
+	// the batch was judged, manifest.tsv always). Every batch this code
+	// writes carries it; absence means an older producer or a later
+	// hand-edit, which read the same offline — VerifyBatch reports the
+	// distinction it cannot make and the CLI refuses by default. When
+	// present it is CLOSED — a report artifact on disk that it does not
+	// name refuses.
 	ReportFiles map[string]string `json:"reportFiles,omitempty"`
 }
 

@@ -234,9 +234,10 @@ new rung. Recorded as items land:
   witnessed with the `{}` descriptor the old 16-character stand-in
   stepped over. Legacy batches verify with their reduced scope stated
   plainly.
-- **C1 CLOSED.** All fourteen exec sites carry a budget and group
-  cancellation: `Identity`/`Oracle` (witnessed with stalled and
-  pipe-holding stubs against both), golean's and gengo's git probes,
+- **C1 CLOSED.** Every subprocess launch site (twelve in non-test
+  code) carries a budget and group cancellation: `Identity`/`Oracle`
+  (witnessed with stalled and pipe-holding stubs against both),
+  golean's and gengo's git probes,
   and a hard outer ceiling on the diff-coverage invocation.
   `IdentityTimeout`, the clone log cap (previously an inline 16MB
   literal), the lake budget, and the run ceiling join the persisted
@@ -259,11 +260,41 @@ new rung. Recorded as items land:
   staging marker binds its out dir (witnessed: a file merely named
   manifest.json, and a marker for a different out dir, both refuse
   untouched). `dirtyContentHash` uses `-uall -z`, so files inside
-  untracked directories and git-quoted paths are hashed (witnessed).
-  Root-level symlinks under allowlisted names refuse. The membership
+  untracked directories are hashed (witnessed) and paths git would
+  quote are no longer skipped (the `-z` format; no dedicated witness —
+  and an untracked symlink's target remains content-blind, named by
+  the status line only).
+  Root-level symlinks under allowlisted names refuse (witnessed after
+  the re-review's nit). The membership
   note's multiplicity proof is re-corrected for general positions
   (odd term difference; 2-adic valuation of 31^k - 1 at most 7 at
   alphabet sizes); the Phase 2 banner states the E1 narrowing.
+- **The E5 re-review (2026-08-09) and its fixes.** The pre-authorized
+  re-review of the E5 diff verified A1's freeze independently (its own
+  patched-copy sweep reproduced seed 174813 exactly), confirmed
+  B1/B3/B4/C1 with the prior review's probes re-run, and confirmed the
+  deferred bound half is recorded honestly. It returned ONE blocking
+  finding, fixed on-branch: the multi-assign swap bypassed both string
+  length trackers, so `s1, s2 = s2, s1` moved a loop-grown string into
+  a binding with a small stale byte bound — measured driving a
+  top-level fold 52 trips past a 48-trip gate at an accepted config.
+  `swapStrLen` now moves the bound with the value under the same
+  context rules as the numeric bound (white-box witness). Its
+  residuals, also addressed: the B2 scope limit is now STATED (the
+  nested oracle's go-run copies are covered transitively, not
+  directly — `golean/workdigest.go`); `-verify` REFUSES reduced-scope
+  batches by default (`-allow-legacy-verify` opts in, for both the
+  report and clone bindings — absence of the fields is
+  indistinguishable offline from a later edit, and an exit-0 with a
+  print is what a script consumer would miss); the race CI leg runs
+  the subprocess witnesses; the root-symlink refusal has its witness;
+  TODO's E5 entry is re-trued; the "fourteen exec sites" count is
+  corrected to twelve launch sites.
+- **The post-rung campaign** (n=300 vs deps/golean at tip, required
+  after every harness-touching rung): 291 match, 9 clone-infra — all
+  nine in the one known quarantine class (short-circuit-operand
+  frontend refusal), so no new signal. `gengo -verify` on the
+  published campaign binds case inputs, report, and clone tree.
 - **Explicitly deferred, with reasons:** `setsid()` escapees still
   leak until process exit and cost a silent 5s `WaitDelay` each (the
   real worst case is budget + 5s) — closing that needs PID-namespace

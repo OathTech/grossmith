@@ -158,11 +158,16 @@ did not — `batch.json` and `manifest.tsv` were undigested and
 `golean-work/`, which holds the source the CLONE compiled, sat outside
 the descriptor; a rewritten conformance statement passed `gengo -verify`
 with exit 0.
-CLOSED BY E5 (2026-08-09, pending the arc-end re-review):
-`complete.json` digests the report artifacts, the clone's per-case
-source and work files are recorded in `batch.json` and re-checked by
-`golean.VerifyWork`, and the completion check fails closed. Witnessed at
-the library level and end-to-end through the CLI, including in CI.
+CLOSED BY E5 (2026-08-09; the re-review confirmed, with one scope
+limit): `complete.json` digests the report artifacts, the clone's
+per-case source and work files are recorded in `batch.json` and
+re-checked by `golean.VerifyWork`, and the completion check fails
+closed. Witnessed at the library level and end-to-end through the CLI,
+including in CI. SCOPE: the clone-side digests cover the translated
+sources and named run artifacts; the nested oracle's own go-run copies
+under `golean-work/artifacts/` are covered TRANSITIVELY (recorded
+script sha + checkout identity + digested input), not directly — stated
+in `golean/workdigest.go`.
 
 **E4 — resource guarantees made true.** Measure first, then fix.
 - MEASURE the cross-slice range/append amplification: instrument

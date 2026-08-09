@@ -116,16 +116,18 @@ now first-party. Mapping onto this backlog:
   helper-calls-helper in 15.2%, ~7.5 nested call sites/program), and
   cannot fit 4e6 without deleting those populations — the note
   recommends an emission-time cost budget instead; Validate's formula
-  is marked a plausibility screen until Mike decides. B1: `golean-work/`
-  — the clone's actual source — is outside the descriptor. B2:
-  `batch.json` and `manifest.tsv` are undigested; a rewritten
-  conformance statement passes `gengo -verify` with exit 0. B3:
-  `-verify` panics on a truncated `complete.json` (unguarded `[:12]`).
-  B4: the completion binding is fail-open on an unreadable file. C1:
-  `GcAdapter.Identity`, the probe gating every batch, has no timeout.
-  Plus: W4 saturation drifted to 0.25pp of its failure threshold with a
-  stale recorded figure, and two E4 witnesses assert less than they
-  read.
+  is marked a plausibility screen until Mike decides. B1-B4 CLOSED
+  2026-08-09 (report digests in `complete.json`, the clone's compiled
+  sources and work files recorded and re-checked, fail-closed strict
+  completion decode, digest-shape guards; the E5 re-review's B2 scope
+  limit — the nested oracle's go-run copies are covered transitively,
+  not directly — is stated in `golean/workdigest.go`). C1 CLOSED the
+  same day (every subprocess launch site budgeted and group-killed,
+  budgets persisted). W4 saturation re-measured with history in the
+  docstring (87.30% n=2000, ~3pp margin); the weak witnesses now assert
+  what they read. REMAINING for the arc: the A1 universal-bound design
+  decision above — everything else in this entry is done and
+  re-reviewed.
 - **The repo is not gofmt-clean and nothing gates it** (noticed during
   the 2026-08-09 wording pass): `gofmt -l` flags nine files, six of
   them untouched by recent work — mostly struct-tag alignment that

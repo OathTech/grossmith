@@ -343,6 +343,22 @@ func (g *Generator) assign(out *emitter) {
 // pre-iteration state (another string the loop grows may feed it), so
 // it stays unknown; under a conditional the old value may survive, so
 // JOIN with prev.
+// swapStrLen applies the swap's exchange to the byte-length bounds:
+// exchange at the top level, JOIN under a conditional (either order of
+// values may have survived), unknown inside a loop (interleaved writes
+// can grow either side between re-executions of the swap).
+func (g *Generator) swapStrLen(a, b *binding) {
+	switch {
+	case g.loopDepth > 0:
+		a.maxLenBound, b.maxLenBound = 0, 0
+	case g.condDepth > 0:
+		j := boundMax(a.maxLenBound, b.maxLenBound)
+		a.maxLenBound, b.maxLenBound = j, j
+	default:
+		a.maxLenBound, b.maxLenBound = b.maxLenBound, a.maxLenBound
+	}
+}
+
 func (g *Generator) setStrLen(target *binding, newLen, prev int64) {
 	if target.typ.Shape != ShapeString {
 		return
@@ -708,6 +724,16 @@ func (g *Generator) multiAssign(out *emitter) {
 				a.bound, b.bound = j, j
 			default:
 				a.bound, b.bound = b.bound, a.bound
+			}
+			if a.typ.Shape == ShapeString {
+				// The byte-length bound moves with the value, under the
+				// same three context rules as the numeric bound (E5
+				// re-review, the one blocking finding: this arm bypassed
+				// both writeBound and setStrLen, so a swap moved a
+				// loop-grown string into a binding still carrying its
+				// small pre-swap bound — measured driving a top-level
+				// fold 52 trips past a 48-trip gate).
+				g.swapStrLen(a, b)
 			}
 			out.line("%s, %s = %s, %s", a.name, b.name, b.name, a.name)
 		}},
