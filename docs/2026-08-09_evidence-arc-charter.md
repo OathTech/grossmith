@@ -197,6 +197,69 @@ concat-into-string-range entirely ungated. `GcAdapter.Identity` — the
 probe gating every batch — has no budget at all, so "identity probes
 bounded" is also unmet. Details and E5 scope: the status document.
 
+**E5 — arc-end findings closed.** (Added 2026-08-09 after the arc-end
+review; the user's call was to keep the arc whole rather than land
+E0-E2 separately.) Scope = the review's seven blockers plus the weak
+witnesses it recorded, exactly as itemized in the status document.
+Nothing here is new surface; every item makes an existing claim true.
+
+- **A1 — the range gate accounts for re-execution.** The bound a range
+  gate consults must cover growth that enclosing loops can re-execute:
+  widen `maxLenBound` so any slice appended-to anywhere inside an
+  enclosing loop carries the loop-trip product, and re-derive the
+  executed-statement bound in `Validate` from that. If the widened
+  bound over-masks ranges at DefaultConfig (measured, not guessed),
+  fall back to a post-pass over the emitted body. The witness is the
+  measured counterexample — seed 174813 at `Stmts=1, Depth=2,
+  LoopCap=250` replays under the statement counter and lands inside
+  the re-derived bound — plus the 60k-seed sweep re-run. A static
+  shape check is not an acceptable witness; that is what missed this.
+- **A2 — strings get the two rules slices got.** A growth mask on
+  string concatenation while a range is open, and a length gate on
+  `stringRangeFold` analogous to `rangeableVars`' 8*LoopCap check.
+  Witness: the 17-in-3000 natural occurrence rate drops to zero for
+  ungated shapes, and a targeted seed replays bounded.
+- **B1 — the report binds to the batch.** `complete.json` (written
+  last, already atomic) records digests of `batch.json` and
+  `manifest.tsv`; `gengo -verify` checks them. The reviewer's
+  rewritten-report reproduction becomes the witness: an edited total,
+  verdict, or reference identity fails verification.
+- **B2 — the clone's compiled source is covered.** `golean-work/`
+  holds the `main.go` the clone actually compiled and sits outside the
+  descriptor. Record the per-case digest of the clone's assembled
+  source in `batch.json` (additive field); `-verify` recomputes it.
+  Our adapter owns `golean-work/`, so deps/golean is untouched. If
+  this turns out to need their script changed, the rung stops at a
+  drafted request note per the ground rules.
+- **B3/B4 — verification refuses what it cannot read.** The `[:12]`
+  slice guarded; an unreadable or malformed `complete.json` is a
+  refusal, never a skip; `schema` compared; strict decode. Witness:
+  `{}`, truncated, and absent completion files all refuse with typed
+  errors.
+- **C1 — every subprocess is budgeted.** `Identity` gets a budget and
+  `killGroup` (it gates every batch and today has neither); then the
+  sweep: all twelve `exec.Cmd` sites either carry
+  context+budget+killGroup or a comment stating why not (a short-lived
+  probe of a trusted binary may opt out, but it says so). Witness: the
+  stalled-stub test runs against `Identity` and `Oracle`, including a
+  child that holds the pipe open.
+- **Measurements and witnesses re-trued.** W4 saturation re-measured
+  and the docstring corrected (currently 0.25pp from its threshold
+  with a stale figure — decide headroom or re-tune, and record the
+  off-tag population size); the flood witness asserts bytes actually
+  flowed before the cap; the group-kill assertion fails when the pid
+  file is missing instead of silently passing; the build-timeout
+  message reports the deadline that actually expired; the golean 16MB
+  cap and `LakeBuildTimeout` join `BatchBudgets`; `goroot()` stops
+  hard-coding `/usr/local/go` so the E2 witness cannot silently skip;
+  CI exercises `gengo -verify` and the race leg stops skipping both
+  E4 witnesses.
+
+Exit: the E3 and E4 exit conditions above flip from UNMET to met, each
+via its measured witness; the smaller recorded items are fixed or
+explicitly deferred with a line in the status document; then one
+re-review of the E5 diff before the arc-end sign-off ask.
+
 ## Review plan (pre-authorized)
 
 - Mid-arc after E3: one Opus code review scoped to E1-E3 — the trust
