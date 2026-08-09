@@ -215,8 +215,9 @@ func (g *Generator) maybeDeclareInner(out *emitter) *binding {
 	name := fmt.Sprintf("w%d", g.innerSeq)
 	g.innerSeq++
 	g.mark(append([]string{"block_decl", "short_decl"}, t.Tags()...)...)
-	out.line("%s := %s", name, g.expr(t, g.cfg.ExprFuel).text)
-	g.vars = append(g.vars, binding{name: name, typ: t})
+	init := g.expr(t, g.cfg.ExprFuel)
+	out.line("%s := %s", name, init.text)
+	g.vars = append(g.vars, binding{name: name, typ: t, bound: init.bound})
 	w := g.vars[len(g.vars)-1]
 	return &w
 }
@@ -245,14 +246,31 @@ func (g *Generator) projectInner(out *emitter, w binding) {
 			o := &g.vars[g.pickOuter(t)]
 			o.reads++
 			g.mark("assignment", "conversions")
-			g.markWidthDep(o.typ)
+			// W4: the projection's conversion diverges only when the
+			// inner value can land differently (same rule as the
+			// conversion arm); the += accumulates under the loop rule.
+			contrib := w.bound
+			if contrib > typeMagCap(o.typ) {
+				contrib = typeMagCap(o.typ)
+			}
+			if o.typ.Unsigned && !w.typ.Unsigned {
+				contrib = typeMagCap(o.typ)
+				if o.typ.Bits == 0 {
+					g.markWidthDep(o.typ)
+				}
+			} else if o.typ.Bits == 0 && widthDivergent(w.bound) {
+				g.markWidthDep(o.typ)
+			}
+			g.writeBound(o, contrib, "+")
+			g.markWidthDepBounded(o.typ, o.bound)
 			out.line("%s += %s(%s)", o.name, o.typ.GoName(), w.name)
 			return
 		}
 		o := &g.vars[g.pickOuter(w.typ)]
 		o.reads++
 		g.mark("assignment")
-		g.markWidthDep(o.typ)
+		g.writeBound(o, w.bound, "+")
+		g.markWidthDepBounded(o.typ, o.bound)
 		out.line("%s += %s", o.name, w.name)
 	}
 }
@@ -288,6 +306,7 @@ func (g *Generator) assign(out *emitter) {
 			rhs = g.literal(target.typ)
 		}
 	}
+	g.writeBound(target, rhs.bound, "=")
 	out.line("%s = %s", target.name, rhs.text)
 }
 
@@ -335,10 +354,6 @@ func (g *Generator) compoundAssign(out *emitter) {
 	}
 	op := pick(g.c, ops)
 	g.mark("assignment", "ints")
-	switch op {
-	case "+=", "-=", "*=":
-		g.markWidthDep(target.typ)
-	}
 	// The right side is forced non-constant for the same reason binary
 	// arithmetic operands are: the target must not let Go fold the whole
 	// thing into an overflowing constant.
@@ -349,6 +364,19 @@ func (g *Generator) compoundAssign(out *emitter) {
 	if rhs.text == target.name {
 		target.reads--
 		rhs = g.literal(target.typ)
+	}
+	// W4: the mark follows the post-write bound, not the operator class.
+	switch op {
+	case "+=", "-=":
+		g.writeBound(target, rhs.bound, "+")
+		g.markWidthDepBounded(target.typ, target.bound)
+	case "*=":
+		g.writeBound(target, rhs.bound, "*")
+		g.markWidthDepBounded(target.typ, target.bound)
+	default:
+		// Bitwise-assign: value-preserving for in-window values; the
+		// doubled max covers sign quirks (the bitwise-arm convention).
+		g.writeBound(target, boundMul(boundMax(target.bound, rhs.bound), 2), "=")
 	}
 	out.line("%s %s %s", target.name, op, rhs.text)
 }
@@ -373,7 +401,8 @@ func (g *Generator) incDec(out *emitter) {
 		op = "--"
 	}
 	g.mark("assignment", "ints")
-	g.markWidthDep(target.typ)
+	g.writeBound(target, 1, "+")
+	g.markWidthDepBounded(target.typ, target.bound)
 	out.line("%s%s", target.name, op)
 }
 
@@ -389,7 +418,9 @@ func (g *Generator) elemAssign(out *emitter) {
 	} else {
 		g.mark("arrays", "index", "assignment")
 	}
-	out.line("%s[%s] = %s", arr.name, g.indexExpr(arr.indexBound()), g.expr(*arr.typ.Elem, g.cfg.ExprFuel).text)
+	rhs := g.expr(*arr.typ.Elem, g.cfg.ExprFuel)
+	g.writeBound(arr, rhs.bound, "max")
+	out.line("%s[%s] = %s", arr.name, g.indexExpr(arr.indexBound()), rhs.text)
 }
 
 // appendStmt grows a slice: s = append(s, elem). Growth per execution is one
@@ -412,6 +443,7 @@ func (g *Generator) appendStmt(out *emitter) {
 	} else {
 		elem = g.expr(*s.typ.Elem, g.cfg.ExprFuel)
 	}
+	g.writeBound(s, elem.bound, "max")
 	out.line("%s = append(%s, %s)", s.name, s.name, elem.text)
 }
 
@@ -421,7 +453,9 @@ func (g *Generator) mapWrite(out *emitter) {
 	g.resetRisk()
 	m := &g.vars[pick(g.c, g.mapVars(nil))]
 	g.mark("maps", "assignment")
-	out.line("%s[%s] = %s", m.name, pick(g.c, m.keys), g.expr(*m.typ.Elem, g.cfg.ExprFuel).text)
+	rhs := g.expr(*m.typ.Elem, g.cfg.ExprFuel)
+	g.writeBound(m, rhs.bound, "max")
+	out.line("%s[%s] = %s", m.name, pick(g.c, m.keys), rhs.text)
 }
 
 // mapDelete removes one alphabet key — present or not, deterministically.
@@ -442,14 +476,20 @@ func (g *Generator) commaOk(out *emitter) {
 	m.reads++
 	xi, _ := g.pickVar(*m.typ.Elem)
 	target := g.vars[xi].name
+	varTarget := true
 	// Element-target minority (rung 2, R2a's comma-ok forms):
 	// a[i], ok = m[k] — the two-phase semantics apply to the index too.
 	if g.enabled("index", "multi_assign") && g.c.chance(3) {
 		if cands := g.indexableVarsOfElem(*m.typ.Elem); len(cands) > 0 {
 			arr := &g.vars[pick(g.c, cands)]
+			g.writeBound(arr, m.bound, "max")
 			target = fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.indexBound()))
 			g.mark("index", "multi_assign")
+			varTarget = false
 		}
+	}
+	if varTarget {
+		g.writeBound(&g.vars[xi], m.bound, "=")
 	}
 	oki, _ := g.pickVar(Bool())
 	g.mark("maps", "comma_ok", "assignment")
@@ -482,6 +522,7 @@ func (g *Generator) callStmt(out *emitter) {
 		if g.enabled("index", "multi_assign") && g.c.chance(4) {
 			if cands := g.indexableVarsOfElem(rt); len(cands) > 0 {
 				arr := &g.vars[pick(g.c, cands)]
+				g.writeBound(arr, h.resultBounds[i], "max")
 				targets[i] = fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.indexBound()))
 				g.mark("index", "multi_assign")
 				continue
@@ -490,6 +531,7 @@ func (g *Generator) callStmt(out *emitter) {
 		if idx, ok := g.pickVar(rt); ok && !seen[idx] {
 			seen[idx] = true
 			targets[i] = g.vars[idx].name
+			g.writeBound(&g.vars[idx], h.resultBounds[i], "=")
 		}
 	}
 	g.mark("helpers", "assignment")
@@ -563,6 +605,7 @@ func (g *Generator) multiAssign(out *emitter) {
 			a.reads++
 			b.reads++
 			g.mark("assignment", "multi_assign")
+			a.bound, b.bound = b.bound, a.bound
 			out.line("%s, %s = %s, %s", a.name, b.name, b.name, a.name)
 		}},
 		// u, a[u%N] = e1, e2 — the aliased-target shape: the index reads
@@ -592,6 +635,8 @@ func (g *Generator) multiAssign(out *emitter) {
 				}
 				rhs1 := g.witness(g.expr(u.typ, g.cfg.ExprFuel-1), u.typ)
 				rhs2 := g.witness(g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1), *arr.typ.Elem)
+				g.writeBound(u, rhs1.bound, "=")
+				g.writeBound(arr, rhs2.bound, "max")
 				// The index operand is R2b's sharpest multi-assign site:
 				// phase-one operand evaluation vs phase-two stores is
 				// exactly what the witness order fingerprints. Plain-int
@@ -629,13 +674,17 @@ func (g *Generator) multiAssign(out *emitter) {
 						}
 						seen[vi] = true
 						targets[k] = g.vars[vi].name
-						rhs[k] = g.witness(g.expr(t, g.cfg.ExprFuel-1), t).text
+						rv := g.witness(g.expr(t, g.cfg.ExprFuel-1), t)
+						g.writeBound(&g.vars[vi], rv.bound, "=")
+						rhs[k] = rv.text
 					}},
 					{name: "elem", weight: 2, ok: g.enabled("index") && len(g.indexableVars()) > 0, emit: func() {
 						arr := &g.vars[pick(g.c, g.indexableVars())]
 						// The index operand witnesses inside indexExpr.
 						targets[k] = fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.indexBound()))
-						rhs[k] = g.witness(g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1), *arr.typ.Elem).text
+						rv := g.witness(g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1), *arr.typ.Elem)
+						g.writeBound(arr, rv.bound, "max")
+						rhs[k] = rv.text
 						g.mark("index")
 					}},
 					{name: "blank", weight: 1, ok: true, emit: func() {
@@ -709,7 +758,10 @@ func (g *Generator) typeSwitchStmt(out *emitter) {
 		acc := &g.vars[ai]
 		acc.reads++
 		g.mark("assignment", "conversions")
-		g.markWidthDep(acc.typ)
+		// The binding's dynamic payload has no tracked bound: unknown
+		// accumulation, so the bound rule marks (as before, honestly).
+		g.writeBound(acc, 0, "+")
+		g.markWidthDepBounded(acc.typ, acc.bound)
 		out.line("%s += int(%s)", acc.name, w)
 	}
 	out.dedent()
@@ -835,19 +887,25 @@ func (g *Generator) linearizedRisk(out *emitter) {
 	g.spendRisk()
 	g.mark("division", "short_decl")
 	g.note(tagPanicRisk)
-	left0 := g.nonConstExpr(t, 1).text
-	out.line("%s := (%s / %s)", t0, left0, g.variable(t).text)
+	left0 := g.nonConstExpr(t, 1)
+	out.line("%s := (%s / %s)", t0, left0.text, g.variable(t).text)
 	g.resetRisk()
 	g.spendRisk()
 	g.mark("modulo", "short_decl")
 	g.note(tagPanicRisk)
-	left1 := g.nonConstExpr(t, 1).text
-	out.line("%s := (%s %% %s)", t1, left1, g.variable(t).text)
+	left1 := g.nonConstExpr(t, 1)
+	div1 := g.variable(t)
+	out.line("%s := (%s %% %s)", t1, left1.text, div1.text)
 	g.resetRisk()
 	i, _ := g.pickVar(t)
 	target := &g.vars[i]
 	g.mark("assignment", "ints")
+	// The variable-divisor division above is the MinInt/-1 family: its
+	// mark stays UNCONDITIONAL, matching divModExpr (W4's conservative
+	// keep-set — the historically-burned cross-arch case). The bound
+	// still flows: |quotient| <= |dividend|, |remainder| < |divisor|.
 	g.markWidthDep(t)
+	g.writeBound(target, boundAdd(left0.bound, div1.bound), "=")
 	g.note("linearized")
 	out.line("%s = (%s + %s)", target.name, t0, t1)
 }
@@ -922,15 +980,21 @@ func (g *Generator) sliceTripleStmt(out *emitter) {
 	g.resetRisk()
 	elem := g.expr(*s.typ.Elem, g.cfg.ExprFuel-1)
 	g.mark("slices", "append", "assignment")
+	// The within-cap append writes s[b] through the shared backing: the
+	// BASE binding's bound must absorb it (a stale base bound would
+	// under-tag every later element read).
+	g.writeBound(s, elem.bound, "max")
 	out.line("%s = append(%s, %s)", tn, tn, elem.text)
 	g.resetRisk()
 	ai, _ := g.pickVar(Int(0, false))
 	acc := &g.vars[ai]
 	acc.reads++
 	g.mark("slices", "range", "conversions", "assignment", "control_flow", "short_decl")
-	// The *31 chain on platform int is wrap-capable: width-dependent, the
-	// same convention as the rung-4 aggregate folds.
+	// The *31 chain on platform int is wrap-capable and reaches the
+	// window in a handful of iterations: unconditionally width-dependent
+	// (the W4 keep-set), and the accumulator's bound goes unknown.
 	g.markWidthDep(acc.typ)
+	g.writeBound(acc, 0, "+")
 	out.open("for _, %s := range %s {", en, tn)
 	out.line("%s = %s*31 + int(%s)", acc.name, acc.name, en)
 	out.close()
@@ -964,7 +1028,11 @@ func (g *Generator) mapRangeFold(out *emitter) {
 	g.tmpSeq++
 	g.mark("maps", "range", "assignment", "control_flow", "short_decl")
 	g.note("map_range_fold")
-	g.markWidthDep(acc.typ)
+	// W4: a commutative sum of map values is bounded by the map's element
+	// bound times the execution cap — small maps of small values no
+	// longer tag every program they appear in.
+	acc.bound = boundAdd(acc.bound, boundMul(m.bound, g.maxExec))
+	g.markWidthDepBounded(acc.typ, acc.bound)
 	out.open("for _, %s := range %s {", e, m.name)
 	out.line("%s += %s", acc.name, e)
 	out.close()
@@ -992,9 +1060,11 @@ func (g *Generator) stringRangeFold(out *emitter) {
 	r := fmt.Sprintf("r%d", g.loopSeq)
 	g.loopSeq++
 	g.mark("strings", "string_range", "range", "conversions", "assignment", "control_flow", "short_decl")
-	// += on platform int is wrap-capable arithmetic: width-dependent by the
-	// house convention (conservative over values, exact over operations).
+	// The i*31 + rune chain is position-weighted and window-reaching over
+	// long strings: unconditionally width-dependent (the W4 keep-set),
+	// accumulator bound unknown.
 	g.markWidthDep(acc.typ)
+	g.writeBound(acc, 0, "+")
 	out.open("for %s, %s := range %s {", idx, r, s.name)
 	out.line("%s += %s*31 + int(%s)", acc.name, idx, r)
 	out.close()
@@ -1013,7 +1083,9 @@ func (g *Generator) fieldAssign(out *emitter) {
 		}
 	}
 	g.mark("structs", "field", "assignment")
-	out.line("%s.%s = %s", sv.name, src.field, g.expr(fieldType, g.cfg.ExprFuel).text)
+	rhs := g.expr(fieldType, g.cfg.ExprFuel)
+	g.writeBound(sv, rhs.bound, "max")
+	out.line("%s.%s = %s", sv.name, src.field, rhs.text)
 }
 
 // rangeStmt loops over a fixed-length array: termination comes free with the
@@ -1048,8 +1120,10 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 	if arr.typ.Elem.Shape == ShapeInt {
 		elemBase = arr
 	}
+	g.loopDepth++
 	g.consumeIndex(out, index, elemBase)
 	g.block(out, depth, 1+g.c.draw(2), true)
+	g.loopDepth--
 	out.close()
 }
 
@@ -1082,8 +1156,10 @@ func (g *Generator) forStmt(out *emitter, depth int) {
 	// early-exit path and the loop can compute nothing at all (34% of the
 	// prototype's loops did, before this ordering).
 	// A plain for-loop's index has no container behind it: no element.
+	g.loopDepth++
 	g.consumeIndex(out, index, nil)
 	g.block(out, depth, 1+g.c.draw(2), true)
+	g.loopDepth--
 	out.close()
 }
 
@@ -1101,24 +1177,45 @@ func (g *Generator) consumeIndex(out *emitter, index string, base *binding) {
 	// The element read is an index operation and folds through a
 	// conversion when types differ — both gated AND marked (audit F1).
 	elemOK := base != nil && g.enabled("index")
+	// W4: an index's magnitude is execution-bounded (a container's length
+	// grows at most one per executed statement; a for-loop count is capped
+	// by LoopCap <= that). The index-only fold therefore accumulates a
+	// known contribution and, under DefaultConfig, never reaches the
+	// window — the single biggest source of the old 98% saturation.
+	idxBound := boundAdd(g.maxExec, 8)
 	if g.enabled("conversions") && g.corner != "kinds" {
 		t := pick(g.c, intTypes())
 		if i, ok := g.pickVar(t); ok {
 			target := &g.vars[i]
 			target.reads++
 			g.mark("assignment", "conversions")
-			g.markWidthDep(target.typ)
 			if elemOK && g.c.chance(2) {
 				base.reads++
 				g.mark("index")
 				g.note("element_fold")
 				elem := fmt.Sprintf("%s[%s]", base.name, index)
+				contrib := base.bound
 				if !base.typ.Elem.Equal(t) {
 					elem = fmt.Sprintf("%s(%s)", t.GoName(), elem)
+					if contrib > typeMagCap(t) {
+						contrib = typeMagCap(t)
+					}
+					if t.Unsigned && !base.typ.Elem.Unsigned {
+						contrib = typeMagCap(t)
+						if t.Bits == 0 {
+							g.markWidthDep(t)
+						}
+					} else if t.Bits == 0 && widthDivergent(base.bound) {
+						g.markWidthDep(t)
+					}
 				}
+				g.writeBound(target, boundAdd(idxBound, contrib), "+")
+				g.markWidthDepBounded(target.typ, target.bound)
 				out.line("%s += %s(%s) + %s", target.name, target.typ.GoName(), index, elem)
 				return
 			}
+			g.writeBound(target, idxBound, "+")
+			g.markWidthDepBounded(target.typ, target.bound)
 			out.line("%s += %s(%s)", target.name, target.typ.GoName(), index)
 			return
 		}
@@ -1127,7 +1224,6 @@ func (g *Generator) consumeIndex(out *emitter, index string, base *binding) {
 		target := &g.vars[i]
 		target.reads++
 		g.mark("assignment")
-		g.markWidthDep(target.typ)
 		if elemOK && base.typ.Elem.Equal(Int(0, false)) && g.c.chance(2) {
 			// Conversion-free element fold: plain-int elements into the
 			// plain-int target — legal under conversions-off mixes AND
@@ -1135,9 +1231,13 @@ func (g *Generator) consumeIndex(out *emitter, index string, base *binding) {
 			base.reads++
 			g.mark("index")
 			g.note("element_fold")
+			g.writeBound(target, boundAdd(idxBound, base.bound), "+")
+			g.markWidthDepBounded(target.typ, target.bound)
 			out.line("%s += %s + %s[%s]", target.name, index, base.name, index)
 			return
 		}
+		g.writeBound(target, idxBound, "+")
+		g.markWidthDepBounded(target.typ, target.bound)
 		out.line("%s += %s", target.name, index)
 	}
 }

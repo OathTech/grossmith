@@ -2,6 +2,7 @@ package gen
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -16,6 +17,72 @@ import (
 type value struct {
 	text     string
 	constant bool
+	// bound is the OPT-IN static magnitude bound (W4, survey finding
+	// F10): 0 means UNKNOWN (conservative — every arm that does not
+	// prove a bound leaves it 0, which over-tags, never under-tags);
+	// b > 0 means |value| <= b on every execution. Bounds exist so
+	// width_dependent can fire on operations that can genuinely reach
+	// the 32-bit window instead of on every plain-int touch (~98%
+	// saturation before W4).
+	bound int64
+}
+
+// Bound arithmetic: saturating, unknown-propagating. widthDivergeAt is
+// the 32-bit window: a plain int/uint operation whose result magnitude
+// can reach it may differ between GOARCH widths; below it, wrap-capable
+// ops produce identical values on both.
+const (
+	boundCap       = int64(1) << 62
+	widthDivergeAt = int64(1) << 31
+)
+
+func boundAdd(a, b int64) int64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > boundCap-b {
+		return boundCap
+	}
+	return a + b
+}
+
+func boundMul(a, b int64) int64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > boundCap/b {
+		return boundCap
+	}
+	return a * b
+}
+
+func boundMax(a, b int64) int64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// widthDivergent is the marking rule over a result bound: unknown or
+// window-reaching results may differ across widths.
+func widthDivergent(b int64) bool { return b == 0 || b >= widthDivergeAt }
+
+// typeMagCap is the largest magnitude a value of t can carry — what a
+// truncating conversion clamps a bound to. Platform-width and 64-bit
+// kinds return boundCap (no useful clamp).
+func typeMagCap(t Type) int64 {
+	switch t.Bits {
+	case 8:
+		return 1 << 8
+	case 16:
+		return 1 << 16
+	case 32:
+		return 1 << 32
+	}
+	return boundCap
 }
 
 func boolToInt(b bool) int {
@@ -93,30 +160,40 @@ func (g *Generator) literal(t Type) value {
 		return value{text: fmt.Sprintf("%q", pick(g.c, stringWords)), constant: true}
 	case ShapeArray:
 		// A composite literal is never a Go constant, so boundary elements
-		// are safe: no compile-time folding can reject them.
+		// are safe: no compile-time folding can reject them. The composite's
+		// bound is the max ELEMENT bound (what an element read yields).
 		elems := make([]string, t.Len)
+		eb := int64(1)
 		for i := range elems {
-			elems[i] = g.literal(*t.Elem).text
+			ev := g.literal(*t.Elem)
+			elems[i] = ev.text
+			eb = boundMax(eb, ev.bound)
 		}
-		return value{text: fmt.Sprintf("%s{%s}", t.GoName(), strings.Join(elems, ", "))}
+		return value{text: fmt.Sprintf("%s{%s}", t.GoName(), strings.Join(elems, ", ")), bound: eb}
 	case ShapeStruct:
-		// Field-keyed composite; never a constant.
+		// Field-keyed composite; never a constant. Bound = max field bound.
 		parts := make([]string, len(t.Fields))
+		fb := int64(1)
 		for i, f := range t.Fields {
-			parts[i] = f.Name + ": " + g.literal(f.Typ).text
+			fv := g.literal(f.Typ)
+			parts[i] = f.Name + ": " + fv.text
+			fb = boundMax(fb, fv.bound)
 		}
-		return value{text: fmt.Sprintf("%s{%s}", t.Name, strings.Join(parts, ", "))}
+		return value{text: fmt.Sprintf("%s{%s}", t.Name, strings.Join(parts, ", ")), bound: fb}
 	case ShapeSlice:
 		// Totality (second review: literal() fell through to the int path
 		// for these shapes — a latent panic one refactor away). A fresh
 		// two-element composite owns its backing.
-		return value{text: fmt.Sprintf("%s{%s, %s}", t.GoName(),
-			g.literal(*t.Elem).text, g.literal(*t.Elem).text)}
+		e0, e1 := g.literal(*t.Elem), g.literal(*t.Elem)
+		return value{text: fmt.Sprintf("%s{%s, %s}", t.GoName(), e0.text, e1.text),
+			bound: boundMax(e0.bound, e1.bound)}
 	case ShapeMap:
-		return value{text: t.GoName() + "{}"}
+		// Empty composite: reads yield the zero value until writes land.
+		return value{text: t.GoName() + "{}", bound: 1}
 	case ShapeInterface:
 		info := g.ifaceByName(t.Name)
-		return value{text: fmt.Sprintf("%s(%s)", t.Name, g.literal(g.defined[info.source].typ).text)}
+		inner := g.literal(g.defined[info.source].typ)
+		return value{text: fmt.Sprintf("%s(%s)", t.Name, inner.text), bound: inner.bound}
 	}
 	if g.boundaryLiteralDrawn() {
 		return g.typedText(t, pick(g.c, t.boundaryLiterals()))
@@ -137,13 +214,40 @@ func (g *Generator) boundaryLiteralDrawn() bool {
 }
 
 // typedText wraps a pre-formatted literal text in the type's conversion and
-// notes the boundary tag (knowledge-as-data).
+// notes the boundary tag (knowledge-as-data). The literal's magnitude is a
+// known bound — boundary literals are exactly the window-sized values the
+// W4 rule cares about, so parsing them is what lets `x + MaxInt32` mark
+// while `x + 60` does not.
 func (g *Generator) typedText(t Type, text string) value {
 	g.note(tagBoundary)
-	if t.Bits == 0 && !t.Unsigned && t.Named == "" {
-		return value{text: text, constant: true}
+	bound := int64(0)
+	if n, err := strconv.ParseInt(text, 10, 64); err == nil {
+		bound = litBound(n)
+	} else if u, err := strconv.ParseUint(text, 10, 64); err == nil {
+		bound = boundCap // magnitude beyond int64: unknown-large
+		if u <= uint64(boundCap) {
+			bound = int64(u)
+			if bound == 0 {
+				bound = 1
+			}
+		}
 	}
-	return value{text: fmt.Sprintf("%s(%s)", t.GoName(), text), constant: true}
+	if t.Bits == 0 && !t.Unsigned && t.Named == "" {
+		return value{text: text, constant: true, bound: bound}
+	}
+	return value{text: fmt.Sprintf("%s(%s)", t.GoName(), text), constant: true, bound: bound}
+}
+
+// litBound is a literal's magnitude as a bound (0 is stored as 1: bound 0
+// is reserved for UNKNOWN).
+func litBound(n int64) int64 {
+	if n < 0 {
+		n = -n
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
 }
 
 // nonZeroLiteral is a divisor literal that cannot trap: the zero is excluded
@@ -166,9 +270,9 @@ func (g *Generator) nonZeroLiteral(t Type) value {
 func (g *Generator) intLiteral(t Type, n int) value {
 	if t.Bits == 0 && !t.Unsigned && t.Named == "" {
 		// Plain `int`: an untyped decimal already has the right default type.
-		return value{text: fmt.Sprintf("%d", n), constant: true}
+		return value{text: fmt.Sprintf("%d", n), constant: true, bound: litBound(int64(n))}
 	}
-	return value{text: fmt.Sprintf("%s(%d)", t.GoName(), n), constant: true}
+	return value{text: fmt.Sprintf("%s(%d)", t.GoName(), n), constant: true, bound: litBound(int64(n))}
 }
 
 // variable returns a variable of type t as a value. The one-per-type
@@ -176,7 +280,7 @@ func (g *Generator) intLiteral(t Type, n int) value {
 func (g *Generator) variable(t Type) value {
 	if i, ok := g.pickVar(t); ok {
 		g.vars[i].reads++
-		return value{text: g.vars[i].name, constant: false}
+		return value{text: g.vars[i].name, constant: false, bound: g.vars[i].bound}
 	}
 	// Unreachable while declare() keeps the one-per-type floor; the literal
 	// keeps the leaf total anyway (every type carries a cheap total literal).
@@ -254,7 +358,8 @@ func (g *Generator) fieldRead(t Type) value {
 	sv := &g.vars[src.varIdx]
 	sv.reads++
 	g.mark("structs", "field")
-	return value{text: sv.name + "." + src.field}
+	// The binding bound covers every field/element written to the struct.
+	return value{text: sv.name + "." + src.field, bound: sv.bound}
 }
 
 // arrayExpr is a whole-array value: a variable (assignment then COPIES — Go
@@ -336,13 +441,26 @@ func (g *Generator) nonConstExpr(t Type, fuel int) value {
 }
 
 // markWidthDep records that an operation of type t can yield different values
-// on 32- and 64-bit targets. Conservative over VALUES but exact over
-// operations: wrap-capable arithmetic, unsigned complement, and conversions
-// TO a platform-width type qualify; division, right shift, comparisons, and
-// min/max are value-preserving or magnitude-bounded and do not.
+// on 32- and 64-bit targets. Since W4 (survey finding F10: ~98% program
+// saturation made the tag useless for stratification) marking is
+// BOUND-AWARE at the call sites: an operation marks only when its result's
+// static magnitude bound is unknown or reaches the 32-bit window
+// (widthDivergent). Below the window, wrap-capable plain-int arithmetic
+// produces identical values on both widths. Unconditional marks remain
+// where the OPERATION itself is width-sensitive at any magnitude: unsigned
+// complement (2^W-1-x), signed-into-unsigned platform conversions
+// (uint(-1)), and the *31 accumulator folds (agg/wit/map/slice/string —
+// their chains reach the window by construction).
 func (g *Generator) markWidthDep(t Type) {
 	if t.Shape == ShapeInt && t.Bits == 0 {
 		g.note(tagWidthDependent)
+	}
+}
+
+// markWidthDepBounded is the W4 rule: mark only a window-reaching result.
+func (g *Generator) markWidthDepBounded(t Type, bound int64) {
+	if widthDivergent(bound) {
+		g.markWidthDep(t)
 	}
 }
 
@@ -359,8 +477,14 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			left := g.nonConstExpr(t, fuel-1)
 			right := g.expr(t, fuel-1)
 			g.mark("ints")
-			g.markWidthDep(t)
-			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
+			b := boundAdd(left.bound, right.bound)
+			if op == "*" {
+				b = boundMul(left.bound, right.bound)
+			}
+			// W4: `60 + v0` cannot reach the window; `v * v` of unknowns
+			// or `x + MaxInt32` can.
+			g.markWidthDepBounded(t, b)
+			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text), bound: b}
 		}},
 		{name: "division", weight: 2, ok: g.enabled("division"), emit: func() {
 			out = g.divModExpr(t, fuel, "/", "division")
@@ -373,7 +497,11 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			left := g.nonConstExpr(t, fuel-1)
 			right := g.expr(t, fuel-1)
 			g.mark("bitwise")
-			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
+			// Bit ops are value-preserving across widths for in-window
+			// values (two's complement low bits agree); the doubled max
+			// covers the sign-quirk cases (-60 &^ 3 == -64).
+			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text),
+				bound: boundMul(boundMax(left.bound, right.bound), 2)}
 		}},
 		{name: "shift", weight: 2, ok: g.enabled("shifts"), emit: func() {
 			// The shift count is an untyped constant in [0,7]: a negative
@@ -382,10 +510,6 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			left := g.nonConstExpr(t, fuel-1)
 			g.mark("shifts")
 			op := pick(g.c, []string{"<<", ">>"})
-			if op == "<<" {
-				// Left shift wraps at the width; right shift only shrinks.
-				g.markWidthDep(t)
-			}
 			count := g.c.draw(8)
 			if g.boundaryLiteralDrawn() {
 				// Shift AT and PAST the width: legal for a non-constant left
@@ -399,7 +523,16 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				count = w - 1 + g.c.draw(3)
 				g.note(tagBoundary)
 			}
-			out = value{text: fmt.Sprintf("(%s %s %d)", left.text, op, count)}
+			b := left.bound
+			if op == "<<" {
+				// Left shift wraps at the width; a shift is a bounded
+				// multiplication, so the W4 rule applies. AT-width counts on
+				// plain int always diverge (x<<31 vs a 64-bit register) —
+				// covered because 1<<31 alone reaches the window.
+				b = boundMul(left.bound, int64(1)<<uint(count))
+				g.markWidthDepBounded(t, b)
+			}
+			out = value{text: fmt.Sprintf("(%s %s %d)", left.text, op, count), bound: b}
 		}},
 		// The kinds corner SUPPRESSES conversions (GoLean R3's constraint:
 		// `int(x)` laundering masks the kind-defaulting bug class — their
@@ -417,45 +550,69 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			}
 			from := pick(g.c, fromPool)
 			g.mark("conversions")
-			// Converting INTO a platform-width type cuts at that width:
-			// uint(-1) is 2^32-1 or 2^64-1 depending on the target.
-			g.markWidthDep(t)
 			inner := g.nonConstExpr(from, fuel-1)
-			out = value{text: fmt.Sprintf("%s(%s)", t.GoName(), inner.text)}
+			// Truncation clamps the magnitude — even an unknown source is
+			// bounded after a sized conversion.
+			b := typeMagCap(t)
+			if inner.bound != 0 && inner.bound < b {
+				b = inner.bound
+			}
+			// W4's conversion rule, replacing the old any-platform-target
+			// mark: a conversion diverges across widths when the source
+			// VALUE can land differently in the target —
+			//   - signed into an unsigned target of platform (or larger)
+			//     width: uint(-1) is 2^32-1 or 2^64-1 — any magnitude,
+			//     sign is what matters and bounds don't track sign; the
+			//     result is also window-sized, so the bound resets large;
+			//   - a window-reaching (or unknown) source into a platform
+			//     target: int(uint32(3e9)) is negative on 32-bit only.
+			// Sub-window sources into same-signedness targets are
+			// value-preserving on both widths.
+			if t.Unsigned && !from.Unsigned {
+				b = typeMagCap(t) // uint8(-10) is 246; uint(-10) is 2^W-10
+				if t.Bits == 0 {
+					g.markWidthDep(t)
+				}
+			} else if t.Bits == 0 && widthDivergent(inner.bound) {
+				g.markWidthDep(t)
+			}
+			out = value{text: fmt.Sprintf("%s(%s)", t.GoName(), inner.text), bound: b}
 		}},
 		{name: "index", weight: 2, ok: g.enabled("arrays", "index") && g.hasArrayOfElem(t), emit: func() {
 			i := g.pickArrayOfElem(t)
 			arr := &g.vars[i]
 			arr.reads++
 			g.mark("arrays", "index")
-			out = value{text: fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.typ.Len))}
+			out = value{text: fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.typ.Len)), bound: arr.bound}
 		}},
 		{name: "slice-index", weight: 2, ok: g.enabled("slices", "index") && len(g.sliceVars(&t)) > 0, emit: func() {
 			s := &g.vars[pick(g.c, g.sliceVars(&t))]
 			s.reads++
 			g.mark("slices", "index")
-			out = value{text: fmt.Sprintf("%s[%s]", s.name, g.indexExpr(s.minLen))}
+			out = value{text: fmt.Sprintf("%s[%s]", s.name, g.indexExpr(s.minLen)), bound: s.bound}
 		}},
 		{name: "slice-len", weight: 1,
 			ok: t.Equal(Int(0, false)) && g.enabled("len", "slices") && len(g.sliceVars(nil)) > 0, emit: func() {
 				s := &g.vars[pick(g.c, g.sliceVars(nil))]
 				s.reads++
 				g.mark("len", "slices")
-				out = value{text: fmt.Sprintf("len(%s)", s.name)}
+				// Lengths are execution-bounded: appends add at most one
+				// element per executed statement.
+				out = value{text: fmt.Sprintf("len(%s)", s.name), bound: boundAdd(g.maxExec, 8)}
 			}},
 		{name: "map-read", weight: 2, ok: g.enabled("maps") && len(g.mapVars(&t)) > 0, emit: func() {
 			m := &g.vars[pick(g.c, g.mapVars(&t))]
 			m.reads++
 			g.mark("maps")
 			// A missing key yields the zero value — deterministic, no panic.
-			out = value{text: fmt.Sprintf("%s[%s]", m.name, pick(g.c, m.keys))}
+			out = value{text: fmt.Sprintf("%s[%s]", m.name, pick(g.c, m.keys)), bound: m.bound}
 		}},
 		{name: "map-len", weight: 1,
 			ok: t.Equal(Int(0, false)) && g.enabled("len", "maps") && len(g.mapVars(nil)) > 0, emit: func() {
 				m := &g.vars[pick(g.c, g.mapVars(nil))]
 				m.reads++
 				g.mark("len", "maps")
-				out = value{text: fmt.Sprintf("len(%s)", m.name)}
+				out = value{text: fmt.Sprintf("len(%s)", m.name), bound: boundAdd(g.maxExec, 8)}
 			}},
 		{name: "field", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(&t)) > 0, emit: func() {
 			out = g.fieldRead(t)
@@ -465,7 +622,8 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			// any expression without effect or panic-identity hazards.
 			h := g.helpers[pick(g.c, g.singleResultHelpers(t))]
 			g.mark("helpers")
-			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1))}
+			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1)),
+				bound: h.resultBounds[0]}
 		}},
 		{name: "dispatch", weight: 2, ok: g.enabled("interfaces", "methods") && len(g.dispatchSites(t)) > 0, emit: func() {
 			// Dynamic dispatch through a never-nil interface over a pure
@@ -522,7 +680,10 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			ok: t.Equal(Int(0, false)) && g.enabled("len", "strings"), emit: func() {
 				g.mark("len", "strings")
 				s := g.variable(Str())
-				out = value{text: fmt.Sprintf("len(%s)", s.text), constant: s.constant}
+				// String lengths grow at most a constant per executed
+				// statement (the linear-growth rule): execution-bounded.
+				out = value{text: fmt.Sprintf("len(%s)", s.text), constant: s.constant,
+					bound: boundMul(boundAdd(g.maxExec, 8), 8)}
 			}},
 		{name: "string-index", weight: 2, ok: t.Equal(Int(8, true)) && g.enabled("strings", "string_index"), emit: func() {
 			// s[i] yields a BYTE (uint8) at a byte offset, never a rune —
@@ -539,7 +700,7 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 					w := pick(g.c, indexableWords)
 					i := g.c.draw(len(w))
 					g.mark("strings", "string_index")
-					out = value{text: fmt.Sprintf("%q[%d]", w, i)}
+					out = value{text: fmt.Sprintf("%q[%d]", w, i), bound: 256}
 				}},
 				{name: "panicky", weight: 1 + 3*boolToInt(g.guardBias),
 					ok: g.riskOK() && len(g.varsOfShape(ShapeString, nil)) > 0, emit: func() {
@@ -549,7 +710,7 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 						iv := g.variable(Int(0, false))
 						g.mark("strings", "string_index")
 						g.note(tagPanicRisk)
-						out = value{text: fmt.Sprintf("%s[%s]", s.name, iv.text)}
+						out = value{text: fmt.Sprintf("%s[%s]", s.name, iv.text), bound: 256}
 					}},
 			}).emit()
 		}},
@@ -563,7 +724,9 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			left := g.witness(g.nonConstExpr(t, fuel-1), t)
 			right := g.witness(g.expr(t, fuel-1), t)
 			g.mark(name)
-			out = value{text: fmt.Sprintf("%s(%s, %s)", name, left.text, right.text)}
+			// min/max select one operand: magnitude-preserving.
+			out = value{text: fmt.Sprintf("%s(%s, %s)", name, left.text, right.text),
+				bound: boundMax(left.bound, right.bound)}
 		}},
 		{name: "unary", weight: 1, ok: true, emit: func() {
 			// Complement and negation both require a non-constant operand:
@@ -571,17 +734,26 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			operand := g.nonConstExpr(t, fuel-1)
 			if g.enabled("bitwise") && (t.Unsigned || g.c.chance(2)) {
 				g.mark("bitwise")
+				b := boundAdd(operand.bound, 1)
 				if t.Unsigned {
 					// Unsigned complement is 2^W-1-x: width-dependent for any
-					// operand. Signed complement is -x-1: width-independent.
+					// operand magnitude (the OPERATION is width-sized), so
+					// this mark stays unconditional; the result is
+					// window-sized too. Signed complement is -x-1:
+					// width-independent.
 					g.markWidthDep(t)
+					b = typeMagCap(t)
 				}
-				out = value{text: fmt.Sprintf("(^%s)", operand.text)}
+				out = value{text: fmt.Sprintf("(^%s)", operand.text), bound: b}
 				return
 			}
 			g.mark("ints")
-			g.markWidthDep(t)
-			out = value{text: fmt.Sprintf("(-%s)", operand.text)}
+			// Negation is magnitude-preserving: -x differs across widths
+			// only when x is MinInt32 itself — window-reaching, so the
+			// bound rule covers exactly that case (W4: the old
+			// unconditional mark tagged every -x).
+			g.markWidthDepBounded(t, operand.bound)
+			out = value{text: fmt.Sprintf("(-%s)", operand.text), bound: operand.bound}
 		}},
 	}).emit()
 	return out
@@ -609,11 +781,22 @@ func (g *Generator) divModExpr(t Type, fuel int, op, tag string) value {
 	// divisor can be -1: MinInt32 / -1 wraps to MinInt32 on a 32-bit target
 	// but is +2^31 on a 64-bit one (review finding: this was the untagged
 	// divergence that would have broken the discrimination proof). Modulo
-	// stays value-preserving (MinInt % -1 is 0 at every width).
+	// stays value-preserving (MinInt % -1 is 0 at every width). W4 keeps
+	// this mark UNCONDITIONAL even though a sub-window dividend bound
+	// would rule the case out: the arm is a risk-budgeted minority (the
+	// saturation cost is negligible), the divergence manifests only
+	// cross-arch (the host-side soundness screen cannot see it), and this
+	// exact case has already burned once — the conservative side wins.
 	if op == "/" && (variableDivisor || divisor.text == "-1") {
 		g.markWidthDep(t)
 	}
-	return value{text: fmt.Sprintf("(%s "+op+" %s)", left.text, divisor.text)}
+	// |quotient| never exceeds the dividend; |remainder| stays below the
+	// divisor's magnitude.
+	b := left.bound
+	if op == "%%" {
+		b = divisor.bound
+	}
+	return value{text: fmt.Sprintf("(%s "+op+" %s)", left.text, divisor.text), bound: b}
 }
 
 // stringExpr builds a string expression under the LINEAR GROWTH rule: a

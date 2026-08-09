@@ -47,7 +47,15 @@ func Optional() []string {
 //	dead_code        — statements exist after a mid-block terminal
 //	unreachable_case — a switch was emitted with a wide, unreduced tag
 //	panic_risk       — a division/modulo site drew a variable divisor
-//	width_dependent  — an emitted operation can differ between GOARCH widths
+//	width_dependent  — an emitted operation can differ between GOARCH
+//	                   widths. W4: bound-aware — marks only when a result's
+//	                   static magnitude bound is unknown or window-reaching
+//	                   (plus the unconditional keep-set: *31 folds, unsigned
+//	                   complement, signed-to-unsigned platform conversions,
+//	                   risky platform division). Measured 84.5% program
+//	                   saturation (was 97.6%): the floor is genuine — the
+//	                   corpus's deliberate boundary-literal density means
+//	                   most programs really do carry a window-capable op.
 //	feeder_value     — a variable is read but not observed
 //	dead_value       — a variable is discharged with _ = v, eliminable
 //	witness_shortcircuit — a wit wrap landed under && / || (conditionally

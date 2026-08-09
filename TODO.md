@@ -53,6 +53,26 @@ now first-party. Mapping onto this backlog:
   overriding corner configs, witness_shortcircuit stratifier, corner
   collateral documented in the ledger (early_return masked -> dead_code
   -86% in-corner, ~12% corpus-wide).
+- **width_dependent precision** (W4): DELIVERED AS SOUND-FLOOR, target
+  recorded as missed honestly. Static magnitude bounds (value.bound /
+  binding.bound, 0=unknown-conservative, loop-carried writes multiplied
+  by the config's worst-case execution count) gate the marks; the
+  unconditional keep-set is the *31 folds, unsigned complement,
+  signed→unsigned platform conversions, and risky platform division
+  (the historically-burned MinInt/-1 family — kept conservative on
+  purpose). Saturation 97.6% → 84.5%; off-tag population 2.4% → 15.5%
+  (6.5x the cross-arch discrimination coverage). The charter's <50%
+  aspiration is UNREACHABLE without under-tagging: measured
+  decomposition over 1000 seeds — 287/828 tagged programs carry
+  window-reaching fold constructs, 537 carry boundary-literal or
+  unknown-value arithmetic that genuinely diverges (boundary literals
+  are a deliberate near-universal corpus feature), 4 other. Soundness
+  witnesses: untagged programs observe only in-window values (runtime
+  screen), saturation regression guard both directions. The cross-arch
+  CI job remains the oracle; the revert condition stands. Follow-up
+  lever if sharper stratification is ever needed: split the tag by
+  cause (fold / boundary-arith / unknown-chain) rather than pushing
+  the rate down.
 - **nonConstExpr pureMode fallback lacks a conversions gate** (mid-arc
   review, pre-existing note): the `T(pureBase)` fallback emits a
   conversion without gating or marking `conversions` — visible inside

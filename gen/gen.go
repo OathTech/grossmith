@@ -184,6 +184,12 @@ type binding struct {
 	// int aggregate at function end instead of dropped to the feeder tier.
 	aggObserved bool
 	reads       int
+	// bound is the binding's static magnitude bound (W4): 0 = unknown,
+	// b > 0 = |value| <= b over every execution. For containers and
+	// structs it covers every element/field ever written. Updated at
+	// every write site; a missed write site would UNDER-tag, which the
+	// runtime soundness witness and the cross-arch CI proof police.
+	bound int64
 	// minLen is a slice's guaranteed length lower bound: the initial
 	// composite length. Appends only grow and whole-slice assignment is
 	// never generated, so len >= minLen holds forever — which is what makes
@@ -258,6 +264,12 @@ type Generator struct {
 	// plus a decimal suffix (v0, q1, h0, agg0, p2, S0, T0, m0, w0, ...),
 	// and neither wit nor wOrd matches that shape.
 	witSeq int
+	// maxExec is the config's worst-case executed-statement count (the
+	// Validate formula) — the multiplier a loop-carried write's
+	// contribution gets in bound arithmetic (W4). loopDepth counts
+	// enclosing loop bodies so write sites know to apply it.
+	maxExec   int64
+	loopDepth int
 	// shortCircuitDepth counts enclosing && / || operand contexts, so
 	// witness() can tag wraps that land in conditionally-executed
 	// position (witness_shortcircuit — the quarantined population).
@@ -279,7 +291,11 @@ type helper struct {
 	name    string
 	params  []Type
 	results []Type
-	src     string
+	// resultBounds are the return expressions' static magnitude bounds
+	// (W4): computable at generation because bodies are pure — a return
+	// that reads a parameter is unknown (0), a literal-rooted one is not.
+	resultBounds []int64
+	src          string
 }
 
 // definedType is one `type T0 <int-kind>` declaration with its methods.
@@ -387,6 +403,10 @@ func containsTag(tags []string, tag string) bool {
 // the tape.
 func (g *Generator) drawSetup() {
 	cfg := g.cfg
+	g.maxExec = int64(cfg.Stmts)
+	for i := 0; i < cfg.Depth; i++ {
+		g.maxExec *= 2 * int64(cfg.LoopCap)
+	}
 	switch {
 	case cfg.Constructs != nil:
 		// g.cfg's map is already OUR copy (snapshotConfig at construction
@@ -737,8 +757,11 @@ func (g *Generator) generateHelper(idx int) helper {
 		g.stmtIn(body, 1, false, false)
 	}
 	rs := make([]string, len(results))
+	rbs := make([]int64, len(results))
 	for j, rt := range results {
-		rs[j] = g.expr(rt, g.cfg.ExprFuel).text
+		rv := g.expr(rt, g.cfg.ExprFuel)
+		rs[j] = rv.text
+		rbs[j] = rv.bound
 	}
 	body.line("return %s", strings.Join(rs, ", "))
 	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
@@ -755,7 +778,7 @@ func (g *Generator) generateHelper(idx int) helper {
 	name := fmt.Sprintf("h%d", idx)
 	src := fmt.Sprintf("func %s(%s) (%s) {\n%s}\n\n",
 		name, strings.Join(ps, ", "), strings.Join(rt, ", "), body.buf.String())
-	return helper{name: name, params: params, results: results, src: src}
+	return helper{name: name, params: params, results: results, resultBounds: rbs, src: src}
 }
 
 // createDefinedTypes draws the per-seed defined types (before methods, which
@@ -1014,7 +1037,42 @@ func (g *Generator) witness(v value, t Type) value {
 	// The *31+tag accumulator wraps platform-width int — the same
 	// width_dependent convention as the aggregate folds.
 	g.markWidthDep(Int(0, false))
-	return value{text: fmt.Sprintf("wit(%s, %d)", v.text, g.witSeq)}
+	return value{text: fmt.Sprintf("wit(%s, %d)", v.text, g.witSeq), bound: v.bound}
+}
+
+// writeBound records a write's effect on the target binding's bound (W4).
+// op semantics:
+//   - "=" outside a loop REPLACES the bound;
+//   - "=" inside a loop is treated as accumulation too (the RHS may read
+//     the target itself — `v = v + x` iterated is growth in disguise);
+//   - "+" accumulates: the contribution is multiplied by the worst-case
+//     execution count when inside a loop;
+//   - "*" multiplies; iterated multiplication is exponential, so inside
+//     a loop the result is unknown outright;
+//   - "max" raises the bound to cover a new element/field value
+//     (container writes replace elements, so no accumulation).
+func (g *Generator) writeBound(target *binding, rhs int64, op string) {
+	switch op {
+	case "=":
+		if g.loopDepth == 0 {
+			target.bound = rhs
+			return
+		}
+		fallthrough
+	case "+":
+		if g.loopDepth > 0 {
+			rhs = boundMul(rhs, g.maxExec)
+		}
+		target.bound = boundAdd(target.bound, rhs)
+	case "*":
+		if g.loopDepth > 0 {
+			target.bound = 0
+			return
+		}
+		target.bound = boundMul(target.bound, rhs)
+	case "max":
+		target.bound = boundMax(target.bound, rhs)
+	}
 }
 
 // witnessOperandType biases comparison/equality operand types toward plain
@@ -1163,7 +1221,7 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 			observed = false
 		}
 	}
-	b := binding{name: name, typ: typ, observed: observed, aggObserved: agg}
+	b := binding{name: name, typ: typ, observed: observed, aggObserved: agg, bound: 1}
 	if typ.Shape == ShapeInterface {
 		// Never nil: initialized by implicit conversion from a satisfying
 		// concrete value — THE satisfaction corner — so dispatch cannot
@@ -1173,6 +1231,7 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		ci, _ := g.pickVar(g.defined[info.source].typ)
 		cv := &g.vars[ci]
 		cv.reads++
+		b.bound = cv.bound
 		out.line("%s := %s(%s)", name, typ.Name, cv.name)
 		g.vars = append(g.vars, b)
 		g.mark(typ.Tags()...)
@@ -1184,7 +1243,9 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		b.keys = g.keyAlphabet(*typ.Key)
 		entries := make([]string, 2)
 		for i := range entries {
-			entries[i] = b.keys[i] + ": " + g.literal(*typ.Elem).text
+			ev := g.literal(*typ.Elem)
+			entries[i] = b.keys[i] + ": " + ev.text
+			b.bound = boundMax(b.bound, ev.bound)
 		}
 		out.line("%s := %s{%s}", name, typ.GoName(), strings.Join(entries, ", "))
 		g.vars = append(g.vars, b)
@@ -1196,11 +1257,15 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 		b.minLen = 2 + g.c.draw(3)
 		elems := make([]string, b.minLen)
 		for i := range elems {
-			elems[i] = g.literal(*typ.Elem).text
+			ev := g.literal(*typ.Elem)
+			elems[i] = ev.text
+			b.bound = boundMax(b.bound, ev.bound)
 		}
 		out.line("%s := %s{%s}", name, typ.GoName(), strings.Join(elems, ", "))
 	} else {
-		out.line("%s := %s", name, g.literal(typ).text)
+		lit := g.literal(typ)
+		b.bound = lit.bound
+		out.line("%s := %s", name, lit.text)
 	}
 	g.vars = append(g.vars, b)
 	g.mark(typ.Tags()...)
