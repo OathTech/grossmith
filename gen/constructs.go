@@ -53,6 +53,9 @@ func Optional() []string {
 //	witness_shortcircuit — a wit wrap landed under && / || (conditionally
 //	                   executed; the population GoLean's frontend
 //	                   quarantines — review finding 8's stratifier)
+//	element_fold     — a range fold included base[i] alongside the index
+//	                   (W3: element-visible observation; survey F14's
+//	                   element-blindness remedy, stratifiable)
 const (
 	tagBoundary        = "boundary"
 	tagDeadCode        = "dead_code"

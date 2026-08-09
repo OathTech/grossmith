@@ -1040,7 +1040,15 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 	g.loopSeq++
 	g.mark("control_flow", "short_decl")
 	out.open("for %s := range %s {", index, arr.name)
-	g.consumeIndex(out, index)
+	// Int-element containers offer the ELEMENT to the fold (witness arc
+	// W3, survey finding F14): base[index] is in range by construction —
+	// index < len(base) for the whole loop, since appends to a ranged
+	// slice are banned (the mask above) and nothing else shrinks one.
+	elemBase := (*binding)(nil)
+	if arr.typ.Elem.Shape == ShapeInt {
+		elemBase = arr
+	}
+	g.consumeIndex(out, index, elemBase)
 	g.block(out, depth, 1+g.c.draw(2), true)
 	out.close()
 }
@@ -1073,7 +1081,8 @@ func (g *Generator) forStmt(out *emitter, depth int) {
 	// terminal statement — otherwise a trailing accumulation is dead on any
 	// early-exit path and the loop can compute nothing at all (34% of the
 	// prototype's loops did, before this ordering).
-	g.consumeIndex(out, index)
+	// A plain for-loop's index has no container behind it: no element.
+	g.consumeIndex(out, index, nil)
 	g.block(out, depth, 1+g.c.draw(2), true)
 	out.close()
 }
@@ -1081,7 +1090,17 @@ func (g *Generator) forStmt(out *emitter, depth int) {
 // consumeIndex folds the loop index into an accumulator. The conversion form
 // needs the conversions construct; when that is disabled the target is the
 // plain-int variable the declaration floor guarantees.
-func (g *Generator) consumeIndex(out *emitter, index string) {
+//
+// base, when non-nil, is an int-element container the enclosing range
+// iterates, and the fold MAY include base[index] alongside the index
+// (witness arc W3, survey finding F14: index-only folds are element-blind —
+// a write through a slice_triple alias never reached the observation).
+// The decision is made HERE, at the fold expression, never as a mid-body
+// arity change — the tuple is untouched (the charter's structural rule).
+func (g *Generator) consumeIndex(out *emitter, index string, base *binding) {
+	// The element read is an index operation and folds through a
+	// conversion when types differ — both gated AND marked (audit F1).
+	elemOK := base != nil && g.enabled("index")
 	if g.enabled("conversions") && g.corner != "kinds" {
 		t := pick(g.c, intTypes())
 		if i, ok := g.pickVar(t); ok {
@@ -1089,6 +1108,17 @@ func (g *Generator) consumeIndex(out *emitter, index string) {
 			target.reads++
 			g.mark("assignment", "conversions")
 			g.markWidthDep(target.typ)
+			if elemOK && g.c.chance(2) {
+				base.reads++
+				g.mark("index")
+				g.note("element_fold")
+				elem := fmt.Sprintf("%s[%s]", base.name, index)
+				if !base.typ.Elem.Equal(t) {
+					elem = fmt.Sprintf("%s(%s)", t.GoName(), elem)
+				}
+				out.line("%s += %s(%s) + %s", target.name, target.typ.GoName(), index, elem)
+				return
+			}
 			out.line("%s += %s(%s)", target.name, target.typ.GoName(), index)
 			return
 		}
@@ -1098,6 +1128,16 @@ func (g *Generator) consumeIndex(out *emitter, index string) {
 		target.reads++
 		g.mark("assignment")
 		g.markWidthDep(target.typ)
+		if elemOK && base.typ.Elem.Equal(Int(0, false)) && g.c.chance(2) {
+			// Conversion-free element fold: plain-int elements into the
+			// plain-int target — legal under conversions-off mixes AND
+			// the kinds corner (in-kind, no laundering).
+			base.reads++
+			g.mark("index")
+			g.note("element_fold")
+			out.line("%s += %s + %s[%s]", target.name, index, base.name, index)
+			return
+		}
 		out.line("%s += %s", target.name, index)
 	}
 }
