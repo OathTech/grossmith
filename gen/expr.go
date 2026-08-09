@@ -302,7 +302,12 @@ func (g *Generator) indexExpr(bound int) string {
 			out = v.text
 		}},
 	}).emit()
-	return out
+	// Index operands are an R2b witness site (the design note's "index
+	// chains"), wrapped centrally here so every index read participates.
+	// A wrapped constant index stays bound-limited, so array indices stay
+	// legal as runtime-checked non-constants; a wrapped panicky index
+	// accumulates its witness BEFORE the index panic fires (E3).
+	return g.witness(value{text: out}, Int(0, false)).text
 }
 
 // nonConstExpr builds an expression of type t that is guaranteed
@@ -546,8 +551,10 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			if !g.enabled("min") || (g.enabled("max") && g.c.chance(2)) {
 				name = "max"
 			}
-			left := g.nonConstExpr(t, fuel-1)
-			right := g.expr(t, fuel-1)
+			// min/max arguments are call arguments — an R2b witness site
+			// (spec-ordered left-to-right like any call's).
+			left := g.witness(g.nonConstExpr(t, fuel-1), t)
+			right := g.witness(g.expr(t, fuel-1), t)
 			g.mark(name)
 			out = value{text: fmt.Sprintf("%s(%s, %s)", name, left.text, right.text)}
 		}},
@@ -720,15 +727,21 @@ func (g *Generator) boolExpr(fuel int) value {
 		}},
 		{name: "compare", weight: 3, ok: g.enabled("comparisons"), emit: func() {
 			// Comparison operands must share a type, so one is drawn and reused.
-			t := pick(g.c, intTypes())
+			t := g.witnessOperandType(pick(g.c, intTypes()))
 			op := pick(g.c, []string{"<", "<=", ">", ">="})
 			g.mark("comparisons")
 			left := g.expr(t, fuel-1)
 			right := g.unSelf(left, g.expr(t, fuel-1), t)
+			// Witness AFTER unSelf (the self-compare check must see the raw
+			// names). Comparisons under the logic arm's && / || put wit
+			// calls in short-circuit operands — whether the right witness
+			// fires at all observes the short-circuit itself. Those land in
+			// GoLean's frontend quarantine today: expected, classified.
+			left, right = g.witness(left, t), g.witness(right, t)
 			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
 		}},
 		{name: "equality", weight: 2, ok: g.enabled("equality"), emit: func() {
-			t := pick(g.c, intTypes())
+			t := g.witnessOperandType(pick(g.c, intTypes()))
 			op := "=="
 			if g.c.chance(2) {
 				op = "!="
@@ -736,6 +749,7 @@ func (g *Generator) boolExpr(fuel int) value {
 			g.mark("equality")
 			left := g.expr(t, fuel-1)
 			right := g.unSelf(left, g.expr(t, fuel-1), t)
+			left, right = g.witness(left, t), g.witness(right, t)
 			out = value{text: fmt.Sprintf("(%s %s %s)", left.text, op, right.text)}
 		}},
 		{name: "field", weight: 1, ok: g.enabled("structs", "field") && len(g.fieldSources(&Type{Shape: ShapeBool})) > 0, emit: func() {

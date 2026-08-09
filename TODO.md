@@ -33,12 +33,22 @@ now first-party. Mapping onto this backlog:
   seed shapes — `i, a[i] = ...`, chains, comma-ok into mixed targets.
   Spec-defined assignment phases = deterministic, observable via final
   state; no effect discipline needed.
-- **R2b order-witnessing generation**: every subexpression bumps a
-  counter through a call, the result encodes realized order. Requires
-  a deliberate DETERMINISTIC effect mechanism (spec orders function
-  calls left-to-right) — i.e. the audit Phase 4 #3 effect-discipline
-  design (closures/pointer params), not a quick rung. High yield
-  (their evaluation-order bug class), high design cost.
+- **R2b order-witnessing generation**: DELIVERED (witness arc W2,
+  `order_witness` — mechanism 1 of the effect-discipline design):
+  package accumulator `wOrd` + the designated impure helper `wit`,
+  wrapped 2-in-3 at call arguments, min/max arguments, multi-assign
+  right sides, index operands, and comparison/equality operands
+  (composing with `&&`/`||` into short-circuit witnesses), inside the
+  new `order` corner (fourth named corner, 1-in-8; the corner
+  force-enables its instrument tag, masks early_return — the arity
+  hazard — and biases site-bearing arms). Trailing observed slot after
+  the aggregates, snapshotted by the wrapper defer (E3 truncation
+  witnessed at exact accumulator values). Campaign at their tip
+  3d21582: 282 match / 18 clone-infra (all the short-circuit
+  quarantine; 10 of them witnessed subjects — expected, classified),
+  28/38 witnessed subjects semantically judged MATCH. Remaining from
+  the design: mechanism 2 (pointer-parameter witness), per-type wit
+  helpers beyond plain int.
 - **R3 kind/definedness matrix corner**: {op site} x {int kinds,
   floats} x {defined vs unnamed} with IN-KIND arithmetic — their
   insight that `int(x)` conversion laundering masks the whole

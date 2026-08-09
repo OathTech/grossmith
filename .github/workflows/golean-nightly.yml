@@ -118,15 +118,23 @@ jobs:
         run: |
           B="$RUNNER_TEMP/campaign/batch.json"
           jq '{clone: .cloneIdentity, verdicts: .verdicts, wrapperCaught: .wrapperCaught, wrapperJudged: .wrapperJudged}' "$B"
-          # Non-vacuity added per the 2026-08-08 hunt (F7): a frontend
-          # regression turning EVERY case clone-infra previously passed
-          # green, and a regression back to caught-without-judged (the
-          # G1 state) was invisible.
+          # Non-vacuity added per the 2026-08-08 review follow-up (F7): a
+          # frontend regression turning EVERY case clone-infra previously
+          # passed green, and a regression back to caught-without-judged
+          # (the G1 state) was invisible.
+          # The wrapper gate is equality MODULO unrelated quarantines
+          # (W2: a wrapped subject can carry short-circuit wit calls and
+          # land in GoLean's frontend quarantine for that reason, not the
+          # wrapper's): caught-but-unjudged is bounded by the clone-infra
+          # count, and the G1 tripwire — judged must be nonzero whenever
+          # caught is — stays absolute.
           jq -e '(.verdicts["harness-error"] // 0) == 0
              and (.verdicts["reference-infra-failure"] // 0) == 0
              and (.verdicts["observation-mismatch"] // 0) == 0
              and ((.verdicts["clone-infra-failure"] // 0) < .total)
-             and ((.wrapperJudged // -1) == (.wrapperCaught // 0))' "$B"
+             and ((.wrapperJudged // -1) >= 0)
+             and (((.wrapperCaught // 0) - (.wrapperJudged // 0)) <= (.verdicts["clone-infra-failure"] // 0))
+             and (((.wrapperCaught // 0) == 0) or ((.wrapperJudged // 0) > 0))' "$B"
       - name: archive the conformance statement
         if: always()
         uses: actions/upload-artifact@v4

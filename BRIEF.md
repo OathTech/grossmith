@@ -261,9 +261,13 @@ break / continue; panic paths (division, modulo). Then:
    observed), maps (everything except range; range returned as the
    commutative fold), defer/recover (exit observations, statement-level
    catch), linearized multi-trap, helpers (PURE by construction — no
-   globals/pointers/closures/output and panic-free, so the effect
-   discipline is dissolved; revisit trigger: pointer params, closures
-   over subject state, or package-level variables). Observation levers
+   globals/pointers/closures/output and panic-free — EXCEPT designated
+   witness helpers, individually tagged, whose effects are confined to
+   the witness accumulator and whose calls sit in spec-ordered
+   positions; the E1-E4 effect discipline governs them — see
+   docs/2026-08-07_effect-discipline-design.md §2. The pure majority is
+   unchanged; the first designated helper is R2b's `wit`, order-corner
+   only). Observation levers
    delivered: multiple return sites, interleaved observation points.
 7. DELIVERED: defined integer types (named identity, conversion-wrapped
    literals), pure value-receiver methods, interfaces (derived +

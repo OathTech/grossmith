@@ -38,6 +38,7 @@ func Optional() []string {
 		"interfaces", "assertion",
 		"string_index", "string_slice", "string_range",
 		"slice_triple", "type_switch",
+		"order_witness",
 	}
 }
 

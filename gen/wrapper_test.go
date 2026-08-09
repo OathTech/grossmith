@@ -421,7 +421,7 @@ func TestTypeSwitchEmitted(t *testing.T) {
 	head := regexp.MustCompile(`(?m)^\t+switch (w\d+) := v\d+\.\(type\) \{`)
 	caseLine := regexp.MustCompile(`(?m)^\t+case T\d+:`)
 	tagged, multiCase := 0, 0
-	for seed := int64(40000); seed < 40400; seed++ {
+	for seed := int64(40000); seed < 40800; seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()
 		if err != nil {
 			t.Fatal(err)
@@ -478,7 +478,7 @@ func TestTypeSwitchEmitted(t *testing.T) {
 		}
 	}
 	if tagged == 0 {
-		t.Fatal("no seed in 40000..40400 drew a type switch — arm starved")
+		t.Fatal("no seed in 40000..40800 drew a type switch — arm starved")
 	}
 	if multiCase == 0 {
 		t.Fatal("no multi-case (empty-interface) type switch in the sweep")

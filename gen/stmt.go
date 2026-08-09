@@ -93,15 +93,24 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: terminal("break")},
 		{name: "continue", weight: terminalWeight, ok: g.enabled("continue") && inLoop,
 			emit: terminal("continue")},
-		{name: "call", weight: 2, ok: g.enabled("helpers") && len(g.helpers) > 0,
+		// The order corner biases the witness-site-bearing arms up (calls
+		// and multi-assigns), the same lever as guardBias for the wrapper:
+		// the corner densifies where its instrument lives.
+		{name: "call", weight: 2 + 2*boolToInt(g.corner == "order"), ok: g.enabled("helpers") && len(g.helpers) > 0,
 			emit: func() { g.callStmt(out) }},
 		{name: "bare-call", weight: 1, ok: g.enabled("helpers", "bare_call") && len(g.helpers) > 0,
 			emit: func() { g.bareCallStmt(out) }},
-		{name: "multi-assign", weight: 3, ok: g.enabled("multi_assign") && len(g.vars) >= 2,
+		{name: "multi-assign", weight: 3 + 2*boolToInt(g.corner == "order"), ok: g.enabled("multi_assign") && len(g.vars) >= 2,
 			emit: func() { g.multiAssign(out) }},
 		{name: "observe", weight: 2, ok: g.enabled("observe_point") && !g.pureMode,
 			emit: func() { g.observePoint(out) }},
-		{name: "early-return", weight: 1, ok: g.enabled("early_return") && !last && !g.pureMode,
+		// Masked under the order corner (the corner-masks-construct
+		// precedent — kinds masks conversions): an early return is emitted
+		// while witSeq is still evolving, so it cannot know the subject's
+		// final result arity once the witness slot may exist. Structural
+		// exclusion, not a mid-body arity decision — the same rule W3
+		// applies to aggObserved.
+		{name: "early-return", weight: 1, ok: g.enabled("early_return") && !last && !g.pureMode && g.corner != "order",
 			emit: func() { g.earlyReturn(out) }},
 	}).emit()
 }
@@ -581,8 +590,13 @@ func (g *Generator) multiAssign(out *emitter) {
 						g.note(tagPanicRisk)
 					}
 				}
-				rhs1 := g.expr(u.typ, g.cfg.ExprFuel-1)
-				rhs2 := g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1)
+				rhs1 := g.witness(g.expr(u.typ, g.cfg.ExprFuel-1), u.typ)
+				rhs2 := g.witness(g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1), *arr.typ.Elem)
+				// The index operand is R2b's sharpest multi-assign site:
+				// phase-one operand evaluation vs phase-two stores is
+				// exactly what the witness order fingerprints. Plain-int
+				// text by construction (both idx forms).
+				idx = g.witness(value{text: idx}, Int(0, false)).text
 				if arr.typ.Shape == ShapeSlice {
 					g.mark("slices", "index", "assignment", "multi_assign")
 				} else {
@@ -599,6 +613,10 @@ func (g *Generator) multiAssign(out *emitter) {
 			seen := map[int]bool{}
 			for k := 0; k < n; k++ {
 				g.c.choose("multi-assign-target", []arm{
+					// R2b witness sites throughout (order corner only): the
+					// mixed multi-assign's phase-one evaluation across
+					// several right sides and index operands is the
+					// evaluation-order-richness the corner exists for.
 					{name: "var", weight: 3, ok: true, emit: func() {
 						vi := g.c.draw(len(g.vars))
 						t := g.vars[vi].typ
@@ -606,22 +624,23 @@ func (g *Generator) multiAssign(out *emitter) {
 							// Duplicate or unassignable-wholesale target:
 							// discard through the blank identifier.
 							targets[k] = "_"
-							rhs[k] = g.expr(Int(0, false), g.cfg.ExprFuel-1).text
+							rhs[k] = g.witness(g.expr(Int(0, false), g.cfg.ExprFuel-1), Int(0, false)).text
 							return
 						}
 						seen[vi] = true
 						targets[k] = g.vars[vi].name
-						rhs[k] = g.expr(t, g.cfg.ExprFuel-1).text
+						rhs[k] = g.witness(g.expr(t, g.cfg.ExprFuel-1), t).text
 					}},
 					{name: "elem", weight: 2, ok: g.enabled("index") && len(g.indexableVars()) > 0, emit: func() {
 						arr := &g.vars[pick(g.c, g.indexableVars())]
+						// The index operand witnesses inside indexExpr.
 						targets[k] = fmt.Sprintf("%s[%s]", arr.name, g.indexExpr(arr.indexBound()))
-						rhs[k] = g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1).text
+						rhs[k] = g.witness(g.expr(*arr.typ.Elem, g.cfg.ExprFuel-1), *arr.typ.Elem).text
 						g.mark("index")
 					}},
 					{name: "blank", weight: 1, ok: true, emit: func() {
 						targets[k] = "_"
-						rhs[k] = g.expr(Int(0, false), g.cfg.ExprFuel-1).text
+						rhs[k] = g.witness(g.expr(Int(0, false), g.cfg.ExprFuel-1), Int(0, false)).text
 					}},
 				}).emit()
 			}

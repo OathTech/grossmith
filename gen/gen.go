@@ -82,8 +82,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: ExprFuel %d must be >= 1", c.ExprFuel)
 	case c.LoopCap < 1:
 		return fmt.Errorf("config: LoopCap %d must be >= 1 — every loop draws a trip count in [1,LoopCap]", c.LoopCap)
-	case c.Corner != "" && c.Corner != "none" && c.Corner != "boundary" && c.Corner != "kinds":
-		return fmt.Errorf("config: unknown corner %q (use none, boundary, or kinds)", c.Corner)
+	case c.Corner != "" && c.Corner != "none" && c.Corner != "boundary" && c.Corner != "kinds" && c.Corner != "order":
+		return fmt.Errorf("config: unknown corner %q (use none, boundary, kinds, or order)", c.Corner)
 	case c.Vars > 128:
 		return fmt.Errorf("config: Vars %d exceeds 128", c.Vars)
 	case c.ExprFuel > 12:
@@ -238,6 +238,17 @@ type Generator struct {
 	// guardBias raises the hot-arm odds inside a guarded IIFE, so the
 	// recover path is actually exercised.
 	guardBias bool
+	// witSeq counts emitted order-witness wraps (R2b, witness arc W2): each
+	// wit(x, tag) call at an evaluation-order-rich site gets the next tag,
+	// starting at 1 (tag 0 would make "no calls ran" and "first call had
+	// tag 0" both fold to a zero accumulator). The `var wOrd` declaration,
+	// the wit helper, and the trailing observed slot are emitted iff
+	// witSeq > 0 at assembly — text exists iff a call does, the same
+	// honesty rule as helper/pair text. The names wit/wOrd cannot collide
+	// with generated identifiers: every generated name is a short prefix
+	// plus a decimal suffix (v0, q1, h0, agg0, p2, S0, T0, m0, w0, ...),
+	// and neither wit nor wOrd matches that shape.
+	witSeq int
 	// riskSpent is the per-statement panic-risk budget (review finding: two
 	// hot panic sites in one statement have SPEC-UNSPECIFIED panic identity
 	// — a conformant clone may report either panic). Each statement context
@@ -349,6 +360,16 @@ func NewReplay(cfg Config, trace []int) *Generator {
 	}
 }
 
+// containsTag reports whether a construct-tag slice names tag.
+func containsTag(tags []string, tag string) bool {
+	for _, t := range tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
 // drawSetup resolves the construct mix and corner — the first draws on
 // the tape.
 func (g *Generator) drawSetup() {
@@ -399,21 +420,43 @@ func (g *Generator) drawSetup() {
 		g.boundaryBias = cornerBoundaryBias
 	case "kinds":
 		g.corner = "kinds"
+	case "order":
+		g.corner = "order"
 	case "none":
 		g.boundaryBias = 0
 	case "":
 		if cfg.Swarm {
+			// Each named corner keeps the 1-in-8 class weight (the R2b
+			// design's containment number): plain dropped 6->5 when the
+			// order corner joined, so the corners' rates held rather than
+			// diluting to 1-in-9. The order arm is masked only by an
+			// explicit profile Exclude, not by the swarm mix — corners
+			// override the mix in their own domain (kinds masks
+			// conversions, boundary reshapes literal draws), and a corner
+			// whose instrument the mix disabled would be a corner in name
+			// only.
 			switch g.c.choose("corner", []arm{
-				{name: "plain", weight: 6, ok: true},
+				{name: "plain", weight: 5, ok: true},
 				{name: "boundary", weight: 1, ok: true},
 				{name: "kinds", weight: 1, ok: true},
+				{name: "order", weight: 1, ok: !containsTag(cfg.Exclude, "order_witness")},
 			}).name {
 			case "boundary":
 				g.corner = "boundary"
 				g.boundaryBias = cornerBoundaryBias
 			case "kinds":
 				g.corner = "kinds"
+			case "order":
+				g.corner = "order"
 			}
+		}
+	}
+	if g.corner == "order" && !containsTag(cfg.Exclude, "order_witness") {
+		// The order corner (drawn OR forced) force-enables its instrument
+		// tag: the corner is the witness opt-in. An explicit profile
+		// Exclude still wins — profiles are contracts.
+		if g.constructs != nil {
+			g.constructs["order_witness"] = true
 		}
 	}
 }
@@ -465,6 +508,35 @@ func (g *Generator) Generate() (c Case, err error) {
 	g.mark("functions", "short_decl", "literals", "return")
 
 	if g.wrapped {
+		// The wrapper exists to CATCH panics: bias the hot arms up for the
+		// whole body (same lever as the guarded statement), or most
+		// wrapped subjects would return on the boring path.
+		g.guardBias = true
+	}
+	// Statements build in their own emitter so the wrapper prologue can be
+	// emitted AFTER the body is generated: the defer's slot arithmetic must
+	// know whether the order-witness slot exists (witSeq > 0, decided by the
+	// statement draws). emitWrapperDefer makes no draws, so the tape is
+	// unchanged — only text assembly is reordered.
+	stmts := &emitter{indent: 1}
+	for i := 0; i < g.cfg.Stmts; i++ {
+		if g.wrapped {
+			stmts.line("psite = %d", i+1)
+		}
+		g.stmt(stmts, g.cfg.Depth)
+	}
+	g.guardBias = false
+	if g.wrapped {
+		// Sentinel for the final observation region (tight audit F4): the
+		// folds below are panic-free by construction TODAY, but a future
+		// hot fold would otherwise report the LAST statement's site with
+		// no tell. Stmts+1 is out of the witness's accepted range, so the
+		// day a fold can panic, the witness fails loudly instead of the
+		// site lying quietly.
+		stmts.line("psite = %d", g.cfg.Stmts+1)
+	}
+	observed := g.observe(stmts)
+	if g.wrapped {
 		// SITE encoding (2026-08-08 review, G1): the old message-prefix
 		// table required p.(error) + Error(), which hits GoLean's open
 		// $runtime.Error method-set gap — every caught panic became
@@ -478,28 +550,7 @@ func (g *Generator) Generate() (c Case, err error) {
 		// No dispatch, no assertions: portable to any clone.
 		body.line("psite := 0")
 		g.emitWrapperDefer(body)
-		// The wrapper exists to CATCH panics: bias the hot arms up for the
-		// whole body (same lever as the guarded statement), or most
-		// wrapped subjects would return on the boring path.
-		g.guardBias = true
 	}
-	for i := 0; i < g.cfg.Stmts; i++ {
-		if g.wrapped {
-			body.line("psite = %d", i+1)
-		}
-		g.stmt(body, g.cfg.Depth)
-	}
-	g.guardBias = false
-	if g.wrapped {
-		// Sentinel for the final observation region (tight audit F4): the
-		// folds below are panic-free by construction TODAY, but a future
-		// hot fold would otherwise report the LAST statement's site with
-		// no tell. Stmts+1 is out of the witness's accepted range, so the
-		// day a fold can panic, the witness fails loudly instead of the
-		// site lying quietly.
-		body.line("psite = %d", g.cfg.Stmts+1)
-	}
-	observed := g.observe(body)
 	resultTypes := make([]string, len(observed))
 	for i, b := range observed {
 		resultTypes[i] = b.typ.GoName()
@@ -531,6 +582,17 @@ func (g *Generator) Generate() (c Case, err error) {
 		}
 		out.WriteString("}\n\n")
 	}
+	if g.witSeq > 0 {
+		// The order-witness accumulator and its designated impure helper
+		// (R2b mechanism 1; E4's amendment covers exactly this pair): the
+		// only package-level state and the only impure function the
+		// generator emits. Effects are confined to wOrd; wit calls sit in
+		// call-argument/operand position, which the spec orders
+		// left-to-right, so the accumulator value is a deterministic
+		// fingerprint of evaluation order. Emitted iff a wit call was.
+		out.WriteString("var wOrd int\n\n")
+		out.WriteString("func wit(x int, tag int) int {\n\twOrd = wOrd*31 + tag\n\treturn x\n}\n\n")
+	}
 	if g.wrapped {
 		// Named results: the wrapper's deferred recover writes them
 		// directly, so a caught panic returns partial state + the code.
@@ -543,6 +605,7 @@ func (g *Generator) Generate() (c Case, err error) {
 		fmt.Fprintf(&out, "func %s() (%s) {\n", Subject, strings.Join(resultTypes, ", "))
 	}
 	out.WriteString(body.buf.String())
+	out.WriteString(stmts.buf.String())
 	out.WriteString("}\n")
 
 	source, err := format.Source([]byte(out.String()))
@@ -886,9 +949,62 @@ func (g *Generator) callArgs(h helper, fuel int) string {
 func (g *Generator) argList(params []Type, fuel int) string {
 	args := make([]string, len(params))
 	for i, pt := range params {
-		args[i] = g.expr(pt, fuel).text
+		// Call arguments are one of R2b's evaluation-order-rich sites: the
+		// spec orders them left-to-right, so a witness here fingerprints
+		// exactly what a clone's argument-evaluation order can get wrong.
+		args[i] = g.witness(g.expr(pt, fuel), pt).text
 	}
 	return strings.Join(args, ", ")
+}
+
+// witness wraps an int-typed drawn expression in a wit(x, tag) call — R2b
+// mechanism 1 (witness arc W2; the effect-discipline design's first
+// instrument). Wrapping happens ONLY inside the order corner (instruments
+// are minorities; the corner IS the minority mechanism), never in pure
+// helper/method bodies (E4: helpers stay pure — wit itself is the sole
+// designated impure helper), and only for plain int in v1 (other types
+// need per-type helpers; extension noted in the ledger). The density draw
+// keeps wrapped and unwrapped operands mixed within a site. Wrapping
+// erases constness (a call is never a Go constant), which is exactly why
+// witness sites are the caller's choice: every named site tolerates a
+// non-constant operand.
+func (g *Generator) witness(v value, t Type) value {
+	if g.corner != "order" || g.pureMode || !g.enabled("order_witness") {
+		return v
+	}
+	if t.Shape != ShapeInt || t.Bits != 0 || t.Unsigned || t.Named != "" {
+		return v
+	}
+	// Density draw: wrap 2-in-3. Wrapped and unwrapped operands stay
+	// mixed across seeds, so the corner's population varies which
+	// operands carry witnesses rather than saturating every site the
+	// same way in every subject.
+	if g.c.chance(3) {
+		return v
+	}
+	g.witSeq++
+	g.mark("order_witness")
+	// The *31+tag accumulator wraps platform-width int — the same
+	// width_dependent convention as the aggregate folds.
+	g.markWidthDep(Int(0, false))
+	return value{text: fmt.Sprintf("wit(%s, %d)", v.text, g.witSeq)}
+}
+
+// witnessOperandType biases comparison/equality operand types toward plain
+// int inside the order corner — the corner's density lever, the same class
+// of move as boundaryBias reshaping literal draws. v1's witness wraps only
+// plain int; without the bias most operands draw unwrappable sized kinds
+// and the corner is a corner in name only. Outside the corner (or wherever
+// wrapping cannot fire) the draw is untouched — and no tape is consumed,
+// so non-corner seeds decode identically.
+func (g *Generator) witnessOperandType(t Type) Type {
+	if g.corner != "order" || g.pureMode || !g.enabled("order_witness") {
+		return t
+	}
+	if g.c.chance(2) {
+		return Int(0, false)
+	}
+	return t
 }
 
 // typePool is the declarable type set: scalars always, string when enabled,
@@ -1159,6 +1275,16 @@ func (g *Generator) observe(out *emitter) []binding {
 		names = append(names, name)
 	}
 	g.mark("return")
+	if g.witSeq > 0 {
+		// The order-witness slot (R2b): the accumulator's final value as a
+		// trailing observed int, after the aggregate slots and before the
+		// panic-code slot. Unlike the aggregate folds it is LIVE during the
+		// body, so the wrapper's defer snapshots it on the panic path — a
+		// mid-expression panic truncates the accumulator, and site + partial
+		// state + order-before-panic compose (E3).
+		observed = append(observed, binding{name: "wOrd", typ: Int(0, false)})
+		names = append(names, "wOrd")
+	}
 	if g.wrapped {
 		// The panic-code slot: a synthetic trailing int result, zero on
 		// the normal path, written by the wrapper's recover on the panic
@@ -1179,15 +1305,26 @@ func (g *Generator) emitWrapperDefer(out *emitter) {
 	// Aggregate slots (rung 4) sit between the observed locals and the
 	// panic code in the result tuple; on the panic path they stay zero
 	// (the folds only run at normal exit), so only the slot INDEX moves.
+	// The order-witness slot (W2) sits after them and, unlike them, is
+	// LIVE during the body — the defer snapshots it, so a caught panic
+	// reports the order-before-panic prefix (E3 composition). Callers run
+	// this AFTER body generation, so witSeq is settled.
 	aggs := 0
 	for _, v := range g.vars {
 		if v.aggObserved {
 			aggs++
 		}
 	}
+	wits := 0
+	if g.witSeq > 0 {
+		wits = 1
+	}
 	out.open("defer func() {")
 	out.open("if recover() != nil {")
-	out.line("q%d = psite", len(names)+aggs)
+	out.line("q%d = psite", len(names)+aggs+wits)
+	if g.witSeq > 0 {
+		out.line("q%d = wOrd", len(names)+aggs)
+	}
 	for i, n := range names {
 		out.line("q%d = %s", i, n)
 	}
