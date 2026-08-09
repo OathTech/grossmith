@@ -292,6 +292,56 @@ func TestJudgeWritesBatchReport(t *testing.T) {
 	}
 }
 
+// TestVerifyEndToEnd is the arc-end review's -verify reproduction, made
+// permanent (E5, B1/B3): a published batch verifies; the SAME batch with
+// its report rewritten refuses with nonzero instead of printing "intact";
+// and a clobbered completion descriptor is a typed refusal, not a crash.
+func TestVerifyEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs binaries")
+	}
+	out := filepath.Join(t.TempDir(), "batch")
+	cfg := base(out)
+	cfg.judge = true
+	cfg.allowDirty = true
+	cfg.timeout = 20 * time.Second
+	cfg.workers = 2
+	if err := run(cfg); err != nil {
+		t.Fatal(err)
+	}
+	verify := func() error {
+		return run(config{verify: out, explicit: map[string]bool{"verify": true}})
+	}
+	if err := verify(); err != nil {
+		t.Fatalf("fresh batch failed verification: %v", err)
+	}
+	// The reviewer's edit: a rewritten total in the published report.
+	batchPath := filepath.Join(out, "batch.json")
+	b, err := os.ReadFile(batchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(batchPath, []byte(strings.Replace(string(b), `"total": 2`, `"total": 99999`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(); err == nil || !strings.Contains(err.Error(), "the report changed") {
+		t.Fatalf("rewritten report: want a report-binding refusal, got %v", err)
+	}
+	if err := os.WriteFile(batchPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(); err != nil {
+		t.Fatalf("restored batch failed verification: %v", err)
+	}
+	// The crash reproduction: an empty-object completion descriptor.
+	if err := os.WriteFile(filepath.Join(out, "complete.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(); err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("empty completion: want a schema refusal, got %v", err)
+	}
+}
+
 // TestBatchPublishAtomicity (E3; audit P1: in-place regeneration left
 // interrupted hybrids that passed the ownership check). The batch
 // lifecycle is staging -> complete.json -> atomic swap; every crash

@@ -35,6 +35,22 @@ const ManifestSchema = "grossmith-manifest-v1"
 // caseDirRe is the batch-owned case-directory shape.
 var caseDirRe = regexp.MustCompile("^case_[0-9]+$")
 
+// digestRe is the only digest shape the batch machinery accepts. Checked
+// on every digest READ from disk, so comparison and truncation never see
+// a malformed value (arc-end review B3: an unguarded [:12] on a
+// descriptor field panicked the verifier — a corruption detector must
+// refuse corruption, not crash on it).
+var digestRe = regexp.MustCompile("^[0-9a-f]{64}$")
+
+// ShortDigest abbreviates a digest for error messages, tolerating any
+// input length.
+func ShortDigest(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
+}
+
 // ManifestCase is one case's build-input digests. Files maps file name
 // (within the case directory) to sha256 — the COMPLETE set: a file on
 // disk that is not listed here fails validation.
@@ -110,6 +126,20 @@ func ReadManifest(root string) (Manifest, error) {
 	}
 	if m.Schema != ManifestSchema {
 		return Manifest{}, fmt.Errorf("manifest: unknown schema %q", m.Schema)
+	}
+	// Every digest field must be digest-shaped before anything compares
+	// or abbreviates it.
+	for name, d := range m.RootFiles {
+		if !digestRe.MatchString(d) {
+			return Manifest{}, fmt.Errorf("manifest: rootFiles[%s] %q is not a sha256 digest", name, d)
+		}
+	}
+	for _, mc := range m.Cases {
+		for name, d := range mc.Files {
+			if !digestRe.MatchString(d) {
+				return Manifest{}, fmt.Errorf("manifest: %s/%s digest %q is not a sha256 digest", mc.ID, name, d)
+			}
+		}
 	}
 	return m, nil
 }
@@ -197,39 +227,175 @@ func ValidateBatch(root string) ([]string, error) {
 	// review finding 6: it was written and never read). Presence is
 	// required by VerifyBatch — a pre-judge staging tree does not have
 	// it yet, so ValidateBatch alone tolerates absence.
-	if sum, err := FileSHA256(filepath.Join(root, "complete.json")); err == nil {
-		_ = sum
-		var c struct {
-			Schema         string `json:"schema"`
-			ManifestSHA256 string `json:"manifestSha256"`
-		}
-		b, err := os.ReadFile(filepath.Join(root, "complete.json"))
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(b, &c); err != nil {
-			return nil, fmt.Errorf("complete.json: %w", err)
-		}
-		got, err := FileSHA256(filepath.Join(root, "manifest.json"))
-		if err != nil {
-			return nil, err
-		}
-		if c.ManifestSHA256 != got {
-			return nil, fmt.Errorf("batch: complete.json binds manifest %s but the manifest on disk is %s", c.ManifestSHA256[:12], got[:12])
-		}
+	if _, err := checkComplete(root); err != nil && err != errNoComplete {
+		return nil, err
 	}
 	sort.Strings(ids)
 	return ids, nil
 }
 
+// VerifyInfo is VerifyBatch's result: the ordered case IDs plus what the
+// completion descriptor actually covered, so the caller's summary can
+// state its scope instead of overclaiming (arc-end review B1: an edited
+// batch.json passed -verify with "every input digest intact").
+type VerifyInfo struct {
+	IDs []string
+	// ReportsBound: complete.json carried report digests and they all
+	// matched. False only for a batch written before reportFiles existed;
+	// the caller must say the report is unchecked in that case.
+	ReportsBound bool
+}
+
 // VerifyBatch is ValidateBatch for a PUBLISHED batch of record: the
 // completion descriptor is required, not optional (finding 7's consumer:
 // `gengo -verify`).
-func VerifyBatch(root string) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(root, "complete.json")); err != nil {
-		return nil, fmt.Errorf("batch: no completion descriptor — an interrupted or pre-E3 run, not a batch of record: %w", err)
+func VerifyBatch(root string) (VerifyInfo, error) {
+	c, err := checkComplete(root)
+	if err == errNoComplete {
+		return VerifyInfo{}, fmt.Errorf("batch: no completion descriptor — an interrupted or pre-E3 run, not a batch of record")
 	}
-	return ValidateBatch(root)
+	if err != nil {
+		return VerifyInfo{}, err
+	}
+	ids, err := ValidateBatch(root)
+	if err != nil {
+		return VerifyInfo{}, err
+	}
+	return VerifyInfo{IDs: ids, ReportsBound: c.ReportFiles != nil}, nil
+}
+
+const CompleteSchema = "grossmith-complete-v1"
+
+// Complete is the completion descriptor, written LAST into a batch: a
+// tree without it is an interrupted run, never a batch of record. It
+// binds the manifest, and (since E5) the report artifacts, by digest —
+// batch.json is where verdicts live, so leaving it unbound let an edited
+// total, verdict, or identity pass -verify untouched.
+type Complete struct {
+	Schema         string `json:"schema"`
+	ManifestSHA256 string `json:"manifestSha256"`
+	// ReportFiles digests the batch's report artifacts (batch.json when
+	// the batch was judged, manifest.tsv always). Absent only in batches
+	// written before E5; when present it is CLOSED — a report artifact on
+	// disk that it does not name refuses.
+	ReportFiles map[string]string `json:"reportFiles,omitempty"`
+}
+
+// reportArtifacts is the closed set of files ReportFiles may cover.
+var reportArtifacts = []string{"batch.json", "manifest.tsv"}
+
+// WriteComplete digests the manifest and the report artifacts present in
+// root and writes the completion descriptor. Call it after every other
+// batch file is final.
+func WriteComplete(root string) error {
+	sum, err := FileSHA256(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		return err
+	}
+	c := Complete{Schema: CompleteSchema, ManifestSHA256: sum}
+	for _, name := range reportArtifacts {
+		rs, err := FileSHA256(filepath.Join(root, name))
+		if os.IsNotExist(err) {
+			continue // an unjudged batch has no batch.json
+		}
+		if err != nil {
+			return err
+		}
+		if c.ReportFiles == nil {
+			c.ReportFiles = map[string]string{}
+		}
+		c.ReportFiles[name] = rs
+	}
+	b, err := json.MarshalIndent(c, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, "complete.json"), b, 0o644)
+}
+
+// errNoComplete: the tree has no completion descriptor. ValidateBatch
+// tolerates it (a staging tree is validated before judging); VerifyBatch
+// refuses.
+var errNoComplete = fmt.Errorf("no complete.json")
+
+// checkComplete reads and checks the completion descriptor, FAIL-CLOSED
+// (arc-end review B4: the old check sat inside `if err == nil`, so an
+// unreadable complete.json skipped the binding and still printed
+// success; schema was decoded but never compared; unknown fields were
+// accepted, so a misspelled field silently unbound).
+func checkComplete(root string) (Complete, error) {
+	path := filepath.Join(root, "complete.json")
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return Complete{}, errNoComplete
+	}
+	if err != nil {
+		// Present but unreadable is a refusal, never a skip.
+		return Complete{}, fmt.Errorf("batch: completion descriptor unreadable: %w", err)
+	}
+	var c Complete
+	dec := json.NewDecoder(bytes.NewReader(b))
+	// Strict on purpose: this is an integrity descriptor, so a field the
+	// checker does not understand must refuse rather than silently not
+	// bind. Additive evolution goes through a schema bump.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		return Complete{}, fmt.Errorf("batch: complete.json: %w", err)
+	}
+	if c.Schema != CompleteSchema {
+		return Complete{}, fmt.Errorf("batch: complete.json schema %q, want %q", c.Schema, CompleteSchema)
+	}
+	if !digestRe.MatchString(c.ManifestSHA256) {
+		// Guards the truncation below too (B3: a `{}` descriptor panicked
+		// the checker on an empty-string slice).
+		return Complete{}, fmt.Errorf("batch: complete.json manifestSha256 %q is not a sha256 digest", c.ManifestSHA256)
+	}
+	got, err := FileSHA256(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		return Complete{}, err
+	}
+	if c.ManifestSHA256 != got {
+		return Complete{}, fmt.Errorf("batch: complete.json binds manifest %s but the manifest on disk is %s", ShortDigest(c.ManifestSHA256), ShortDigest(got))
+	}
+	if c.ReportFiles != nil {
+		listed := map[string]bool{}
+		for name, want := range c.ReportFiles {
+			if !allowedReportArtifact(name) {
+				return Complete{}, fmt.Errorf("batch: complete.json reportFiles names %q, which is not a report artifact", name)
+			}
+			if !digestRe.MatchString(want) {
+				return Complete{}, fmt.Errorf("batch: complete.json reportFiles[%s] %q is not a sha256 digest", name, want)
+			}
+			listed[name] = true
+			got, err := FileSHA256(filepath.Join(root, name))
+			if err != nil {
+				return Complete{}, fmt.Errorf("batch: reportFiles lists %s but it cannot be read: %w", name, err)
+			}
+			if got != want {
+				return Complete{}, fmt.Errorf("batch: %s digest %s does not match complete.json's %s — the report changed after the batch finished", name, ShortDigest(got), ShortDigest(want))
+			}
+		}
+		// Closed the other way too: a report artifact on disk that the
+		// descriptor does not name is a report nobody vouched for.
+		for _, name := range reportArtifacts {
+			if listed[name] {
+				continue
+			}
+			if _, err := os.Lstat(filepath.Join(root, name)); err == nil {
+				return Complete{}, fmt.Errorf("batch: %s exists but complete.json's reportFiles does not name it", name)
+			}
+		}
+	}
+	return c, nil
+}
+
+func allowedReportArtifact(name string) bool {
+	for _, a := range reportArtifacts {
+		if name == a {
+			return true
+		}
+	}
+	return false
 }
 
 // rootFileAllowed is the closed set of batch-root artifacts.
@@ -279,7 +445,7 @@ func checkFile(dir, name, want string) error {
 		return err
 	}
 	if got != want {
-		return fmt.Errorf("batch: %s digest %s does not match the manifest's %s — this file changed after the batch was generated", path, got[:12], want[:12])
+		return fmt.Errorf("batch: %s digest %s does not match the manifest's %s — this file changed after the batch was generated", path, ShortDigest(got), ShortDigest(want))
 	}
 	return nil
 }

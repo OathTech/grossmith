@@ -153,7 +153,8 @@ func TestBatchValidationHardening(t *testing.T) {
 	})
 	t.Run("completion descriptor names another manifest", func(t *testing.T) {
 		root := manifestFixture(t)
-		if err := os.WriteFile(filepath.Join(root, "complete.json"), []byte(`{"schema":"grossmith-complete-v1","manifestSha256":"0000000000000000"}`), 0o644); err != nil {
+		wrong := strings.Repeat("0", 64)
+		if err := os.WriteFile(filepath.Join(root, "complete.json"), []byte(`{"schema":"grossmith-complete-v1","manifestSha256":"`+wrong+`"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		wantRefusal(t, root, "complete.json binds manifest")
@@ -162,6 +163,161 @@ func TestBatchValidationHardening(t *testing.T) {
 		root := manifestFixture(t)
 		if _, err := VerifyBatch(root); err == nil {
 			t.Fatal("VerifyBatch accepted a batch without complete.json")
+		}
+	})
+}
+
+// The E5 completion-descriptor witnesses (arc-end review B1/B3/B4): the
+// descriptor now binds the report artifacts, and its checker refuses
+// what it cannot read or parse instead of skipping or crashing.
+func TestCompletionDescriptorFailClosed(t *testing.T) {
+	writeCompletion := func(t *testing.T, root, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, "complete.json"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("empty object refuses instead of crashing", func(t *testing.T) {
+		// The review's reproduction: `{}` panicked the verifier on an
+		// unguarded digest truncation. The shipped witness had used a
+		// 16-character stand-in — exactly long enough to step over the
+		// bug — so this one uses the shortest possible descriptor.
+		root := manifestFixture(t)
+		writeCompletion(t, root, `{}`)
+		wantRefusal(t, root, "schema")
+	})
+	t.Run("short digest refuses before comparing", func(t *testing.T) {
+		root := manifestFixture(t)
+		writeCompletion(t, root, `{"schema":"grossmith-complete-v1","manifestSha256":"0000000000000000"}`)
+		wantRefusal(t, root, "not a sha256 digest")
+	})
+	t.Run("truncated json refuses", func(t *testing.T) {
+		root := manifestFixture(t)
+		writeCompletion(t, root, `{"schema":"grossmith-comp`)
+		wantRefusal(t, root, "complete.json")
+	})
+	t.Run("unknown field refuses", func(t *testing.T) {
+		// A field the checker does not understand must refuse rather
+		// than silently not bind (B4: schema was decoded, never compared,
+		// and unknown fields passed).
+		root := manifestFixture(t)
+		if err := WriteComplete(root); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(root, "complete.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeCompletion(t, root, strings.Replace(string(b), `"schema"`, `"extra": 1, "schema"`, 1))
+		wantRefusal(t, root, "unknown field")
+	})
+	t.Run("wrong schema refuses", func(t *testing.T) {
+		root := manifestFixture(t)
+		writeCompletion(t, root, `{"schema":"grossmith-complete-v9","manifestSha256":"`+strings.Repeat("0", 64)+`"}`)
+		wantRefusal(t, root, "schema")
+	})
+	t.Run("unreadable descriptor refuses, never skips", func(t *testing.T) {
+		// B4's reproduction: the old check sat inside `if err == nil`,
+		// so an unreadable complete.json skipped the binding entirely
+		// and the batch still validated.
+		if os.Geteuid() == 0 {
+			t.Skip("file modes do not restrict root")
+		}
+		root := manifestFixture(t)
+		if err := WriteComplete(root); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(root, "complete.json"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		wantRefusal(t, root, "unreadable")
+	})
+}
+
+// The E5 report-binding witnesses (arc-end review B1): the reviewer
+// rewrote totals, verdicts, and the reference identity in a published
+// batch.json and -verify returned success — verdicts live there, so an
+// unbound report was an unbound conclusion.
+func TestReportBinding(t *testing.T) {
+	reportFixture := func(t *testing.T) string {
+		t.Helper()
+		root := manifestFixture(t)
+		for name, content := range map[string]string{
+			"batch.json":   `{"schema":"grossmith-batch-v1","total":1}`,
+			"manifest.tsv": "case_00000\t1\n",
+		} {
+			if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := WriteComplete(root); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	t.Run("clean batch of record verifies with reports bound", func(t *testing.T) {
+		root := reportFixture(t)
+		info, err := VerifyBatch(root)
+		if err != nil {
+			t.Fatalf("clean batch refused: %v", err)
+		}
+		if !info.ReportsBound {
+			t.Fatal("reportFiles written but VerifyBatch reports them unbound")
+		}
+	})
+	t.Run("edited report refuses", func(t *testing.T) {
+		root := reportFixture(t)
+		if err := os.WriteFile(filepath.Join(root, "batch.json"), []byte(`{"schema":"grossmith-batch-v1","total":99999}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		wantRefusal(t, root, "the report changed after the batch finished")
+	})
+	t.Run("edited tsv refuses", func(t *testing.T) {
+		root := reportFixture(t)
+		if err := os.WriteFile(filepath.Join(root, "manifest.tsv"), []byte("case_00000\t2\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		wantRefusal(t, root, "the report changed after the batch finished")
+	})
+	t.Run("missing recorded report refuses", func(t *testing.T) {
+		root := reportFixture(t)
+		if err := os.Remove(filepath.Join(root, "batch.json")); err != nil {
+			t.Fatal(err)
+		}
+		wantRefusal(t, root, "cannot be read")
+	})
+	t.Run("unrecorded report on disk refuses", func(t *testing.T) {
+		// The converse: complete.json was written for an unjudged batch
+		// (no batch.json), then a report appeared beside it — a report
+		// nobody vouched for.
+		root := manifestFixture(t)
+		if err := os.WriteFile(filepath.Join(root, "manifest.tsv"), []byte("case_00000\t1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteComplete(root); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "batch.json"), []byte(`{"schema":"grossmith-batch-v1"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		wantRefusal(t, root, "does not name it")
+	})
+	t.Run("legacy completion verifies with reports stated unbound", func(t *testing.T) {
+		root := manifestFixture(t)
+		sum, err := FileSHA256(filepath.Join(root, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "complete.json"),
+			[]byte(`{"schema":"grossmith-complete-v1","manifestSha256":"`+sum+`"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		info, err := VerifyBatch(root)
+		if err != nil {
+			t.Fatalf("legacy batch refused: %v", err)
+		}
+		if info.ReportsBound {
+			t.Fatal("legacy completion has no reportFiles but VerifyBatch claims the report is bound")
 		}
 	})
 }

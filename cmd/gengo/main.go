@@ -165,22 +165,12 @@ func stagingIsOurs(dir string) bool {
 	return err == nil
 }
 
-// writeComplete writes the completion descriptor: the manifest's digest,
-// bound at the moment the batch finished. Consumers treat a tree
-// without it as an interrupted run.
+// writeComplete writes the completion descriptor LAST: the manifest's
+// digest plus the report artifacts' digests (E5, review B1 — verdicts
+// live in batch.json, so an unbound report was an unbound conclusion).
+// Consumers treat a tree without it as an interrupted run.
 func writeComplete(work string) error {
-	sum, err := harness.FileSHA256(filepath.Join(work, "manifest.json"))
-	if err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(map[string]string{
-		"schema":         "grossmith-complete-v1",
-		"manifestSha256": sum,
-	}, "", " ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(work, "complete.json"), b, 0o644)
+	return harness.WriteComplete(work)
 }
 
 // publishBatch atomically swaps staging into place. The previous batch
@@ -286,17 +276,51 @@ func run(cfg config) error {
 				return fmt.Errorf("-%s does not apply to -verify", name)
 			}
 		}
-		ids, err := harness.VerifyBatch(cfg.verify)
+		info, err := harness.VerifyBatch(cfg.verify)
 		if err != nil {
 			return err
 		}
-		// Scope stated honestly (arc-end review B1/B2): case inputs and
-		// the root go.mod are digest-checked; batch.json, manifest.tsv
-		// and golean-work/ are NOT yet covered by the descriptor, so
-		// this is not a statement about the report or the clone's tree.
-		// See docs/2026-08-09_evidence-arc-status.md; E5 closes it.
-		fmt.Printf("batch %s verified: %d cases, every CASE INPUT digest intact and bound to the manifest\n", cfg.verify, len(ids))
-		fmt.Printf("  not yet covered: batch.json, manifest.tsv, golean-work/ (evidence-arc E5)\n")
+		fmt.Printf("batch %s verified: %d cases, every case-input digest intact and bound to the manifest\n", cfg.verify, len(info.IDs))
+		if info.ReportsBound {
+			fmt.Printf("  report bound: batch.json/manifest.tsv digests match complete.json\n")
+		} else {
+			// A batch written before reportFiles existed — say what was
+			// NOT checked instead of overclaiming (review B1's lesson).
+			fmt.Printf("  report NOT bound: this batch predates reportFiles — batch.json and manifest.tsv are unchecked\n")
+		}
+		// The clone's side (E5, review B2): the work tree the clone
+		// compiled from, checked against the report's recorded digests.
+		workDir := filepath.Join(cfg.verify, "golean-work")
+		batchPath := filepath.Join(cfg.verify, "batch.json")
+		switch rb, err := os.ReadFile(batchPath); {
+		case os.IsNotExist(err):
+			fmt.Printf("  no batch.json: an unjudged batch — nothing further to bind\n")
+		case err != nil:
+			return err
+		default:
+			var rep harness.BatchReport
+			if err := json.Unmarshal(rb, &rep); err != nil {
+				return fmt.Errorf("batch.json: %w", err)
+			}
+			cloneRecorded := rep.CloneWorkFiles != nil
+			for _, cr := range rep.Cases {
+				if cr.CloneSourceSHA256 != "" {
+					cloneRecorded = true
+					break
+				}
+			}
+			switch {
+			case cloneRecorded:
+				if err := golean.VerifyWork(workDir, rep); err != nil {
+					return err
+				}
+				fmt.Printf("  clone tree bound: every recorded clone source and work file matches golean-work/\n")
+			case rep.CloneName != "":
+				fmt.Printf("  clone tree NOT bound: this batch predates clone source digests — golean-work/ is unchecked\n")
+			default:
+				fmt.Printf("  no clone in this batch\n")
+			}
+		}
 		return nil
 	}
 	if cfg.replay != "" {
@@ -717,7 +741,7 @@ func runReplay(cfg config) error {
 			}
 		}
 	}
-	fmt.Printf("replay %s: subject byte-identical (sha256 %s), features identical (%d tags)\n", rec.ID, rec.SubjectSHA256[:12], len(rec.Features))
+	fmt.Printf("replay %s: subject byte-identical (sha256 %s), features identical (%d tags)\n", rec.ID, harness.ShortDigest(rec.SubjectSHA256), len(rec.Features))
 	// Driver identity too, when the record carries it (audit F10; older
 	// records predate the field and skip with a note).
 	if rec.DriverSHA256 == "" {
@@ -849,6 +873,31 @@ func runGoLean(ctx context.Context, rep *harness.BatchReport, cfg config, work s
 		}
 		rep.Verdicts[res.Verdict]++
 	}
+	// Digest the clone's work tree into the report (E5, review B2): the
+	// source the clone compiled per case, plus the run artifacts. The
+	// translated main.go is a byte copy of subject.go, so a differing
+	// digest here means the tree changed under the run — refuse the
+	// batch rather than record a claim the tree contradicts.
+	perCase, workFiles, err := golean.WorkDigests(filepath.Join(work, "golean-work"))
+	if err != nil {
+		return err
+	}
+	for i := range rep.Cases {
+		sum, ok := perCase[rep.Cases[i].ID]
+		if !ok {
+			continue // never translated (refused before the clone)
+		}
+		if sum != rep.Cases[i].SubjectSHA256 {
+			return fmt.Errorf("golean work: case %s main.go digest %s differs from the subject's %s — the clone's tree changed during the run",
+				rep.Cases[i].ID, harness.ShortDigest(sum), harness.ShortDigest(rep.Cases[i].SubjectSHA256))
+		}
+		rep.Cases[i].CloneSourceSHA256 = sum
+		delete(perCase, rep.Cases[i].ID)
+	}
+	for id := range perCase {
+		return fmt.Errorf("golean work: translated case %s is not in the report", id)
+	}
+	rep.CloneWorkFiles = workFiles
 	return nil
 }
 

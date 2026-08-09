@@ -133,12 +133,22 @@ const CaseSchema = "grossmith-case-v1"
 
 // CaseResult is one case's judged result inside a batch report.
 type CaseResult struct {
-	ID            string  `json:"id"`
-	SubjectSHA256 string  `json:"subjectSha256"`
-	Verdict       Verdict `json:"verdict,omitempty"`
-	Reference     Outcome `json:"reference"`
+	ID            string   `json:"id"`
+	SubjectSHA256 string   `json:"subjectSha256"`
+	Verdict       Verdict  `json:"verdict,omitempty"`
+	Reference     Outcome  `json:"reference"`
 	Clone         *Outcome `json:"clone,omitempty"`
-	Detail        string  `json:"detail,omitempty"`
+	Detail        string   `json:"detail,omitempty"`
+	// CloneSourceSHA256 digests the source the CLONE campaign actually
+	// compiled for this case (golean-work/cases/<id>/main.go), measured
+	// after the clone run (E5, arc-end review B2: the reference inputs
+	// were digested but the clone's tree was outside the descriptor, so
+	// "which bytes both adapters executed" was only half answerable).
+	// The translator writes main.go as a byte copy of subject.go, so
+	// this must equal SubjectSHA256 — recorded, not assumed, and checked
+	// again by offline verification. Absent when the case never reached
+	// the clone (translation refused it).
+	CloneSourceSHA256 string `json:"cloneSourceSha256,omitempty"`
 }
 
 // BatchReport is the conformance statement as a durable artifact (audit H2):
@@ -203,6 +213,11 @@ type BatchReport struct {
 	// the artifact alone.
 	ReferenceOracle   *OracleIdentity `json:"referenceOracle,omitempty"`
 	CloneNestedOracle *OracleIdentity `json:"cloneNestedOracle,omitempty"`
+	// CloneWorkFiles digests the clone campaign's run artifacts at the
+	// work-tree root (the translated manifest and the published results;
+	// E5, arc-end review B2) — with the per-case CloneSourceSHA256 these
+	// make the clone's side of the batch re-checkable offline.
+	CloneWorkFiles map[string]string `json:"cloneWorkFiles,omitempty"`
 	// Composition is the per-tag program-presence histogram — the charter
 	// lists it as part of the conformance statement (rung 5 closed the
 	// gap: it was stdout-only). Populated by the producer from generated
