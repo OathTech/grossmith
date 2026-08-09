@@ -34,6 +34,18 @@ jobs:
           go run ./cmd/gengo -n 50 -seed 1 -out "$RUNNER_TEMP/smoke" -judge
           jq -e '.schema == "grossmith-batch-v1" and .total == 50 and .refRan == 50' \
             "$RUNNER_TEMP/smoke/batch.json"
+      - name: verify smoke
+        # -verify on the batch CI just produced, plus one edit it must
+        # catch (E5: the arc-end review found -verify exercised by
+        # nothing, and its report binding refuted by a hand edit).
+        run: |
+          go run ./cmd/gengo -verify "$RUNNER_TEMP/smoke"
+          sed -i 's/"total": 50/"total": 99999/' "$RUNNER_TEMP/smoke/batch.json"
+          if go run ./cmd/gengo -verify "$RUNNER_TEMP/smoke"; then
+            echo "verify accepted an edited report" >&2; exit 1
+          fi
+          sed -i 's/"total": 99999/"total": 50/' "$RUNNER_TEMP/smoke/batch.json"
+          go run ./cmd/gengo -verify "$RUNNER_TEMP/smoke"
       - name: replay smoke
         # The Phase 3 done-when as a CI check: a case regenerates from its
         # record alone, byte- and observation-identical.

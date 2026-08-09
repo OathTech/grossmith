@@ -152,12 +152,17 @@ ran.
 Exit (the audit's, in the arc's wording): extra, missing, or changed
 files fail before execution; interruption preserves the previous batch;
 offline inspection can prove which bytes both adapters executed.
-UNMET at arc-end review: the first two hold (validation refuses before
+UNMET at arc-end review: the first two held (validation refuses before
 any adapter runs; atomic publish survived a kill -9 sweep), the third
-does not — `batch.json` and `manifest.tsv` are undigested and
-`golean-work/`, which holds the source the CLONE compiled, sits outside
-the descriptor. A rewritten conformance statement passes `gengo -verify`
-with exit 0. Details and E5 scope: the status document.
+did not — `batch.json` and `manifest.tsv` were undigested and
+`golean-work/`, which holds the source the CLONE compiled, sat outside
+the descriptor; a rewritten conformance statement passed `gengo -verify`
+with exit 0.
+CLOSED BY E5 (2026-08-09, pending the arc-end re-review):
+`complete.json` digests the report artifacts, the clone's per-case
+source and work files are recorded in `batch.json` and re-checked by
+`golean.VerifyWork`, and the completion check fails closed. Witnessed at
+the library level and end-to-end through the CLI, including in CI.
 
 **E4 — resource guarantees made true.** Measure first, then fix.
 - MEASURE the cross-slice range/append amplification: instrument
@@ -189,13 +194,22 @@ Exit: the resource witnesses (cross-slice growth pattern, a compiler
 that never returns, unbounded subject output) return typed errors or
 stay inside measured, persisted budgets.
 UNMET at arc-end review, and refuted by MEASUREMENT: the re-derived
-executed-statement bound does not hold (14,372,767 statements measured
+executed-statement bound did not hold (14,372,767 statements measured
 against the 4e6 Validate guarantees, at a config Validate accepts),
-because the growth mask is lexical while emitted source is re-executed
-by enclosing loops; and the mask is slice-only, leaving string
-concat-into-string-range entirely ungated. `GcAdapter.Identity` — the
-probe gating every batch — has no budget at all, so "identity probes
-bounded" is also unmet. Details and E5 scope: the status document.
+because the growth mask was lexical while emitted source is re-executed
+by enclosing loops; the mask was slice-only, leaving string
+concat-into-string-range entirely ungated; and `GcAdapter.Identity` —
+the probe gating every batch — had no budget at all.
+E5 STATUS (2026-08-09): the measured MECHANISMS are closed (the
+loop-nest freeze, the string gates, budgeted and group-killed identity
+probes — each with its witness, including instrumented replay of the
+counterexample neighborhood at 123,825 statements vs the measured
+14.4M). The UNIVERSAL bound remains open by design decision: an honest
+closed form must also price block branching, fold trips, and calls, and
+cannot fit 4e6 without deleting real populations — stopped at
+`docs/2026-08-09_execution-bound-design-note.md` per the exit condition
+below; `Validate`'s formula is marked a plausibility screen until the
+user decides. This half of the exit condition stays UNMET.
 
 **E5 — arc-end findings closed.** (Added 2026-08-09 after the arc-end
 review; the user's call was to keep the arc whole rather than land

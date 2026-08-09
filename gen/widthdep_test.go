@@ -65,22 +65,29 @@ func TestWidthDepUntaggedObservesInWindow(t *testing.T) {
 // numbers: program-level saturation stays meaningfully below the old
 // ~98%, and the untagged (off-tag) population — what the cross-arch CI
 // job's discrimination check runs against — stays a real minority, not
-// a rounding error. STALE FIGURE (arc-end review): E4's widened maxExec
-// moved this to 88.90% (n=2000) and 93.75% on this test's own window,
-// against the 0.94 threshold below — passing by 0.25 percentage points,
-// with the off-tag population (the cross-arch discrimination job's
-// denominator) down ~15% relative. Re-measure and re-state in E5; see
-// docs/2026-08-09_evidence-arc-status.md. Previously measured 87.5%
-// (n=2000) after the witness-arc's
-// soundness hardening (unsigned underflow, conditional-write joins,
-// loop-staleness widening); the pre-hardening decomposition (n=1000,
-// 82.8%) attributed 287 tagged programs to window-fold constructs and
-// 537 to boundary/unknown-value arithmetic, and the hardening moved a
-// further ~5% from unsound-untagged to tagged. The charter's <50%
-// aspiration is unreachable WITHOUT under-tagging because boundary
-// literals (a deliberate, near-universal corpus feature) genuinely
-// diverge when they meet plain-width arithmetic. Recorded in the
-// ledger; the sound floor wins.
+// a rounding error.
+//
+// Measurement history, most recent first (each re-stated when the
+// mechanism moved, per the arc-end review's stale-figure finding):
+//   - E5 (2026-08-09): 87.30% at n=2000, 91% on this test's window —
+//     the per-site maxExec re-derivation (trip products instead of the
+//     whole-program worst) tightened "+fixed" contributions and undid
+//     E4's drift; margin to the 0.94 threshold back to ~3pp, off-tag
+//     population ~12.7%. Soundness screen after the change: 120
+//     untagged programs, 1,526 observed values, all in-window.
+//   - E4: drifted to 88.90% (n=2000), 93.75% on this window — passing
+//     by 0.25pp with the docstring still citing the older figure
+//     (arc-end review finding).
+//   - Witness arc: 87.5% (n=2000) after the soundness hardening
+//     (unsigned underflow, conditional-write joins, loop-staleness
+//     widening); the pre-hardening decomposition (n=1000, 82.8%)
+//     attributed 287 tagged programs to window-fold constructs and 537
+//     to boundary/unknown-value arithmetic.
+//
+// The charter's <50% aspiration is unreachable WITHOUT under-tagging
+// because boundary literals (a deliberate, near-universal corpus
+// feature) genuinely diverge when they meet plain-width arithmetic.
+// Recorded in the ledger; the sound floor wins.
 func TestWidthDepSaturation(t *testing.T) {
 	tagged, total := 0, 0
 	for seed := int64(53000); seed < 53400; seed++ {

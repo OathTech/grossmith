@@ -64,15 +64,23 @@ class keeps the first lane campaign attributable.
   orders differ "because a*31 + b == b*31 + a iff a == b", which is
   FALSE in modular arithmetic — the two folds differ by 30*(a-b), and
   30*(a-b) ≡ 0 mod 2^w whenever a-b ≡ 0 mod 2^(w-1), reachable at
-  w=32 with in-range values. The repaired argument: both fold terms
-  come from literals the emitter chooses, so it controls their
-  difference d outright; it emits terms with 0 < |d| < 2^31, and then
-  30*d is nonzero mod 2^32 AND mod 2^64 (30 = 2*15 with 15 odd, so
-  30*d ≡ 0 mod 2^w iff d ≡ 0 mod 2^(w-1)) — the two orders provably
-  differ at both widths. That bounded-difference argument (2
-  guaranteed entries, term difference in (0, 2^31) => >= 2 enumerable
-  observations at either width) goes verbatim into the manifest's
-  `why` column.
+  w=32 with in-range values. RE-CORRECTED 2026-08-09 (arc-end review:
+  the first repair covered the two forced entries IN ISOLATION — with
+  other surviving entries between them the coefficient is
+  31^i - 31^j, not 30). The full argument: both forced terms come
+  from literals the emitter chooses, so it controls their difference d
+  outright; it emits terms whose difference is ODD. Compare the two
+  iteration orders that differ only by transposing the forced pair
+  (positions i > j, others fixed): the fold outcomes differ by
+  d*(31^i - 31^j) = d * 31^j * (31^(i-j) - 1). 31^j is odd; by
+  lifting-the-exponent, the 2-adic valuation of 31^k - 1 is 1 for odd
+  k and 5 + v2(k) for even k — at map sizes the alphabet bounds
+  (len <= 6, so k <= 5) that is at most 7. With d odd the whole
+  difference has 2-adic valuation <= 7 < 32, so it is nonzero mod
+  2^32 AND mod 2^64: the two orders provably differ at both widths.
+  That argument (2 guaranteed entries, odd term difference, bounded
+  alphabet => >= 2 enumerable observations at either width) goes
+  verbatim into the manifest's `why` column.
 - **Width metadata, explicit** (their audit F2a: no silent defaults):
   the map-range consumption site's bound is the map's length at range
   time. The generator emits maps from bounded key alphabets and

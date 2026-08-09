@@ -222,6 +222,55 @@ new rung. Recorded as items land:
   emission-time cost budget; `Validate`'s formula is marked a
   plausibility screen until the user decides. E4's exit condition
   stays UNMET on this half.
+- **B1-B4 CLOSED.** `complete.json` digests `batch.json` and
+  `manifest.tsv` (the reviewer's rewritten-report reproduction is a
+  refusal, library-level and end-to-end through the CLI, and CI now
+  runs `-verify` plus one edit it must catch); the clone's per-case
+  compiled source and work files are recorded in `batch.json`
+  (`CloneSourceSHA256`, `CloneWorkFiles`) and re-checked offline by
+  `golean.VerifyWork`; the completion check fails closed (unreadable =
+  refusal, schema compared, strict decode); every digest read from
+  disk must be digest-shaped, which also removes the `[:12]` crash —
+  witnessed with the `{}` descriptor the old 16-character stand-in
+  stepped over. Legacy batches verify with their reduced scope stated
+  plainly.
+- **C1 CLOSED.** All fourteen exec sites carry a budget and group
+  cancellation: `Identity`/`Oracle` (witnessed with stalled and
+  pipe-holding stubs against both), golean's and gengo's git probes,
+  and a hard outer ceiling on the diff-coverage invocation.
+  `IdentityTimeout`, the clone log cap (previously an inline 16MB
+  literal), the lake budget, and the run ceiling join the persisted
+  `BatchBudgets`. Off unix, `killGroup` keeps the portable `WaitDelay`
+  backstop.
+- **Measurements and witnesses re-trued.** W4 saturation re-measured
+  after the per-site `maxExec` re-derivation: 87.30% (n=2000), 91% on
+  the test window — margin back to ~3pp, off-tag population ~12.7%,
+  soundness screen green (120 untagged programs, 1,526 values,
+  all in-window); docstring now carries the measurement history. The
+  flood witness asserts the full flood phrase against a 32MB-by-
+  construction writer; the group-kill witness fails when the pid file
+  is missing; the build-timeout message names the deadline that
+  actually expired (`BuildBudget` makes the budget path exercisable,
+  and both paths are asserted); `goroot()`'s hard-coded path is gone —
+  the E2 witness resolves the real toolchain before reordering PATH
+  and is fatal, never a skip.
+- **Narrowed mid-arc residuals closed.** Recovery ownership is a
+  content test: `<out>.prev` must parse as a gengo manifest, and the
+  staging marker binds its out dir (witnessed: a file merely named
+  manifest.json, and a marker for a different out dir, both refuse
+  untouched). `dirtyContentHash` uses `-uall -z`, so files inside
+  untracked directories and git-quoted paths are hashed (witnessed).
+  Root-level symlinks under allowlisted names refuse. The membership
+  note's multiplicity proof is re-corrected for general positions
+  (odd term difference; 2-adic valuation of 31^k - 1 at most 7 at
+  alphabet sizes); the Phase 2 banner states the E1 narrowing.
+- **Explicitly deferred, with reasons:** `setsid()` escapees still
+  leak until process exit and cost a silent 5s `WaitDelay` each (the
+  real worst case is budget + 5s) — closing that needs PID-namespace
+  or cgroup supervision, out of the arc's scope; recorded here rather
+  than half-built. The `.staging`-holds-a-finished-batch crash window
+  (TODO item 11) and the validate-vs-build edit window remain recorded
+  residuals for R4's content-addressed snapshots.
 
 ## The E5 scope (agreed 2026-08-09; progress above)
 

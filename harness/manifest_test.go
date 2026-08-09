@@ -352,30 +352,46 @@ func TestStalledCompilerIsBounded(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(caseDir, "main.go"), []byte("package main\nfunc main(){}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ad := &GcAdapter{GoBin: bin, AdapterName: "stalled"}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	// The BUILD BUDGET path, not a caller cancellation: BuildBudget makes
+	// the const-sized deadline exercisable (arc-end review: BuildTimeout
+	// was never reached by any test, and a caller-canceled build printed
+	// "timeout after 2m0s" — a duration that was not the cause).
+	ad := &GcAdapter{GoBin: bin, AdapterName: "stalled", BuildBudget: 2 * time.Second}
 	start := time.Now()
-	out := ad.Run(ctx, caseDir)
+	out := ad.Run(context.Background(), caseDir)
 	if elapsed := time.Since(start); elapsed > 15*time.Second {
 		t.Fatalf("stalled compiler not bounded by the build budget: %s", elapsed)
 	}
-	if out.Status != StatusBuildFailed {
-		t.Fatalf("stalled compiler classified %s, want build-failed", out.Status)
+	if out.Status != StatusBuildFailed || !strings.Contains(out.Detail, "build timeout after 2s") {
+		t.Fatalf("stalled compiler classified %s (%s), want the named build budget", out.Status, out.Detail)
+	}
+	// A caller deadline tighter than the budget must be reported as the
+	// caller's, never as the budget's duration.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out = (&GcAdapter{GoBin: bin, AdapterName: "stalled2"}).Run(ctx, caseDir)
+	if out.Status != StatusBuildFailed || !strings.Contains(out.Detail, "caller's deadline") {
+		t.Fatalf("caller-canceled build classified %s (%s), want the caller's deadline named", out.Status, out.Detail)
 	}
 	// The background work must be gone too: cancellation covers the
 	// process group, so nothing the toolchain started keeps running
-	// after the case is done with. Signal 0 is a liveness probe.
-	if b, err := os.ReadFile(pidFile); err == nil {
-		pid, convErr := strconv.Atoi(strings.TrimSpace(string(b)))
-		if convErr != nil {
-			t.Fatalf("stub pid file: %v", convErr)
-		}
-		time.Sleep(200 * time.Millisecond)
-		if err := syscall.Kill(pid, 0); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGKILL) // clean up the leak
-			t.Fatalf("background work (pid %d) outlived the build deadline", pid)
-		}
+	// after the case is done with. Signal 0 is a liveness probe. The pid
+	// file is MANDATORY — without it this assertion is vacuous (arc-end
+	// review: it sat inside `if err == nil` and skipped silently, which
+	// was the one check distinguishing group kill from a plain
+	// CommandContext).
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("stub never wrote its pid file — the group-kill assertion would be vacuous: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatalf("stub pid file: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := syscall.Kill(pid, 0); err == nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL) // clean up the leak
+		t.Fatalf("background work (pid %d) outlived the build deadline", pid)
 	}
 }
 
@@ -469,7 +485,12 @@ func main() {
 	}
 	ad := &GcAdapter{AdapterName: "runaway", Timeout: 30 * time.Second}
 	out := ad.Run(context.Background(), dir)
-	if out.Status != StatusRunFailed || !strings.Contains(out.Detail, "cap") {
+	// The FULL flood phrase, not a substring a coincidental panic detail
+	// could satisfy (arc-end review: `Contains(Detail, "cap")` passed on
+	// a slice-capacity panic without a byte having flooded). The subject
+	// writes 32MB by construction against the 8MB cap, so a cap refusal
+	// here means bytes really flowed past it.
+	if out.Status != StatusRunFailed || !strings.Contains(out.Detail, "subject output exceeded the 8MB cap") {
 		t.Fatalf("runaway output classified %s (%s), want the output-cap refusal", out.Status, out.Detail)
 	}
 }

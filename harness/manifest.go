@@ -216,6 +216,12 @@ func ValidateBatch(root string) ([]string, error) {
 	for _, e := range entries {
 		name := e.Name()
 		switch {
+		case e.Type()&os.ModeSymlink != 0:
+			// Before the allowlist: a symlink under an allowlisted NAME
+			// (manifest.json included) would otherwise pass, pointing the
+			// descriptor itself somewhere the batch tree cannot vouch for
+			// (E5; the mid-arc symlink findings' recorded root residual).
+			return nil, fmt.Errorf("batch: %s at the batch root is a symlink — refused", name)
 		case e.IsDir() && seen[name]:
 		case e.IsDir() && name == "golean-work": // judge-time artifact tree
 		case !e.IsDir() && rootFileAllowed(name):

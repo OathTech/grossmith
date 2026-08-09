@@ -1,6 +1,13 @@
-*CLOSED/HISTORICAL (2026-08-09): delivered. Caveat of record: defer/recover was
-unmeasurable in this phase (later dissolved by the R1 recover wrapper), and
-recovered-event coverage remains open — `docs/roadmap.md` (R7).*
+*CLOSED/HISTORICAL (2026-08-09): delivered, with two caveats of record.
+Defer/recover was unmeasurable in this phase (later dissolved by the R1
+recover wrapper), and recovered-event coverage remains open —
+`docs/roadmap.md` (R7). And the evidence arc's E1 later NARROWED what the
+sensitivity matrix proves against the done-when below: the `len` and
+`map-order` rows now resolve to clone-infra rather than a semantic
+mismatch (defensible under the lanes doctrine, documented in the test) —
+so "every supported observation shape has a targeted unequal-state
+witness" holds with those two shapes witnessed at the infra tier, not the
+semantic one.*
 
 # Phase 2 design: observation sensitivity (2026-08-07)
 

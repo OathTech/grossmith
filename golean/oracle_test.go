@@ -29,6 +29,14 @@ import (
 func TestPinnedToolchainIgnoresPathOrder(t *testing.T) {
 	work := t.TempDir()
 
+	// Resolve the REAL toolchain from the ordinary environment BEFORE
+	// this test reorders PATH. Failure is fatal, not a skip: this is the
+	// arc's P0 trust witness, and a silent skip is the wrong failure
+	// mode for it (arc-end review: the old resolution hard-coded
+	// /usr/local/go and t.Skip'd on any other layout, so the witness
+	// could vanish without a trace on a differently-laid-out host).
+	real := realGo(t)
+
 	standInDir := t.TempDir()
 	callLog := filepath.Join(standInDir, "calls.log")
 	standIn := "#!/bin/sh\necho called >> " + callLog + "\necho go version go0.0.0-standin linux/amd64\n"
@@ -42,7 +50,6 @@ func TestPinnedToolchainIgnoresPathOrder(t *testing.T) {
 	if found, err := exec.LookPath("go"); err != nil || !strings.HasPrefix(found, standInDir) {
 		t.Fatalf("ordinary lookup resolved %q, not the stand-in — vacuous witness", found)
 	}
-	real := realGo(t)
 
 	shimDir, err := goShim(work, real)
 	if err != nil {
@@ -92,25 +99,25 @@ func TestPinnedToolchainIgnoresPathOrder(t *testing.T) {
 	}
 }
 
-// realGo resolves the actual toolchain without consulting PATH (which
-// this test deliberately reorders).
+// realGo resolves the actual toolchain from the ordinary PATH — callers
+// must invoke it BEFORE reordering PATH — and proves it answers as a Go
+// toolchain. Fatal on failure: the suite cannot run without a go binary
+// anyway, so a missing one here is breakage to report, never to skip.
 func realGo(t *testing.T) string {
 	t.Helper()
-	out, err := exec.Command(filepath.Join(goroot(t), "bin", "go"), "version").Output()
+	found, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("no go toolchain on PATH — the P0 trust witness cannot run: %v", err)
+	}
+	abs, err := filepath.Abs(found)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(abs, "version").Output()
 	if err != nil || !strings.Contains(string(out), "go version go1") {
-		t.Fatalf("real toolchain probe: %v: %s", err, out)
+		t.Fatalf("real toolchain probe %s: %v: %s", abs, err, out)
 	}
-	return filepath.Join(goroot(t), "bin", "go")
-}
-
-func goroot(t *testing.T) string {
-	t.Helper()
-	out, err := exec.Command(filepath.Join("/usr", "local", "go", "bin", "go"), "env", "GOROOT").Output()
-	if err == nil {
-		return strings.TrimSpace(string(out))
-	}
-	t.Skip("no toolchain at /usr/local/go — this witness needs a known-good real go")
-	return ""
+	return abs
 }
 
 // A relative pin would re-resolve differently per working directory,

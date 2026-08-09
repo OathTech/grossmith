@@ -223,9 +223,9 @@ type BatchReport struct {
 	// gap: it was stdout-only). Populated by the producer from generated
 	// features.
 	Composition map[string]int `json:"composition,omitempty"`
-	RefRan      int             `json:"refRan"`
-	PanicPaths  int             `json:"panicPaths"`
-	Recovered   int             `json:"recovered"`
+	RefRan      int            `json:"refRan"`
+	PanicPaths  int            `json:"panicPaths"`
+	Recovered   int            `json:"recovered"`
 	// Subject size distribution (audit M4: "small" as a number).
 	SubjectBytesMin  int `json:"subjectBytesMin,omitempty"`
 	SubjectBytesMean int `json:"subjectBytesMean,omitempty"`
@@ -253,6 +253,10 @@ type GcAdapter struct {
 	GoBin   string
 	GOARCH  string
 	Timeout time.Duration
+	// BuildBudget overrides the compile-phase deadline; 0 means
+	// BuildTimeout. Exists so the budget path is exercisable in tests
+	// (arc-end review: BuildTimeout was a const no test ever reached).
+	BuildBudget time.Duration
 	// name distinguishes multiple instances (reference vs degenerate clone).
 	AdapterName string
 
@@ -427,7 +431,11 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	// every subprocess dies as a PROCESS GROUP (exec.CommandContext
 	// kills the direct child only; a compiler or subject that spawns
 	// ignores that).
-	buildCtx, buildCancel := context.WithTimeout(ctx, BuildTimeout)
+	buildBudget := a.BuildBudget
+	if buildBudget <= 0 {
+		buildBudget = BuildTimeout
+	}
+	buildCtx, buildCancel := context.WithTimeout(ctx, buildBudget)
 	defer buildCancel()
 	build := exec.CommandContext(buildCtx, bin, "build", "-buildvcs=false", "-o", exe, ".")
 	build.Dir = caseDir
@@ -437,7 +445,14 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	killGroup(build)
 	if err := build.Run(); err != nil {
 		if buildCtx.Err() == context.DeadlineExceeded {
-			return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build timeout after %s (E4 phase budget)", BuildTimeout)}
+			// A child context reports DeadlineExceeded when the PARENT
+			// expired too, so name the deadline that actually ended the
+			// build (arc-end review: a 3s caller cancellation printed
+			// "build timeout after 2m0s").
+			if ctx.Err() != nil {
+				return Outcome{Status: StatusBuildFailed, Detail: "build canceled: the caller's deadline ended before the build budget"}
+			}
+			return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build timeout after %s (E4 phase budget)", buildBudget)}
 		}
 		return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build: %v: %s", err, buildOut.String())}
 	}

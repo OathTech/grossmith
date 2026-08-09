@@ -111,8 +111,11 @@ func stageBatchDir(out string) (string, error) {
 		// review finding 2: an unowned <out>.prev holding user data was
 		// renamed over out — logged as a recovery — then consumed and
 		// deleted; an unowned <out>.staging was deleted outright). A
-		// prev only ever comes from publishBatch renaming a batch, so a
-		// batch marker is the ownership proof.
+		// prev only ever comes from publishBatch renaming a PUBLISHED
+		// batch, so the proof is a manifest that actually PARSES as our
+		// descriptor — not the mere presence of a file with the right
+		// name (E5, the finding's recorded residual: a directory holding
+		// any file called manifest.json was recovered and consumed).
 		if !ownedBatchDir(prev) {
 			return "", fmt.Errorf("%s exists and is not a gengo batch — refusing to touch it (move it aside to proceed)", prev)
 		}
@@ -131,8 +134,8 @@ func stageBatchDir(out string) (string, error) {
 	}
 	staging := out + ".staging"
 	if fi, err := os.Lstat(staging); err == nil {
-		if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() || !stagingIsOurs(staging) {
-			return "", fmt.Errorf("%s exists and is not a gengo staging tree — refusing to touch it (move it aside to proceed)", staging)
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() || !stagingIsOurs(staging, out) {
+			return "", fmt.Errorf("%s exists and is not this out dir's gengo staging tree — refusing to touch it (move it aside to proceed)", staging)
 		}
 		if err := os.RemoveAll(staging); err != nil {
 			return "", err
@@ -143,26 +146,35 @@ func stageBatchDir(out string) (string, error) {
 	}
 	// The ownership marker is the FIRST write: a crash at any later
 	// point leaves a tree the next run can prove is its own leftover.
-	if err := os.WriteFile(filepath.Join(staging, harness.StagingMarker()), []byte("gengo staging tree — safe to delete\n"), 0o644); err != nil {
+	// Its CONTENT binds the out dir (E5: a filename alone proved only
+	// that something once wrote a marker, not that this tree is THIS
+	// batch's staging).
+	if err := os.WriteFile(filepath.Join(staging, harness.StagingMarker()), []byte(stagingMarkerContent(out)), 0o644); err != nil {
 		return "", err
 	}
 	return staging, nil
 }
 
-// ownedBatchDir: the directory carries a batch manifest (json or tsv) or
-// the staging marker — something only gengo writes.
-func ownedBatchDir(dir string) bool {
-	for _, name := range []string{"manifest.json", "manifest.tsv", harness.StagingMarker()} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return true
-		}
+func stagingMarkerContent(out string) string {
+	abs, err := filepath.Abs(out)
+	if err != nil {
+		abs = out
 	}
-	return false
+	return "gengo staging for " + abs + " — safe to delete\n"
 }
 
-func stagingIsOurs(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, harness.StagingMarker()))
+// ownedBatchDir: the tree parses as a published gengo batch. A CONTENT
+// test, not a filename test — ReadManifest checks the schema and every
+// digest's shape, which nothing but gengo writes.
+func ownedBatchDir(dir string) bool {
+	_, err := harness.ReadManifest(dir)
 	return err == nil
+}
+
+// stagingIsOurs: the marker exists AND names this out dir.
+func stagingIsOurs(dir, out string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, harness.StagingMarker()))
+	return err == nil && string(b) == stagingMarkerContent(out)
 }
 
 // writeComplete writes the completion descriptor LAST: the manifest's
@@ -992,20 +1004,6 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 	}
 }
 
-// generatorRev is the generator's own identity in every artifact: VCS
-// revision from build info, "-dirty" when the build had local changes.
-// `go run` and test builds do not stamp VCS settings (audit M5 observed
-// "unknown" in real artifacts), so the fallback asks git about the working
-// directory — prefixed so the record is honest about its provenance.
-// dirtyContentHash binds a dirty tree's actual content: the HEAD-relative
-// diff (tracked changes), the porcelain status, and the CONTENT of every
-// untracked file (mid-arc review finding 8: the first version hashed
-// only untracked NAMES, so two trees differing in an untracked file's
-// body shared an identity). It hashes the tree gengo runs FROM — the
-// same tree generatorRev names (cwd-git) — which for `go run` is the
-// tree that built the binary; a prebuilt binary run elsewhere records
-// that elsewhere-tree, consistent with its own cwd-git rev. Sanitized
-// git env, same as generatorRev.
 // gitProbe runs one identity/dirtiness query under its own budget and
 // group cancellation with the sanitized env (E5, review C1 sweep: these
 // were bare exec.Command — a git waiting on a lock or filesystem monitor
@@ -1025,6 +1023,14 @@ func gitProbe(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
+// dirtyContentHash binds a dirty tree's actual content: the HEAD-relative
+// diff (tracked changes), the porcelain status, and the CONTENT of every
+// untracked file (mid-arc review finding 8: the first version hashed
+// only untracked NAMES, so two trees differing in an untracked file's
+// body shared an identity). It hashes the tree gengo runs FROM — the
+// same tree generatorRev names (cwd-git) — which for `go run` is the
+// tree that built the binary; a prebuilt binary run elsewhere records
+// that elsewhere-tree, consistent with its own cwd-git rev.
 func dirtyContentHash(dir string) (string, error) {
 	h := sha256.New()
 	for _, args := range [][]string{
@@ -1037,29 +1043,52 @@ func dirtyContentHash(dir string) (string, error) {
 		}
 		h.Write(out)
 	}
-	// Untracked file CONTENTS, in porcelain order.
-	out, err := gitProbe("-C", dir, "status", "--porcelain")
+	// Untracked file CONTENTS, in porcelain order. -uall descends into
+	// untracked DIRECTORIES (E5: finding 8's fix stopped one level up —
+	// files inside a new directory collapsed to a single "?? newdir/"
+	// line, the same content-blind class) and -z stops git from quoting
+	// unusual paths, which the line parser previously skipped silently.
+	out, err := gitProbe("-C", dir, "status", "--porcelain", "-uall", "-z")
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.HasPrefix(line, "?? ") {
+	entries := strings.Split(string(out), "\x00")
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if len(entry) < 4 {
 			continue
 		}
-		path := filepath.Join(dir, strings.TrimPrefix(line, "?? "))
+		xy, name := entry[:2], entry[3:]
+		if xy[0] == 'R' || xy[0] == 'C' {
+			// Rename/copy entries carry the original path as a second
+			// NUL record; never an untracked entry, but it must not be
+			// misread as one.
+			i++
+		}
+		if xy != "??" {
+			continue
+		}
+		path := filepath.Join(dir, name)
 		if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
-			continue // directories/specials: named by the status hash above
+			continue // specials: named by the status hash above
 		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("hashing untracked %s: %w", path, err)
 		}
-		h.Write([]byte(line))
+		h.Write([]byte(entry))
+		h.Write([]byte{0})
 		h.Write(b)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+// generatorRev is the generator's own identity in every artifact: VCS
+// revision from build info, "-dirty" when the build had local changes.
+// `go run` and test builds do not stamp VCS settings (audit M5 observed
+// "unknown" in real artifacts), so the fallback asks git about the
+// working directory — prefixed so the record is honest about its
+// provenance.
 func generatorRev() string {
 	rev, dirty := "", false
 	if info, ok := debug.ReadBuildInfo(); ok {

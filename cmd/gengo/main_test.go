@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -342,6 +343,51 @@ func TestVerifyEndToEnd(t *testing.T) {
 	}
 }
 
+// TestDirtyContentHashSeesInsideUntrackedDirs (E5; the residual of
+// mid-arc finding 8): the fix that hashed untracked file CONTENT
+// stopped one level up — git's default status collapses an untracked
+// directory to one "dir/" line, so two trees differing only in a file
+// inside a new directory shared an identity. -uall descends.
+func TestDirtyContentHashSeesInsideUntrackedDirs(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("no git on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "tracked.txt")
+	git("commit", "-q", "-m", "base")
+	if err := os.MkdirAll(filepath.Join(dir, "newdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(content string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "newdir", "inner.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		h, err := dirtyContentHash(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	if write("one\n") == write("two\n") {
+		t.Fatal("trees differing only inside an untracked directory hashed identically")
+	}
+}
+
 // TestBatchPublishAtomicity (E3; audit P1: in-place regeneration left
 // interrupted hybrids that passed the ownership check). The batch
 // lifecycle is staging -> complete.json -> atomic swap; every crash
@@ -350,7 +396,10 @@ func TestVerifyEndToEnd(t *testing.T) {
 func TestBatchPublishAtomicity(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "batch")
 
-	// A published "previous" batch.
+	// A published "previous" batch — with a manifest that PARSES, since
+	// ownership is a content test now (E5: a file merely NAMED
+	// manifest.json proved nothing).
+	minimalManifest := []byte(`{"schema":"grossmith-manifest-v1","generatorRev":"t","goVersion":"go 1.26","rootFiles":{},"cases":null}`)
 	work1, err := stageBatchDir(out)
 	if err != nil {
 		t.Fatal(err)
@@ -358,18 +407,22 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work1, "marker"), []byte("previous"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(work1, "manifest.json"), minimalManifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := publishBatch(out, work1); err != nil {
 		t.Fatal(err)
 	}
 
 	// Crash window 1: a half-built staging dir left behind. Real staging
-	// writes its ownership marker FIRST, so the simulation includes it
-	// (mid-arc finding 2: an unmarked dir is FOREIGN and refused). The
-	// next stage removes ours; the published batch is untouched.
+	// writes its ownership marker FIRST, bound to this out dir, so the
+	// simulation includes exactly that (mid-arc finding 2: an unmarked
+	// dir is FOREIGN and refused). The next stage removes ours; the
+	// published batch is untouched.
 	if err := os.MkdirAll(out+".staging", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(out+".staging", harness.StagingMarker()), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(out+".staging", harness.StagingMarker()), []byte(stagingMarkerContent(out)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(out+".staging", "half"), nil, 0o644); err != nil {
@@ -444,5 +497,33 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(foreign2+".staging", "user-data")); string(b) != "precious" {
 		t.Fatal("foreign .staging was touched")
+	}
+
+	// E5, the finding's recorded residuals: ownership is CONTENT, not
+	// filenames. A prev whose manifest.json does not parse as ours is
+	// foreign; a staging tree whose marker binds a DIFFERENT out dir is
+	// foreign. Neither is touched.
+	named := filepath.Join(t.TempDir(), "named")
+	if err := os.MkdirAll(named+".prev", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(named+".prev", "manifest.json"), []byte("user notes, not a manifest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stageBatchDir(named); err == nil {
+		t.Fatal("a file merely NAMED manifest.json proved ownership")
+	}
+	if b, _ := os.ReadFile(filepath.Join(named+".prev", "manifest.json")); string(b) != "user notes, not a manifest" {
+		t.Fatal("name-only .prev was touched")
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.MkdirAll(other+".staging", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other+".staging", harness.StagingMarker()), []byte(stagingMarkerContent(filepath.Join(t.TempDir(), "elsewhere"))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stageBatchDir(other); err == nil {
+		t.Fatal("a staging marker bound to a different out dir was accepted")
 	}
 }
