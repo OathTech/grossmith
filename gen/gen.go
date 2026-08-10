@@ -680,6 +680,12 @@ func (g *Generator) Generate() (c Case, err error) {
 		// site lying quietly.
 		stmts.line("psite = %d", g.cfg.Stmts+1)
 	}
+	// A breached budget is a GENERATOR bug (a mandatory emission outran
+	// its floor), never a program to ship (E6 re-review R2: the flag
+	// existed but Generate returned the program anyway).
+	if g.budgetBreached {
+		return Case{}, fmt.Errorf("gen: execution-budget accounting breach — a mandatory emission outran its floor (generator bug; seed %d)", g.cfg.Seed)
+	}
 	observed := g.observe(stmts)
 	if g.wrapped {
 		// SITE encoding (2026-08-08 review, G1): the old message-prefix

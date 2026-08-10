@@ -174,11 +174,15 @@ func TestExecutedStatementsMeasured(t *testing.T) {
 	t.Logf("measured %d subjects, worst %d executed statements", measured, worst)
 }
 
-// TestChargedCoversMeasured is E6's parity witness — the strongest one:
-// the budget's charges must DOMINATE what the program actually executes,
-// for real programs, measured by instrumentation. An emitter that emits
-// more executions than it charges shows up here as measured > charged.
-// Configs include the ones the old worst-case formula refused.
+// TestChargedCoversMeasured is E6's parity witness: the budget's charges
+// must DOMINATE what the program actually executes, for real programs,
+// measured by instrumentation. Honest scope (the re-review's R1): this
+// is whole-program dominance over sampled seeds with ~2x aggregate
+// overcharge slack, so it catches an under-charge only when it outruns
+// that slack on a sampled program — a coarse net under the white-box
+// accounting witnesses, not a per-emitter proof. The sampled configs
+// include the families the old formula refused and the re-review's
+// refutation seeds, where the pair under-charge outran the slack 166x.
 func TestChargedCoversMeasured(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs binaries")
@@ -199,6 +203,15 @@ func TestChargedCoversMeasured(t *testing.T) {
 			cfg.Stmts, cfg.Depth, cfg.LoopCap = 64, 6, 4096
 			return cfg
 		}, []int64{1, 2, 3}},
+		// The E6 re-review's refutation seeds: a forward-pair source
+		// carrying a ~3468-trip loop, reused inside an 893-trip loop —
+		// measured 9.35M executed statements against a 56k charge while
+		// the source builder was hand-counted instead of priced.
+		{"pair reuse", func(seed int64) Config {
+			cfg := DefaultConfig(seed)
+			cfg.Stmts, cfg.Depth, cfg.LoopCap = 24, 3, 4096
+			return cfg
+		}, []int64{80, 183}},
 	}
 	var worstRatio float64
 	for _, tc := range configs {

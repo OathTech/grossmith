@@ -79,10 +79,11 @@ type fwdPair struct {
 	ptype    string // concrete | any | mixed
 	src      string // both function declarations
 	// cost is the pair's worst-case executed statements per forwarding
-	// call (E6): the source's return, the sink's per-slot fold lines,
-	// and call overhead. Bodies are hand-built text, so the figure is
-	// counted here rather than priced through the emitters; the white-
-	// box witness pins it to the builders.
+	// call (E6): the source body PRICED through the emitters (it emits
+	// real statements at depth 1, loops included — the re-review's
+	// blocking finding was a hand count of 8 here against a measured
+	// ~10k-statement source), plus the sink's fixed draw-free fold,
+	// which stays counted.
 	cost int64
 }
 
@@ -113,9 +114,15 @@ func (g *Generator) tupleForwardStmt(out *emitter) {
 		{name: "mixed", weight: 3, ok: boxOK && dest != "variadic"},
 	}).name
 	pair := g.forwardPair(dest, ptype)
-	// The pair's bodies execute per forwarding call (E6); the arm's
-	// gate afforded fwdPairWorstCost, which the white-box witness pins
-	// above every real pair cost.
+	// The REAL per-call cost is knowable only once the pair exists
+	// (a fresh source body is generated above), so affordability is
+	// decided here, with the plain-assign fallback other arms use when
+	// their premise fails — and charged BEFORE the argument expressions
+	// can spend the pool under it (E6 re-review R2).
+	if !g.afford(satMul(pair.cost, g.execMul)) {
+		g.assign(out)
+		return
+	}
 	g.charge(satMul(pair.cost, g.execMul))
 	i, _ := g.pickVar(Int(0, false))
 	target := &g.vars[i]
@@ -147,11 +154,14 @@ func (g *Generator) forwardPair(dest, ptype string) fwdPair {
 	srcName := fmt.Sprintf("tf%d", g.fwdSeq)
 	sinkName := fmt.Sprintf("tg%d", g.fwdSeq)
 	g.fwdSeq++
-	params, srcText := g.buildForwardSource(srcName, slots)
+	params, srcText, srcCost := g.buildForwardSource(srcName, slots)
 	pair := fwdPair{srcName: srcName, sinkName: sinkName, params: params,
 		dest: dest, ptype: ptype,
-		src:  srcText + g.buildForwardSink(sinkName, slots, dest),
-		cost: int64(len(slots)) + 6}
+		src: srcText + g.buildForwardSink(sinkName, slots, dest),
+		// The source's PRICED per-call cost (its body carries real
+		// statements, loops included) plus the sink's fixed, draw-free
+		// fold — one line per slot with header and return slack.
+		cost: satAdd(srcCost, int64(len(slots))+4)}
 	if g.fwdByForm == nil {
 		g.fwdByForm = map[string]int{}
 	}
@@ -252,7 +262,7 @@ func (g *Generator) drawForwardSlots(dest, ptype string) []fwdSlot {
 // srcBoxed slot declares its RESULT type any — the return statement's
 // concrete expression boxes at the source's return, so the forwarding
 // call moves a ready-made interface value (the negative-control row).
-func (g *Generator) buildForwardSource(name string, slots []fwdSlot) ([]Type, string) {
+func (g *Generator) buildForwardSource(name string, slots []fwdSlot) ([]Type, string, int64) {
 	comps := make([]Type, len(slots))
 	for i, s := range slots {
 		comps[i] = s.comp
@@ -273,13 +283,24 @@ func (g *Generator) buildForwardSource(name string, slots []fwdSlot) ([]Type, st
 		g.vars = append(g.vars, binding{name: fmt.Sprintf("p%d", j), typ: pt})
 	}
 	body := &emitter{indent: 1}
-	for j := 1 + g.c.draw(2); j > 0; j-- {
-		g.stmtIn(body, 1, false, false)
-	}
 	rs := make([]string, len(comps))
-	for j, rt := range comps {
-		rs[j] = g.expr(rt, g.cfg.ExprFuel).text
-	}
+	// Priced like every other pure body (E6 re-review, the blocking
+	// finding: this builder emits full statements at depth 1 — loops
+	// included — and its cost was a hand count of 8, so a reused pair
+	// carrying a big loop under-charged every cache-hit site; measured
+	// 9,354,662 executed statements against the 4e6 ceiling at an
+	// accepted config, seed 80).
+	cost := g.priceBody(func() {
+		stmts := 1 + g.c.draw(2)
+		release := g.commitFloor(int64(stmts))
+		for j := 0; j < stmts; j++ {
+			g.stmtIn(body, 1, false, false)
+		}
+		release()
+		for j, rt := range comps {
+			rs[j] = g.expr(rt, g.cfg.ExprFuel).text
+		}
+	})
 	body.line("return %s", strings.Join(rs, ", "))
 	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
 	g.mark("helpers")
@@ -300,7 +321,7 @@ func (g *Generator) buildForwardSource(name string, slots []fwdSlot) ([]Type, st
 		}
 	}
 	return params, fmt.Sprintf("func %s(%s) (%s) {\n%s}\n\n",
-		name, strings.Join(ps, ", "), strings.Join(rt, ", "), body.buf.String())
+		name, strings.Join(ps, ", "), strings.Join(rt, ", "), body.buf.String()), cost
 }
 
 // buildForwardSink emits the sink half: parameters shaped by the form, and a

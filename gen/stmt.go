@@ -113,7 +113,10 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 		// for a 300-case campaign to hit the fix pair repeatedly.
 		// Subject-only: pairs are top-level and their creation swaps the
 		// variable environment.
-		{name: "tuple-forward", weight: 3, ok: g.enabled("helpers", "tuple_forward") && !g.pureMode && g.afford(satMul(fwdPairWorstCost, g.execMul)),
+		// No budget gate here: a pair's real cost is knowable only once
+		// it exists, so tupleForwardStmt decides affordability itself
+		// and falls back to a plain assign (E6 re-review).
+		{name: "tuple-forward", weight: 3, ok: g.enabled("helpers", "tuple_forward") && !g.pureMode,
 			emit: func() { g.tupleForwardStmt(out) }},
 		{name: "multi-assign", weight: 3 + 2*boolToInt(g.corner == "order"), ok: g.enabled("multi_assign") && len(g.vars) >= 2,
 			emit: func() { g.multiAssign(out) }},
@@ -536,6 +539,11 @@ func (g *Generator) elemAssign(out *emitter) {
 // only ever grows, preserving the minLen index bound.
 func (g *Generator) appendStmt(out *emitter) {
 	g.resetRisk()
+	// Charge the observation pre-pay BEFORE the element expression can
+	// spend the pool under it (E6 re-review R2: the arm's gate afforded
+	// this figure, so charging first cannot breach; charging after left
+	// a window where a call in the element expression drained it).
+	g.charge(satMul(3, g.execMul))
 	i := pick(g.c, g.appendableSlices())
 	s := &g.vars[i]
 	s.reads++ // append reads its first operand
@@ -553,13 +561,11 @@ func (g *Generator) appendStmt(out *emitter) {
 	}
 	g.writeBound(s, elem.bound, "max")
 	// The static length bound absorbs this site's exact executions
-	// (E4; E6): +1 per execution, execMul executions. The budget takes
-	// THREE extra executions per element for the observation fold that
-	// will walk the final slice — the bool-element fold shape spends up
-	// to three lines per element, and pre-paying the worst shape here
-	// is what lets observe() emit without consulting the pool.
+	// (E4; E6): +1 per execution, execMul executions. The observation
+	// pre-pay charged at entry covers the fold that will walk the final
+	// slice — three lines per element, the bool-element worst shape —
+	// which is what lets observe() emit without consulting the pool.
 	s.maxLenBound = boundAdd(s.maxLenBound, g.execMul)
-	g.charge(satMul(3, g.execMul))
 	out.line("%s = append(%s, %s)", s.name, s.name, elem.text)
 }
 
@@ -1183,14 +1189,19 @@ func (g *Generator) mapRangeFold(out *emitter) {
 	// W4: a commutative sum of map values is bounded by the map's element
 	// bound times its OWN trip count — the 4-key alphabet, len <= 4 by
 	// construction. The whole-fold contribution then goes through
-	// writeBound as "+fixed", which multiplies by the SITE's worst-case
+	// writeBound as "+fixed", which multiplies by the SITE's exact
 	// executions (arc-end review finding 8 made this take the loop rule;
-	// E5 separated the two factors: the old rhs used maxExec as the
-	// fold's OWN iteration count, conflating it with site executions —
-	// the alphabet is the honest iteration factor, and "+fixed" already
-	// supplies the site's). m's own writes cannot be stale here: the
-	// fold body writes nothing but acc.
-	g.writeBound(acc, boundMul(m.bound, 4), "+fixed")
+	// E5 separated the iteration factor from the site factor). Inside a
+	// loop the element bound itself is STALE — a later map write in the
+	// same body raises values for iterations >= 2, and E6's exact
+	// multiplier removed the old over-approximation that papered over
+	// that (E6 re-review R3) — so the contribution degrades to unknown
+	// there.
+	rhs := boundMul(m.bound, 4)
+	if g.loopDepth > 0 {
+		rhs = 0
+	}
+	g.writeBound(acc, rhs, "+fixed")
 	g.markWidthDepBounded(acc.typ, acc.bound)
 	out.open("for _, %s := range %s {", e, m.name)
 	out.line("%s += %s", acc.name, e)

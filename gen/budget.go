@@ -141,17 +141,13 @@ func (g *Generator) priceBody(f func()) int64 {
 // Worst-case mandatory floors, sized to the emitters they cover (the
 // white-box accounting witness pins these to the code):
 //
-//	blockFloor: block() emits at most 1+draw(2) <= 3 statement slots
-//	plus the inner declaration and its projection.
+//	blockFloor: block() emits 1+draw(2) <= 2 statement slots plus the
+//	inner declaration and its projection (= 4; the constant carries one
+//	slot of slack, in the safe direction).
 const blockFloorStmts = 5
 
 // loopBodyFloor adds consumeIndex's one line per iteration.
 const loopBodyFloor = blockFloorStmts + 1
-
-// fwdPairWorstCost bounds a tuple-forward pair's per-call cost before
-// the pair exists (the arm's gate runs before creation): source return
-// plus a sink fold over at most 3 slots plus call overhead.
-const fwdPairWorstCost = 16
 
 func maxInt64(a, b int64) int64 {
 	if a > b {

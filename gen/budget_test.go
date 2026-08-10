@@ -1,6 +1,9 @@
 package gen
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The E6 white-box witnesses: the budget's arithmetic and accounting
 // invariants. The measured half — instrumented execution counts covered
@@ -52,6 +55,15 @@ func TestBudgetAccountingInvariants(t *testing.T) {
 			cfg.Stmts, cfg.Depth, cfg.LoopCap = 4096, 6, 4096
 			return cfg
 		}},
+		// The E6 re-review's refutation family: forward-pair sources
+		// carrying big loops, reused from inside loops (seed 80 measured
+		// 9.35M executed statements against a 56k charge before the
+		// source builder was priced).
+		{"pair reuse", func(seed int64) Config {
+			cfg := DefaultConfig(seed)
+			cfg.Stmts, cfg.Depth, cfg.LoopCap = 24, 3, 4096
+			return cfg
+		}},
 	}
 	for _, tc := range configs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,24 +90,31 @@ func TestBudgetAccountingInvariants(t *testing.T) {
 	}
 }
 
-// TestForwardPairCostPinned: the tuple-forward arm's gate runs BEFORE
-// the pair exists, so its worst-cost constant must dominate every real
-// pair cost (slots are 2-3 by construction; cost = len(slots)+6).
-func TestForwardPairCostPinned(t *testing.T) {
-	if worst := int64(3) + 6; worst > fwdPairWorstCost {
-		t.Fatalf("fwdPairWorstCost %d below the 3-slot pair cost %d", fwdPairWorstCost, worst)
-	}
-	// And against real pairs from a sweep that forces the arm.
+// TestForwardPairCostCoversBody (rewritten after the E6 re-review found
+// the original vacuous — it compared the cost formula to a constant
+// derived from the same formula, so the one hand-counted body escaped
+// pricing unnoticed). The check is now against the BUILT TEXT: a pair's
+// per-call cost must be at least the number of body lines in its two
+// function declarations, since every emitted line executes at least
+// once per call (loops make the priced cost strictly larger).
+func TestForwardPairCostCoversBody(t *testing.T) {
+	pairs := 0
 	for seed := int64(1); seed <= 300; seed++ {
-		cfg := DefaultConfig(seed)
-		g := New(cfg)
+		g := New(DefaultConfig(seed))
 		if _, err := g.Generate(); err != nil {
 			t.Fatal(err)
 		}
 		for _, p := range g.fwdPairs {
-			if p.cost > fwdPairWorstCost {
-				t.Fatalf("seed %d: pair %s/%s cost %d exceeds the gate's %d", seed, p.srcName, p.sinkName, p.cost, fwdPairWorstCost)
+			pairs++
+			bodyLines := int64(strings.Count(p.src, "\n\t"))
+			if p.cost < bodyLines {
+				t.Fatalf("seed %d: pair %s/%s cost %d below its own %d body lines\n%s",
+					seed, p.srcName, p.sinkName, p.cost, bodyLines, p.src)
 			}
 		}
 	}
+	if pairs == 0 {
+		t.Fatal("no pairs generated — the witness asserted nothing")
+	}
+	t.Logf("checked %d pairs", pairs)
 }
