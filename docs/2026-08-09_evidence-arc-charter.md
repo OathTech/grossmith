@@ -281,6 +281,55 @@ via its measured witness; the smaller recorded items are fixed or
 explicitly deferred with a line in the status document; then one
 re-review of the E5 diff before the arc-end sign-off ask.
 
+**E6 — the execution budget.** (Added 2026-08-09: the user chose option
+B of `docs/2026-08-09_execution-bound-design-note.md` and rolled it
+into this arc.) The HALTS bound becomes by-construction for every tape:
+no closed form over the grammar, no formula to forget an emitter in —
+the failure class that produced W4's `writeBound` bug, E4's range gate,
+and E4's unpriced calls retires with the mechanism.
+
+- **One pool, charged at emission.** The generator knows every cost
+  exactly when it emits: trip counts are literals, fold trips are
+  gated bounds the freeze holds still, and every callee's body is
+  fully generated before its first call site. A running multiplier
+  (the product of enclosing literal trips) prices each statement;
+  folds charge their trips; call sites charge the callee's recorded
+  per-call cost; both branches of a conditional are charged (a
+  bounded overcharge, never an undercharge). Appends, string concats,
+  and defers charge DOUBLE — their own execution plus the one later
+  observation-fold or function-exit visit — so the end-of-body
+  observation is pre-paid; fixed scaffolding and per-variable
+  observation constants come out of a reserve computed from the
+  config.
+- **Floor liability keeps commitments payable.** Choosing a construct
+  commits future mandatory lines (a block's statements, a loop's
+  per-iteration index fold, a declaration's projection). Arms consult
+  remaining MINUS the outstanding floor, so a committed construct can
+  always finish on 1-cost fallback statements: nothing emits unless
+  affordable, and `total <= ceiling` holds for every tape by
+  construction. Extreme tapes degrade to cheap arms; no config is
+  refused for cost.
+- **Pure bodies are priced, not budgeted.** Helper/method/pair bodies
+  charge a per-body accumulator during their own generation; the
+  recorded per-call cost is what call sites weigh. An expensive body
+  is legal — its call sites simply stop being affordable.
+- **`maxExec`'s users move to the exact per-site multiplier** (W4
+  "+fixed" contributions, append and concat growth, index bounds) —
+  the same soundness, tighter values; saturation re-measured after.
+- **Validate drops the worst-case formula** and its 4e6 refusals: the
+  ceiling (unchanged at 4e6 executed statements, the E4 memory
+  derivation) is enforced by the budget instead, so the config space
+  the formula refused (large LoopCap/Depth combinations) opens up.
+  Sanity caps (Stmts source-size, enum checks) stay. The freeze and
+  the range/string gates STAY — the budget prices range trips at
+  their emission-time bounds, and the freeze is what pins those.
+
+Witnesses: white-box budget/liability accounting; the instrumented
+sweep extended to configs the old screen refused (measured executed
+statements <= ceiling, worst logged); a near-exhaustion tape still
+compiles, halts, and observes. Campaign after (corpus shifts), and the
+E6 diff joins the arc-end re-review scope.
+
 ## Review plan (pre-authorized)
 
 - Mid-arc after E3: one Opus code review scoped to E1-E3 — the trust

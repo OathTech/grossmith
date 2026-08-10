@@ -1,7 +1,7 @@
-*ACTIVE (2026-08-09): a design decision the evidence arc's E5 rung
-stopped at, per the charter's exit condition ("a re-derivation that
-needs a design change, not a constant: stop at a design note").
-Sequencing: `docs/roadmap.md`; status: `docs/2026-08-09_evidence-arc-status.md`.*
+*DECIDED (2026-08-09): the user chose OPTION B — the emission-time cost
+budget — and rolled it into the evidence arc as rung E6 (charter:
+`docs/2026-08-09_evidence-arc-charter.md`). The analysis below is the
+record of why. Status: `docs/2026-08-09_evidence-arc-status.md`.*
 
 # The executed-statement bound: closed form vs emission-time budget
 
