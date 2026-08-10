@@ -1,11 +1,16 @@
-*ACTIVE (2026-08-09): the evidence arc's honest status record. The arc
-is COMPLETE: E5 closed six of the seven blockers (re-reviewed, its one
-blocking finding fixed on-branch), the user chose the design note's
-option B for the seventh, and E6 delivered it — the executed-statement
-bound is enforced at emission for every tape, with E6's own re-review
-finding one hand-counted cost (fixed, re-witnessed). Both re-reviews'
-probes and three clean campaigns stand behind the branch. Merge waits
-on the per-merge sign-off. Sequencing: `docs/roadmap.md`; charter:
+*CLOSED (2026-08-09): the evidence arc's honest status record, kept for
+its measurements and corrections. The arc was delivered and MERGED at
+01fab3f — E5 closed six of seven blockers (re-reviewed), the user chose
+the design note's option B for the seventh, and E6 delivered it, with
+its own re-review finding one hand-counted cost (fixed, re-witnessed).
+RESIDUAL WORK, and the reason this record matters: the 2026-08-10 audit
+found the arc's closure did not bottom out the evidence boundary, with
+two P0s inside E3's own surface — a descriptor could name a case
+OUTSIDE its batch tree (`caseDirRe` declared, never applied) and an
+`-out` directory holding any file merely NAMED `manifest.tsv` was
+accepted and deleted on publish (the content test E5 applied to `.prev`
+recovery, not applied here). Both replicated and closed by the
+containment arc — `docs/roadmap.md`. Charter:
 `docs/2026-08-09_evidence-arc-charter.md`.*
 
 # Evidence arc: status at arc-end review (2026-08-09)

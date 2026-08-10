@@ -34,17 +34,54 @@ The witness arc (W0-W5) is complete. Ground truth:
   WHY (the honesty gate `TestLedgerNamesEveryTag` enforces it).
 - `docs/2026-08-09_witness-arc-closing.md` — the witness-arc record.
 
-## Current arc: EVIDENCE (in progress)
+## Closed arc: EVIDENCE (merged 2026-08-09 at 01fab3f)
 
-`docs/2026-08-09_evidence-arc-charter.md` governs. The 2026-08-09
-comprehensive audit (`docs/2026-08-09_comprehensive-technical-audit.md`)
-found the EVIDENCE BOUNDARY — not the generator — is the weak layer;
-this arc makes a campaign an immutable, self-consistent, reproducible
-experiment. Rungs: E0 claims/lifecycle reconciliation (this file is
-its product), E1 fail-closed inputs, E2 one pinned Go oracle, E3
-experiment identity and atomicity, E4 resource guarantees made true.
-No language surface. Branch `evidence-arc`; merge waits for arc-end
-sign-off.
+`docs/2026-08-09_evidence-arc-charter.md` was its charter; the record
+of what held and what did not is
+`docs/2026-08-09_evidence-arc-status.md`. The 2026-08-09 comprehensive
+audit found the EVIDENCE BOUNDARY — not the generator — was the weak
+layer. Delivered: E0 claims/lifecycle reconciliation (this file is its
+product), E1 fail-closed inputs, E2 one pinned Go oracle, E3
+experiment identity and atomicity, E4 resource guarantees, E5 the
+arc-end review's seven blockers, E6 the execution budget (HALTS
+enforced at emission for every tape;
+`docs/2026-08-09_execution-bound-design-note.md` records why a closed
+form was abandoned). Two re-reviews, three clean campaigns.
+
+## Current arc: CONTAINMENT (in progress)
+
+The 2026-08-10 audit
+(`docs/2026-08-10_comprehensive-technical-audit.md`, committed
+verbatim) found that the evidence arc's closure did not bottom out the
+evidence boundary. Two of its findings were replicated here before any
+fix: a descriptor naming case ID `../outside` validated and would be
+judged, and a directory holding any file merely NAMED `manifest.tsv`
+was accepted as `-out` and deleted on publish. Rungs:
+
+- **C0 — containment and lifecycle.** Descriptor names are contained
+  before any path is joined; `-out` ownership is a content test;
+  Depth/LoopCap get upper bounds so derived arithmetic stays exact;
+  these documents match the merged state. DONE.
+- **C1 — evidence correctness.** The GoLean boundary fails closed
+  (prevalidated case slice, no duplicate-ID overwrite, exported
+  documents validated); `Judge` validates before classifying;
+  free-text suffix matching is replaced by a typed clone status;
+  `batch.json` gains strict decode plus self-consistency validation, so
+  `-verify` states input integrity and report consistency separately.
+
+One finding is REFUTED and stays refuted: the audit's "shared
+diagnostic buffers have data races" P1. Both cited sites assign the
+SAME buffer to `Stdout` and `Stderr`, and `os/exec` documents that
+case — "If Stdout and Stderr are the same writer, and have a type that
+can be compared with ==, at most one goroutine at a time will call
+Write." The subject-run path uses two distinct buffers. No race; no
+change.
+
+Deferred to their own charter (the audit's R2 onward): aggregate-fold
+lossiness and path-valid aggregates, whole-case resource limits
+(driver reflection tree, JSON, parser), order-witness collision
+bounds, real build/run matrices, and the incidence/sensitivity
+accounting.
 
 ## House convention: wording
 

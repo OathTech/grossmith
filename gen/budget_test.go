@@ -9,6 +9,53 @@ import (
 // invariants. The measured half — instrumented execution counts covered
 // by the charges — lives in execmeasure_test.go (TestChargedCoversMeasured).
 
+// TestConfigBoundsKeepArithmeticExact (2026-08-10 audit, P1/P2: Depth
+// and LoopCap had lower bounds only, so tripCap = 8*LoopCap could
+// overflow and extreme Depth moved generator recursion cost outside the
+// budget — "extreme configs degrade to cheap arms" was not true for
+// every accepted integer). The caps are checked, and everything they
+// admit keeps derived quantities positive and representable.
+func TestConfigBoundsKeepArithmeticExact(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"LoopCap past the cap", Config{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: MaxLoopCap + 1}},
+		{"LoopCap at MaxInt64", Config{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 1<<63 - 1}},
+		{"Depth past the cap", Config{Seed: 1, Vars: 4, Stmts: 8, Depth: MaxDepth + 1, ExprFuel: 3, LoopCap: 6}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); err == nil {
+				t.Fatal("accepted")
+			}
+			// And through the public entry point, as a diagnosis not a panic.
+			if _, err := New(tc.cfg).Generate(); err == nil {
+				t.Fatal("Generate accepted")
+			}
+		})
+	}
+	// At the boundaries the config ADMITS, every derived quantity stays
+	// positive: tripCap does not overflow, and the per-site multiplier
+	// saturates rather than wrapping.
+	for _, cfg := range []Config{
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: MaxLoopCap, Swarm: true},
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: MaxDepth, ExprFuel: 3, LoopCap: 6, Swarm: true},
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: MaxDepth, ExprFuel: 3, LoopCap: MaxLoopCap, Swarm: true},
+	} {
+		g := New(cfg)
+		if _, err := g.Generate(); err != nil {
+			t.Fatalf("boundary config refused: %v", err)
+		}
+		if g.tripCap <= 0 || g.execMul <= 0 || g.budgetLeft < 0 {
+			t.Fatalf("derived arithmetic went non-positive: tripCap=%d execMul=%d budgetLeft=%d",
+				g.tripCap, g.execMul, g.budgetLeft)
+		}
+		if g.budgetBreached {
+			t.Fatal("boundary config breached the budget accounting")
+		}
+	}
+}
+
 func TestBudgetArithmeticSaturates(t *testing.T) {
 	if got := satAdd(budgetCap-1, 5); got != budgetCap {
 		t.Fatalf("satAdd near cap: %d", got)
@@ -42,7 +89,7 @@ func TestBudgetAccountingInvariants(t *testing.T) {
 		}},
 		{"huge loopcap", func(seed int64) Config {
 			cfg := DefaultConfig(seed)
-			cfg.Depth, cfg.LoopCap = 3, 1 << 40
+			cfg.Depth, cfg.LoopCap = 3, MaxLoopCap
 			return cfg
 		}},
 		{"deep", func(seed int64) Config {

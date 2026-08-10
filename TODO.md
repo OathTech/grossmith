@@ -7,8 +7,11 @@ phase plan that used to govern is closed — delivered in full).
 ## Customer-prioritized: GoLean's generation requests (2026-08-07)
 
 STATUS (Phase 4 arc, 2026-08-07): R1, R2a, R3, R5, R4 DELIVERED as
-rungs 1-5 (see docs/spec-ledger.md and the rung commits); the
-composition-histogram backlog item was absorbed and closed by rung 5.
+rungs 1-5 (see docs/spec-ledger.md and the rung commits; each entry
+below carries its own status line — the 2026-08-10 audit found the
+preamble and the entries disagreeing, with delivered work still reading
+as open); the composition-histogram backlog item was absorbed and
+closed by rung 5.
 The recover WRAPPER observes panics at function level — SITE-encoded
 since 2026-08-08 (wrapperCaught + wrapperJudged in batch.json); the guarded-STATEMENT recovered-event rung below
 remains open — a different mechanism, not absorbed. Remaining from the request set:
@@ -130,7 +133,8 @@ now first-party. Mapping onto this backlog:
   enforces the ceiling at emission for every tape, the E6 re-review's
   one blocking finding (a hand-counted forward-pair cost) is fixed and
   re-witnessed, and Validate's worst-case formula is gone along with
-  its refusals. Remaining: the merge sign-off, then push.
+  its refusals. MERGED to main at 01fab3f (2026-08-09); the push is
+  still pending its own sign-off.
 - **The repo is not gofmt-clean and nothing gates it** (noticed during
   the 2026-08-09 wording pass): `gofmt -l` flags nine files, six of
   them untouched by recent work — mostly struct-tag alignment that
@@ -143,18 +147,28 @@ now first-party. Mapping onto this backlog:
   any helper body under a conversions-excluded profile. Small honesty
   fix; touches the constant-overflow safety path, so it wants its own
   witness when picked up.
-- **R3 kind/definedness matrix corner**: {op site} x {int kinds,
+- **R3 kind/definedness matrix corner**: DELIVERED (Phase 4 rung 3, the
+  `kinds` corner — conversion-free in-kind arithmetic; see
+  docs/spec-ledger.md). Original ask, kept for its rationale:
+  {op site} x {int kinds,
   floats} x {defined vs unnamed} with IN-KIND arithmetic — their
   insight that `int(x)` conversion laundering masks the whole
   kind-defaulting class (the BUG-042/043 family our seed 559 started)
   is a grammar-design constraint, not just a corner: sweeps need
   conversion-free paths. Fits the named-corner machinery.
-- **R4 pairwise swarm objective**: n cases per construct PAIR rather
+- **R4 pairwise swarm objective**: DELIVERED (Phase 4 rung 5, `gengo
+  -pairs` + Config.Include + the composition histogram in batch.json).
+  Original ask: n cases per construct PAIR rather
   than per construct — a campaign/CLI orchestration feature over the
   existing Constructs override, mechanizing what their adversarial
   audits do by hand. Their worst cross-cutting bugs were all pair
   interactions.
-- **R5 aggregate observation of maps/slices**: order-independent
+- **R5 aggregate observation of maps/slices**: DELIVERED (Phase 4 rung
+  4, `aggObserved` folds into trailing observed ints). NOTE the
+  2026-08-10 audit's P1 against it: the folds are LOSSY (string keys and
+  values reduce to len, so distinct equal-length alphabet words collide)
+  and they vanish on early-return and recovered-panic paths — deferred to
+  the sensitivity arc, `docs/roadmap.md`. Original ask: order-independent
   encodings (sums, min/max folds, length+membership bits) let
   maps/slices ENTER the observed tier under the golean profile instead
   of being masked — supersedes half the NoObserve disposition at zero

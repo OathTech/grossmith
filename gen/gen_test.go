@@ -1541,7 +1541,7 @@ func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	// own accounting (the measured half of this witness lives in
 	// execmeasure_test.go).
 	for i, cfg := range []Config{
-		{Seed: 1, Vars: 4, Stmts: 8, Depth: 3, ExprFuel: 3, LoopCap: 1 << 40, Swarm: true},
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 3, ExprFuel: 3, LoopCap: MaxLoopCap, Swarm: true},
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 6, ExprFuel: 3, LoopCap: 4096, Swarm: true},
 	} {
 		g := New(cfg)

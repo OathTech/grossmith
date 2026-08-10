@@ -16,14 +16,19 @@ plan are complete and merged: a portable observation protocol
 clone integration (GoLean, `golean`), measured observation sensitivity
 (per-shape positive controls; planted and historical defect campaigns),
 draw-trace replay (`gengo -replay` reproduces a case byte-identically
-from its record alone), the spec-surface ledger (`docs/spec-ledger.md`,
-live, with its honesty gate), and the request-driven ladder (GoLean's
-R1-R5 plus R2b order witnessing and tuple forwarding delivered). The
-witness arc is complete (`docs/2026-08-09_witness-arc-closing.md`). In
-progress: the evidence arc (`docs/2026-08-09_evidence-arc-charter.md`),
-hardening the evidence boundary so a campaign is an immutable,
-self-consistent, reproducible experiment. `docs/roadmap.md` is the one
-living roadmap.
+from its record plus the compatible generator revision), the
+spec-surface ledger (`docs/spec-ledger.md`, live, with its honesty
+gate), and the request-driven ladder (GoLean's R1-R5 plus R2b order
+witnessing and tuple forwarding delivered). The witness arc
+(`docs/2026-08-09_witness-arc-closing.md`) and the evidence arc
+(`docs/2026-08-09_evidence-arc-charter.md`) are both complete and
+merged: a campaign is an immutable, self-consistent experiment whose
+descriptor, report, and clone tree are all digest-bound, and HALTS is
+enforced at emission by the execution budget
+(`gen/budget.go`). In progress: the containment arc, closing the
+2026-08-10 audit's findings
+(`docs/2026-08-10_comprehensive-technical-audit.md`).
+`docs/roadmap.md` is the one living roadmap.
 
 ## What works today
 

@@ -55,6 +55,16 @@ const (
 
 	// budgetCap keeps saturating budget arithmetic away from overflow.
 	budgetCap = int64(1) << 62
+
+	// MaxLoopCap and MaxDepth bound the two config dimensions the
+	// execution budget does NOT price (2026-08-10 audit): LoopCap feeds
+	// tripCap = 8*LoopCap, which must not overflow, and Depth bounds
+	// emitter recursion and formatting cost, which happen at generation
+	// time rather than at execution time. Both are orders above any
+	// campaign (DefaultConfig: LoopCap 6, Depth 2) — they exist so no
+	// accepted integer input can reach unchecked arithmetic.
+	MaxLoopCap = 1 << 24
+	MaxDepth   = 64
 )
 
 // satAdd/satMul are plain saturating arithmetic for budget accounting.

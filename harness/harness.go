@@ -527,6 +527,17 @@ type BatchBudgets struct {
 
 // cappedBuffer stores at most cap bytes and records overflow instead of
 // growing without bound.
+//
+// NOT concurrency-safe, and it does not need to be at the sites that
+// share one buffer across both streams (2026-08-10 audit, P1, REFUTED
+// and recorded here so it is not re-raised): os/exec documents exactly
+// that case — "If Stdout and Stderr are the same writer, and have a
+// type that can be compared with ==, at most one goroutine at a time
+// will call Write." `*cappedBuffer` is a comparable pointer type, so
+// the build path and golean's script invocation are serialized by
+// os/exec itself. The subject-run path passes two DISTINCT buffers,
+// which are never shared. A site that ever passes one buffer to two
+// commands, or mixes it with another writer type, would need a lock.
 type cappedBuffer struct {
 	buf       bytes.Buffer
 	cap       int

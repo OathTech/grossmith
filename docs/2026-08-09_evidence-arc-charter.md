@@ -1,11 +1,12 @@
-*ACTIVE (2026-08-09): governing the evidence arc, branch `evidence-arc`.
-The arc is COMPLETE: E5 and E6 are executed and re-reviewed, E3's and
-E4's exit conditions are MET (E4's universal half via E6's execution
-budget — the user's option-B call on the design note), and the closing
-campaign held the known quarantine floor. The merge itself waits for
-the user, per the review plan. Status of record:
-`docs/2026-08-09_evidence-arc-status.md`. Sequencing:
-`docs/roadmap.md`.*
+*CLOSED (2026-08-09): this charter's arc is delivered and MERGED to
+main at 01fab3f. E3's and E4's exit conditions were MET (E4's universal
+half via E6's execution budget — the user's option-B call on the design
+note), with two re-reviews and three clean campaigns behind them.
+SUPERSEDED BY the containment arc (`docs/roadmap.md`), which closes the
+2026-08-10 audit's finding that this arc's closure did not bottom out
+the evidence boundary — including two P0s inside E3's own surface
+(descriptor path containment, out-dir ownership). Record of what held
+and what did not: `docs/2026-08-09_evidence-arc-status.md`.*
 
 # The evidence arc: charter (2026-08-09)
 

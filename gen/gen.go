@@ -104,6 +104,17 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: Vars %d exceeds 128", c.Vars)
 	case c.ExprFuel > 12:
 		return fmt.Errorf("config: ExprFuel %d exceeds 12", c.ExprFuel)
+	// Upper bounds on the two loop dimensions (2026-08-10 audit, P1/P2).
+	// The execution BUDGET bounds what a program executes, but these two
+	// feed derived arithmetic and generator recursion, which the budget
+	// does not price: tripCap = 8*LoopCap must not overflow, and Depth
+	// bounds emitter recursion and formatting cost. The caps are far
+	// above any campaign (DefaultConfig is LoopCap 6, Depth 2) and keep
+	// every derived quantity exactly representable.
+	case c.LoopCap > MaxLoopCap:
+		return fmt.Errorf("config: LoopCap %d exceeds %d — derived trip arithmetic must stay exactly representable", c.LoopCap, MaxLoopCap)
+	case c.Depth > MaxDepth:
+		return fmt.Errorf("config: Depth %d exceeds %d — emitter recursion and formatting cost are not priced by the execution budget", c.Depth, MaxDepth)
 	}
 	// NoObserve is a closed enum (evidence arc E1; audit P0: Shape(255)
 	// was silently accepted and some subsets panicked the generator).
