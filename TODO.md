@@ -135,6 +135,26 @@ now first-party. Mapping onto this backlog:
   re-witnessed, and Validate's worst-case formula is gone along with
   its refusals. MERGED to main at 01fab3f (2026-08-09); the push is
   still pending its own sign-off.
+- **Deferred by the containment arc, for the sensitivity arc**
+  (2026-08-10 audit, its R2 onward; the arc's own record is
+  `docs/roadmap.md`): aggregate folds are LOSSY (string map keys and
+  string values reduce to `len`, and the literal alphabet deliberately
+  holds distinct equal-length words — `go`/`ab`, `fuzz`/`gros`/`mith` —
+  so deletions and substitutions can observe identically) and they
+  VANISH on early-return and recovered-panic paths, while the case still
+  carries `aggregate_observed`; GoLean verdicts cannot be re-judged
+  offline (their harness applies its own equivalence and we record the
+  conclusion, not the structured observation — needs a versioned result
+  document from their side); the execution budget bounds subject
+  statements but not the driver's reflection tree, JSON encoding, output
+  bytes, or parse allocations, so "time and memory by construction"
+  wants a whole-case measurement; the order witness is a
+  platform-width `*31` hash and can collide; the compile witness is
+  `go/types` over 300 seeds, not a real build/run matrix across Go
+  versions and architectures; feature incidence is proven "at least
+  once", not at a rate that supports a detection claim; `-panic-policy`
+  defaults to exact message equality, which is runtime-fidelity rather
+  than semantic conformance for a cross-implementation campaign.
 - **The repo is not gofmt-clean and nothing gates it** (noticed during
   the 2026-08-09 wording pass): `gofmt -l` flags nine files, six of
   them untouched by recent work — mostly struct-tag alignment that

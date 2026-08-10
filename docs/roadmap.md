@@ -58,16 +58,32 @@ fix: a descriptor naming case ID `../outside` validated and would be
 judged, and a directory holding any file merely NAMED `manifest.tsv`
 was accepted as `-out` and deleted on publish. Rungs:
 
-- **C0 — containment and lifecycle.** Descriptor names are contained
-  before any path is joined; `-out` ownership is a content test;
-  Depth/LoopCap get upper bounds so derived arithmetic stays exact;
-  these documents match the merged state. DONE.
-- **C1 — evidence correctness.** The GoLean boundary fails closed
-  (prevalidated case slice, no duplicate-ID overwrite, exported
-  documents validated); `Judge` validates before classifying;
-  free-text suffix matching is replaced by a typed clone status;
-  `batch.json` gains strict decode plus self-consistency validation, so
-  `-verify` states input integrity and report consistency separately.
+- **C0 — containment and lifecycle.** DONE. Descriptor names are
+  contained before any path is joined (P0); `-out` ownership is a
+  content test (P0); Depth/LoopCap have upper bounds so derived
+  arithmetic stays exact; these documents match the merged state.
+- **C1 — evidence correctness.** DONE. The GoLean boundary fails closed
+  (whole-slice prevalidation, duplicate IDs fail the run instead of
+  overwriting a verdict, exported documents validated, translated-case
+  tree cleared under an ownership marker, `Profile` merges instead of
+  replacing); `Judge` validates both documents before classifying;
+  free-text suffix matching is replaced by a typed clone status with a
+  closed vocabulary; `batch.json` gains strict decode plus
+  self-consistency validation (membership, totals, histograms, wrapper
+  accounting, subject digests, composition, and re-judged verdicts), so
+  `-verify` states input integrity and report self-consistency as
+  separate claims.
+
+What C1 does NOT close, stated because `-verify` now invites the
+question: the adapter identity strings and oracle version text are not
+derivable from a batch, so they are structure-checked and
+digest-bound, never recomputed. And a GoLean verdict cannot be
+re-judged offline at all — their harness applies its own equivalence
+and we record its conclusion, not the structured observation behind it.
+That is the audit's "reports cannot be independently re-judged" P1,
+which needs a versioned result document from their side; it is stated
+in `harness/report.go` and `golean/workdigest.go` rather than implied
+away, and belongs to the next arc with the sensitivity work.
 
 One finding is REFUTED and stays refuted: the audit's "shared
 diagnostic buffers have data races" P1. Both cited sites assign the
