@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -122,6 +123,125 @@ func TestBatchValidation(t *testing.T) {
 		}
 		wantRefusal(t, root, "unknown field")
 	})
+}
+
+// TestManifestNamesAreContained (2026-08-10 audit, P0 — replicated
+// before the fix: a case ID of `../outside` validated and was returned
+// for judging, which compiled a directory outside the batch, because
+// caseDirRe was declared and never applied and the root closure was
+// satisfied by the literal `../outside` key). Every name a descriptor
+// supplies is now shape-checked BEFORE it is joined to a path, so a
+// descriptor can only ever describe files inside its own tree.
+func TestManifestNamesAreContained(t *testing.T) {
+	// The real escape, end to end: a sibling directory holding a
+	// compilable case, named from inside the batch. It must never reach
+	// the returned ID list.
+	t.Run("case ID escaping the batch root", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "batch")
+		outside := filepath.Join(parent, "outside")
+		for _, d := range []string{root, outside} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		subject := []byte("package main\n\nfunc fuzzSubject() int { return 1 }\n")
+		if err := os.WriteFile(filepath.Join(outside, "subject.go"), subject, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		goModSum, err := FileSHA256(filepath.Join(root, "go.mod"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeRawManifest(t, root, Manifest{
+			Schema: ManifestSchema, GeneratorRev: "t", GoVersion: "go 1.26",
+			RootFiles: map[string]string{"go.mod": goModSum},
+			Cases: []ManifestCase{{ID: "../outside", Seed: 1,
+				Files: map[string]string{"subject.go": SubjectHash(subject)}}},
+		})
+		ids, err := ValidateBatch(root)
+		if err == nil {
+			t.Fatalf("a case outside the batch root validated, ids=%v", ids)
+		}
+		if !strings.Contains(err.Error(), "INSIDE its batch") {
+			t.Fatalf("refusal does not name the containment rule: %v", err)
+		}
+	})
+	// The name-shape table: everything that is not a single, closed-schema
+	// component inside the batch.
+	for _, tc := range []struct {
+		name     string
+		mutate   func(*Manifest)
+		fragment string
+	}{
+		{"absolute case ID", func(m *Manifest) { m.Cases[0].ID = "/etc" }, "INSIDE its batch"},
+		{"nested case ID", func(m *Manifest) { m.Cases[0].ID = "sub/case_00000" }, "INSIDE its batch"},
+		{"dot-dot case ID", func(m *Manifest) { m.Cases[0].ID = ".." }, "INSIDE its batch"},
+		{"unowned case ID shape", func(m *Manifest) { m.Cases[0].ID = "notacase" }, "INSIDE its batch"},
+		{"duplicate case IDs", func(m *Manifest) { m.Cases = append(m.Cases, m.Cases[0]) }, "duplicate case ID"},
+		{"case file escaping upward", func(m *Manifest) {
+			m.Cases[0].Files = map[string]string{"../outside.go": strings.Repeat("a", 64)}
+		}, "closed case-input schema"},
+		{"case file in a subdirectory", func(m *Manifest) {
+			m.Cases[0].Files = map[string]string{"sub/subject.go": strings.Repeat("a", 64)}
+		}, "closed case-input schema"},
+		{"case file outside the schema", func(m *Manifest) {
+			m.Cases[0].Files["extra.go"] = strings.Repeat("a", 64)
+		}, "closed case-input schema"},
+		{"case listing no files", func(m *Manifest) { m.Cases[0].Files = map[string]string{} }, "lists no files"},
+		{"root file escaping upward", func(m *Manifest) {
+			m.RootFiles = map[string]string{"../outside-file": strings.Repeat("a", 64)}
+		}, "closed batch-root input set"},
+		{"root file outside the set", func(m *Manifest) {
+			m.RootFiles["go.work"] = strings.Repeat("a", 64)
+		}, "closed batch-root input set"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := manifestFixture(t)
+			m, err := ReadManifest(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(&m)
+			writeRawManifest(t, root, m)
+			wantRefusal(t, root, tc.fragment)
+		})
+	}
+}
+
+// writeRawManifest writes a descriptor WITHOUT the producer-side shape
+// checks — the only way to build the artifacts a hand-edited or
+// foreign-produced descriptor would present.
+func writeRawManifest(t *testing.T, root string, m Manifest) {
+	t.Helper()
+	b, err := json.MarshalIndent(m, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestWriteManifestRefusesUnownedNames: the producer is held to the same
+// closed shapes, so a descriptor ReadManifest would refuse can never be
+// written in the first place.
+func TestWriteManifestRefusesUnownedNames(t *testing.T) {
+	root := manifestFixture(t)
+	if _, err := WriteManifest(root, "t", "go 1.26", []string{"../outside"}, nil); err == nil {
+		t.Fatal("WriteManifest accepted a case ID outside the batch")
+	}
+	// A stray file in a case directory is a refusal at write time too,
+	// not a descriptor that cannot be read back.
+	if err := os.WriteFile(filepath.Join(root, "case_00000", "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(root, "t", "go 1.26", []string{"case_00000"}, nil); err == nil {
+		t.Fatal("WriteManifest accepted a case file outside the closed schema")
+	}
 }
 
 // Mid-arc review findings 3, 4, 6: symlinked case DIRECTORIES, unlisted

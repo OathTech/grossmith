@@ -76,6 +76,50 @@ func TestForeignOutDirRefused(t *testing.T) {
 	}
 }
 
+// TestForeignOutDirWithBatchFilename (2026-08-10 audit, P0 —
+// replicated before the fix: a directory holding unrelated files plus
+// anything merely NAMED manifest.tsv passed the ownership check, and
+// publication renamed it to .prev and deleted it after a successful
+// run, so `gengo -out` destroyed the unrelated files). Ownership is a
+// CONTENT test now: the directory must parse as a gengo batch.
+func TestForeignOutDirWithBatchFilename(t *testing.T) {
+	for _, name := range []string{"manifest.tsv", "manifest.json"} {
+		t.Run("named "+name, func(t *testing.T) {
+			out := t.TempDir()
+			precious := filepath.Join(out, "precious.txt")
+			if err := os.WriteFile(precious, []byte("irreplaceable notes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Both the empty case and a file with plausible-looking
+			// content that is not a descriptor.
+			if err := os.WriteFile(filepath.Join(out, name), []byte("id\tseed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := run(base(out))
+			if err == nil {
+				t.Fatal("a foreign dir carrying a batch FILENAME was accepted")
+			}
+			if !strings.Contains(err.Error(), "does not parse as a gengo batch") {
+				t.Fatalf("refusal does not name the content test: %v", err)
+			}
+			if b, err := os.ReadFile(precious); err != nil || string(b) != "irreplaceable notes" {
+				t.Fatalf("the unrelated file was damaged: %v %q", err, b)
+			}
+		})
+	}
+	// The converse stays true: a REAL previous batch is still replaceable,
+	// or regeneration into an existing out dir would break.
+	t.Run("real previous batch is replaceable", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "batch")
+		if err := run(base(out)); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(base(out)); err != nil {
+			t.Fatalf("a real previous batch was refused: %v", err)
+		}
+	})
+}
+
 // TestStaleBatchShrinks: regenerating a smaller batch into the same out
 // dir removes the earlier batch's extra case dirs.
 func TestStaleBatchShrinks(t *testing.T) {

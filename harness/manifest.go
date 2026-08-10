@@ -32,8 +32,35 @@ import (
 
 const ManifestSchema = "grossmith-manifest-v1"
 
-// caseDirRe is the batch-owned case-directory shape.
+// caseDirRe is the batch-owned case-directory shape. Every case ID in a
+// descriptor must match it (2026-08-10 audit, P0, replicated: the regex
+// was declared and never applied, so `ValidateBatch` accepted a case ID
+// of `../outside` — the root closure was satisfied because its `seen`
+// key was literally that string — and returned it for judging, which
+// then compiled a directory outside the batch. E3's defining claim is
+// that the descriptor names a CLOSED tree, so the shape check belongs
+// before any filesystem access).
 var caseDirRe = regexp.MustCompile("^case_[0-9]+$")
+
+// caseFileRe is the closed case-input file schema. Every file the
+// generator writes into a case directory (and nothing else) matches it:
+// subject.go, driver.go, case.json.
+var caseFileRe = regexp.MustCompile(`^(subject\.go|driver\.go|case\.json)$`)
+
+// rootFileNames is the closed set of digested batch-root inputs. Only
+// go.mod affects a build; the other root artifacts are bound by
+// complete.json's reportFiles instead.
+var rootFileNames = map[string]bool{"go.mod": true}
+
+// localName reports whether name is a single path component that names
+// something INSIDE the directory it is joined to: no separators, no
+// traversal, no absolute path, no cleaning change (so "a/", "./a" and
+// "a/../b" are all refused rather than silently normalized).
+func localName(name string) bool {
+	return name != "" && name != "." && name != ".." &&
+		filepath.IsLocal(name) && filepath.Base(name) == name &&
+		filepath.Clean(name) == name
+}
 
 // digestRe is the only digest shape the batch machinery accepts. Checked
 // on every digest READ from disk, so comparison and truncation never see
@@ -84,6 +111,12 @@ func WriteManifest(root, generatorRev, goVersion string, ids []string, seeds map
 	}
 	m.RootFiles["go.mod"] = sum
 	for _, id := range ids {
+		// The producer is held to the same closed shapes the reader
+		// enforces, so a descriptor can never be written that
+		// ReadManifest would refuse (2026-08-10 audit P0).
+		if !localName(id) || !caseDirRe.MatchString(id) {
+			return Manifest{}, fmt.Errorf("manifest: case ID %q is not a batch-owned case directory (want %s)", id, caseDirRe)
+		}
 		mc := ManifestCase{ID: id, Seed: seeds[id], Files: map[string]string{}}
 		dir := filepath.Join(root, id)
 		entries, err := os.ReadDir(dir)
@@ -93,6 +126,9 @@ func WriteManifest(root, generatorRev, goVersion string, ids []string, seeds map
 		for _, e := range entries {
 			if err := regularFile(dir, e); err != nil {
 				return Manifest{}, err
+			}
+			if !localName(e.Name()) || !caseFileRe.MatchString(e.Name()) {
+				return Manifest{}, fmt.Errorf("manifest: case %s holds %q, outside the closed case-input schema (subject.go, driver.go, case.json)", id, e.Name())
 			}
 			sum, err := FileSHA256(filepath.Join(dir, e.Name()))
 			if err != nil {
@@ -127,15 +163,35 @@ func ReadManifest(root string) (Manifest, error) {
 	if m.Schema != ManifestSchema {
 		return Manifest{}, fmt.Errorf("manifest: unknown schema %q", m.Schema)
 	}
-	// Every digest field must be digest-shaped before anything compares
-	// or abbreviates it.
+	// CONTAINMENT FIRST (2026-08-10 audit P0): every name a descriptor
+	// supplies is checked for shape BEFORE it is joined to a path or
+	// handed to an adapter, so a descriptor can only ever describe files
+	// inside the batch tree. Digest shape is checked in the same pass, so
+	// nothing downstream compares or abbreviates a malformed value.
 	for name, d := range m.RootFiles {
+		if !localName(name) || !rootFileNames[name] {
+			return Manifest{}, fmt.Errorf("manifest: rootFiles names %q — the closed batch-root input set is {go.mod}", name)
+		}
 		if !digestRe.MatchString(d) {
 			return Manifest{}, fmt.Errorf("manifest: rootFiles[%s] %q is not a sha256 digest", name, d)
 		}
 	}
+	seen := map[string]bool{}
 	for _, mc := range m.Cases {
+		if !localName(mc.ID) || !caseDirRe.MatchString(mc.ID) {
+			return Manifest{}, fmt.Errorf("manifest: case ID %q is not a batch-owned case directory (want %s) — a descriptor may only name cases INSIDE its batch", mc.ID, caseDirRe)
+		}
+		if seen[mc.ID] {
+			return Manifest{}, fmt.Errorf("manifest: duplicate case ID %s", mc.ID)
+		}
+		seen[mc.ID] = true
+		if len(mc.Files) == 0 {
+			return Manifest{}, fmt.Errorf("manifest: case %s lists no files", mc.ID)
+		}
 		for name, d := range mc.Files {
+			if !localName(name) || !caseFileRe.MatchString(name) {
+				return Manifest{}, fmt.Errorf("manifest: case %s names file %q — the closed case-input schema is subject.go, driver.go, case.json", mc.ID, name)
+			}
 			if !digestRe.MatchString(d) {
 				return Manifest{}, fmt.Errorf("manifest: %s/%s digest %q is not a sha256 digest", mc.ID, name, d)
 			}
@@ -146,6 +202,9 @@ func ReadManifest(root string) (Manifest, error) {
 
 // ValidateBatch checks the tree against its descriptor and returns the
 // ordered case IDs. Refusals, all pre-execution:
+//   - a name that is not a batch-owned case ID or a closed-schema input
+//     file (ReadManifest, before any path is joined — a descriptor
+//     cannot reach outside its own tree);
 //   - a listed case directory or file missing, or its digest changed;
 //   - a file on disk beside the listed inputs (the extra-file case the
 //     audit reproduced: an unlisted .go file compiles into the case);
@@ -169,12 +228,11 @@ func ValidateBatch(root string) ([]string, error) {
 			return nil, err
 		}
 	}
+	// IDs and file names are shape-checked by ReadManifest, so every join
+	// below stays inside root; duplicates are refused there too.
 	seen := map[string]bool{}
 	var ids []string
 	for _, mc := range m.Cases {
-		if seen[mc.ID] {
-			return nil, fmt.Errorf("batch: duplicate case ID %s in manifest", mc.ID)
-		}
 		seen[mc.ID] = true
 		dir := filepath.Join(root, mc.ID)
 		if err := realDir(dir); err != nil {

@@ -269,20 +269,23 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 			return "", "", fmt.Errorf("-panic-policy is not applied by the golean campaign (GoLean pins exact panic messages); omit it")
 		}
 	}
-	// The out dir must be ours: empty/absent, or a previous batch
-	// (manifest present). Refusing foreign directories keeps publishBatch
-	// from ever renaming away someone else's files (E3: publish replaces
-	// the whole dir, so the ownership bar is load-bearing).
+	// The out dir must be ours: empty/absent, or a directory that PARSES
+	// as a previous gengo batch. Publication renames this directory to
+	// `.prev` and deletes it after the swap, so the ownership bar is
+	// load-bearing — and it has to be a CONTENT test (2026-08-10 audit,
+	// P0, replicated: the check was `stat manifest.json || stat
+	// manifest.tsv`, so a directory of unrelated files plus anything
+	// merely NAMED manifest.tsv was accepted and deleted after a
+	// successful run. E5 made the `.prev` recovery and staging-marker
+	// checks content tests and left this one behind).
 	entries, err := os.ReadDir(c.out)
 	switch {
 	case os.IsNotExist(err):
 	case err != nil:
 		return "", "", err
 	case len(entries) > 0:
-		if _, err := os.Stat(filepath.Join(c.out, "manifest.json")); err != nil {
-			if _, err := os.Stat(filepath.Join(c.out, "manifest.tsv")); err != nil {
-				return "", "", fmt.Errorf("out dir %s is non-empty and not a gengo batch (no manifest) — refusing to touch it", c.out)
-			}
+		if !ownedBatchDir(c.out) {
+			return "", "", fmt.Errorf("out dir %s is non-empty and does not parse as a gengo batch — refusing to touch it (publication would replace and delete it; move it aside, or point -out elsewhere)", c.out)
 		}
 	}
 	return policy, checkout, nil
