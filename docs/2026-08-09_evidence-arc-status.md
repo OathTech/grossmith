@@ -300,6 +300,30 @@ new rung. Recorded as items land:
   nine in the one known quarantine class (short-circuit-operand
   frontend refusal), so no new signal. `gengo -verify` on the
   published campaign binds case inputs, report, and clone tree.
+- **E6 EXECUTED (2026-08-09): the execution budget** — the user chose
+  design-note option B and rolled it into the arc. The HALTS
+  executed-statement bound is now enforced AT EMISSION for every tape:
+  one pool (`ExecBudget` = 4e6, E4's memory derivation unchanged),
+  each statement charged its exact worst-case executions (`execMul`,
+  the product of enclosing literal trips), folds charged their gated
+  trips, call sites charged the callee's per-call cost (helper,
+  method, and forward-pair bodies are priced during their own
+  generation), both branches of a conditional charged (bounded
+  overcharge, never under), appends pre-paying their observation-fold
+  visits and declarations their observation shape. Floor liability
+  keeps committed constructs finishable, so arms mask instead of
+  overdraw. `Validate`'s worst-case formula is DELETED — the configs
+  it refused (LoopCap 2^40, Depth 6) now generate, degrade to cheap
+  arms, and stay inside the ceiling. `maxExec` is gone: W4 "+fixed"
+  multipliers, append/concat growth, index bounds, and `len()` bounds
+  all use the exact per-site figures (saturation moved 87.30% ->
+  86.70% at n=2000, screen green at 120 programs / 1,541 values).
+  Witnesses: white-box accounting invariants (no breach, liability
+  balanced, pool bounded) across five config families including the
+  formerly-refused ones; the forward-pair cost pin; and the PARITY
+  witness — instrumented execution counts dominated by the charges on
+  real programs (worst measured/charged ratio 0.508). E4's exit
+  condition flips to MET pending the re-review of the E6 diff.
 - **Explicitly deferred, with reasons:** `setsid()` escapees still
   leak until process exit and cost a silent 5s `WaitDelay` each (the
   real worst case is budget + 5s) — closing that needs PID-namespace

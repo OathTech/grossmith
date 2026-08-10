@@ -634,9 +634,10 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				s := &g.vars[pick(g.c, g.sliceVars(nil))]
 				s.reads++
 				g.mark("len", "slices")
-				// Lengths are execution-bounded: appends add at most one
-				// element per executed statement.
-				out = value{text: fmt.Sprintf("len(%s)", s.name), bound: boundAdd(g.maxExec, 8)}
+				// The tracked static length bound IS the bound on len
+				// (E6: exact per-binding accounting replaced the global
+				// execution-count over-approximation).
+				out = value{text: fmt.Sprintf("len(%s)", s.name), bound: s.maxLenBound}
 			}},
 		{name: "map-read", weight: 2, ok: g.enabled("maps") && len(g.mapVars(&t)) > 0, emit: func() {
 			m := &g.vars[pick(g.c, g.mapVars(&t))]
@@ -650,26 +651,29 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				m := &g.vars[pick(g.c, g.mapVars(nil))]
 				m.reads++
 				g.mark("len", "maps")
-				out = value{text: fmt.Sprintf("len(%s)", m.name), bound: boundAdd(g.maxExec, 8)}
+				// Maps are bounded by their 4-key alphabet by construction.
+				out = value{text: fmt.Sprintf("len(%s)", m.name), bound: 4}
 			}},
 		{name: "field", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(&t)) > 0, emit: func() {
 			out = g.fieldRead(t)
 		}},
-		{name: "call", weight: 2, ok: g.enabled("helpers") && len(g.singleResultHelpers(t)) > 0, emit: func() {
+		{name: "call", weight: 2, ok: g.enabled("helpers") && len(g.affordableSingleResultHelpers(t)) > 0, emit: func() {
 			// Helper calls are pure and panic-free, so a call composes into
 			// any expression without effect or panic-identity hazards.
-			h := g.helpers[pick(g.c, g.singleResultHelpers(t))]
+			h := g.helpers[pick(g.c, g.affordableSingleResultHelpers(t))]
+			g.charge(satMul(h.cost, g.execMul)) // the body runs per evaluation (E6)
 			g.mark("helpers")
 			out = value{text: fmt.Sprintf("%s(%s)", h.name, g.callArgs(h, fuel-1)),
 				bound: h.resultBounds[0]}
 		}},
-		{name: "dispatch", weight: 2, ok: g.enabled("interfaces", "methods") && len(g.dispatchSites(t)) > 0, emit: func() {
+		{name: "dispatch", weight: 2, ok: g.enabled("interfaces", "methods") && len(g.affordableDispatchSites(t)) > 0, emit: func() {
 			// Dynamic dispatch through a never-nil interface over a pure
 			// method: effect-free, panic-free, deterministic.
-			site := pick(g.c, g.dispatchSites(t))
+			site := pick(g.c, g.affordableDispatchSites(t))
 			iv := &g.vars[site.varIdx]
 			iv.reads++
 			m := g.defined[site.di].methods[site.mi]
+			g.charge(satMul(m.cost, g.execMul)) // the body runs per evaluation (E6)
 			g.mark("interfaces", "methods")
 			out = value{text: fmt.Sprintf("%s.%s(%s)", iv.name, m.name, g.argList(m.params, fuel-1))}
 		}},
@@ -696,14 +700,15 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 				g.mark("interfaces", "assertion")
 				out = value{text: fmt.Sprintf("%s.(%s)", iv.name, t.Named)}
 			}},
-		{name: "method", weight: 2, ok: g.enabled("methods") && len(g.methodsWithResult(t)) > 0, emit: func() {
+		{name: "method", weight: 2, ok: g.enabled("methods") && len(g.affordableMethodsWithResult(t)) > 0, emit: func() {
 			// Same purity story as helpers; the receiver is a variable of
 			// the defined type, or its literal when the environment lacks
 			// one (T0(5).m0(...) is legal Go).
-			mr := pick(g.c, g.methodsWithResult(t))
+			mr := pick(g.c, g.affordableMethodsWithResult(t))
 			dt := g.defined[mr.di]
 			m := dt.methods[mr.mi]
 			recv := g.variable(dt.typ)
+			g.charge(satMul(m.cost, g.execMul)) // the body runs per evaluation (E6)
 			g.mark("methods")
 			out = value{text: fmt.Sprintf("%s.%s(%s)", recv.text, m.name, g.argList(m.params, fuel-1))}
 		}},
@@ -718,10 +723,10 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			ok: t.Equal(Int(0, false)) && g.enabled("len", "strings"), emit: func() {
 				g.mark("len", "strings")
 				s := g.variable(Str())
-				// String lengths grow at most a constant per executed
-				// statement (the linear-growth rule): execution-bounded.
+				// The byte-length bound tracked since E5 is exactly the
+				// bound on len; unknown (0) propagates as unknown.
 				out = value{text: fmt.Sprintf("len(%s)", s.text), constant: s.constant,
-					bound: boundMul(boundAdd(g.maxExec, 8), 8)}
+					bound: s.strLen}
 			}},
 		{name: "string-index", weight: 2, ok: t.Equal(Int(8, true)) && g.enabled("strings", "string_index"), emit: func() {
 			// s[i] yields a BYTE (uint8) at a byte offset, never a rune —

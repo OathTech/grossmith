@@ -78,6 +78,12 @@ type fwdPair struct {
 	dest     string // fixed | variadic | mixed
 	ptype    string // concrete | any | mixed
 	src      string // both function declarations
+	// cost is the pair's worst-case executed statements per forwarding
+	// call (E6): the source's return, the sink's per-slot fold lines,
+	// and call overhead. Bodies are hand-built text, so the figure is
+	// counted here rather than priced through the emitters; the white-
+	// box witness pins it to the builders.
+	cost int64
 }
 
 // tupleForwardStmt emits `v += sink(src(args))` — the tuple-forwarded call
@@ -107,6 +113,10 @@ func (g *Generator) tupleForwardStmt(out *emitter) {
 		{name: "mixed", weight: 3, ok: boxOK && dest != "variadic"},
 	}).name
 	pair := g.forwardPair(dest, ptype)
+	// The pair's bodies execute per forwarding call (E6); the arm's
+	// gate afforded fwdPairWorstCost, which the white-box witness pins
+	// above every real pair cost.
+	g.charge(satMul(pair.cost, g.execMul))
 	i, _ := g.pickVar(Int(0, false))
 	target := &g.vars[i]
 	target.reads++
@@ -140,7 +150,8 @@ func (g *Generator) forwardPair(dest, ptype string) fwdPair {
 	params, srcText := g.buildForwardSource(srcName, slots)
 	pair := fwdPair{srcName: srcName, sinkName: sinkName, params: params,
 		dest: dest, ptype: ptype,
-		src: srcText + g.buildForwardSink(sinkName, slots, dest)}
+		src:  srcText + g.buildForwardSink(sinkName, slots, dest),
+		cost: int64(len(slots)) + 6}
 	if g.fwdByForm == nil {
 		g.fwdByForm = map[string]int{}
 	}

@@ -123,51 +123,15 @@ func (c Config) Validate() error {
 		}
 		seenShape[s] = true
 	}
-	// "Halts" must include "halts before the heat death" AND "halts before
-	// the OOM killer": bound worst-case executed statements. The cap is
-	// memory-aware (second review): a defer record or slice append can
-	// retain ~56B per executed statement, so 4e6 statements bounds retained
-	// memory to ~224MB.
-	//
-	// RE-DERIVED for E4 (the audit's amplification finding): the old
-	// per-level factor 2*LoopCap silently assumed slice-range trip counts
-	// were LoopCap-like, but they are len-bounded, and growth under
-	// ranges compounded across statements without limit (measured worst
-	// case legal under the old rules: ~9e18 executed statements). Growth
-	// is now masked while any slice range is open and slice ranges are
-	// emitted only over slices whose static maxLenBound is at most
-	// 8*LoopCap.
-	//
-	// E5 partially re-trued this. CLOSED: the arc-end review's measured
-	// refutation mechanism (an append emitted after a range in a shared
-	// loop nest grew what the next iteration walked — 14,372,767
-	// executed statements at an accepted config) is gone: a slice ranged
-	// inside a loop nest is frozen against appends until the nest
-	// closes, and string ranges are gated the same way slices are
-	// (variable operands only at top level under a byte-length bound,
-	// literal operands elsewhere).
-	//
-	// STILL NOT A GUARANTEE: this closed form prices only trip products.
-	// It prices a loop body's 3-5 statements per level as if they were
-	// one, and prices calls at zero — but helper and method bodies may
-	// carry loops (15.9% of DefaultConfig programs), call one another
-	// (15.2%), and nest calls in argument position (~7.5 sites/program),
-	// so the true worst-case tape exceeds any fixed ceiling this formula
-	// can check. Measured DefaultConfig reality is TINY (median 54, max
-	// 288 executed statements over 60 seeds) — the gap is worst-case
-	// tapes, not typical ones. The honest mechanism choice (a-priori
-	// cost model over the grammar vs an emission-time cost budget) is a
-	// design decision recorded in
-	// docs/2026-08-09_execution-bound-design-note.md; until it lands,
-	// this check is a plausibility screen, not a proof.
-	worst := float64(c.Stmts)
-	for i := 0; i < c.Depth; i++ {
-		worst *= 8 * float64(c.LoopCap)
-	}
-	if worst > 4e6 {
-		return fmt.Errorf("config: worst-case executed statements ~%.0g exceeds 4e6 (Stmts=%d, LoopCap=%d, Depth=%d)",
-			worst, c.Stmts, c.LoopCap, c.Depth)
-	}
+	// "Halts" must include "halts before the heat death" AND "halts
+	// before the OOM killer": worst-case executed statements are bounded
+	// by ExecBudget (gen/budget.go), ENFORCED AT EMISSION for every tape
+	// — arms consult the remaining budget before emitting, so no config
+	// needs refusing here for cost, and extreme configs degrade to cheap
+	// arms instead (E6; design-note option B, replacing two generations
+	// of closed-form formula, both refuted by measurement: E4's original
+	// and the E5-annotated screen — the formula class priced trips but
+	// not block branching, fold trips, or calls).
 	// Execution count is not the only cost: generation, formatting, and
 	// compilation scale with SOURCE size, which the execution formula
 	// does not see (audit: Stmts=4e6 at Depth=0 passed while being
@@ -363,11 +327,22 @@ type Generator struct {
 	// plus a decimal suffix (v0, q1, h0, agg0, p2, S0, T0, m0, w0, ...),
 	// and neither wit nor wOrd matches that shape.
 	witSeq int
-	// maxExec is the config's worst-case executed-statement count (the
-	// Validate formula) — the multiplier a loop-carried write's
-	// contribution gets in bound arithmetic (W4). loopDepth counts
-	// enclosing loop bodies so write sites know to apply it.
-	maxExec   int64
+	// The execution budget (E6, gen/budget.go). execMul is the product
+	// of enclosing literal trip counts — the EXACT worst-case execution
+	// count of the current emission point, and therefore also the
+	// multiplier a loop-carried write's contribution gets in W4 bound
+	// arithmetic ("+fixed"). budgetLeft is the subject's remaining
+	// pool; floorLiability reserves committed constructs' mandatory
+	// lines; costSink redirects charges while a pure body is priced;
+	// budgetBreached records an accounting failure (white-box witness
+	// asserts it never happens).
+	execMul        int64
+	budgetLeft     int64
+	floorLiability int64
+	costSink       *int64
+	budgetBreached bool
+	// loopDepth counts enclosing loop bodies so write sites know the
+	// staleness rules apply.
 	loopDepth int
 	// condDepth counts enclosing conditionally-executed bodies (if arms,
 	// switch cases, guarded statements): a replacing write there must
@@ -400,6 +375,9 @@ type helper struct {
 	// that reads a parameter is unknown (0), a literal-rooted one is not.
 	resultBounds []int64
 	src          string
+	// cost is the body's worst-case executed statements PER CALL (E6),
+	// priced during generation; call sites charge cost x execMul.
+	cost int64
 }
 
 // definedType is one `type T0 <int-kind>` declaration with its methods.
@@ -414,6 +392,8 @@ type method struct {
 	params []Type
 	result Type
 	src    string
+	// cost is the body's worst-case executed statements per call (E6).
+	cost int64
 }
 
 // methodRef locates one method: defined-type index, method index.
@@ -507,34 +487,16 @@ func containsTag(tags []string, tag string) bool {
 // the tape.
 func (g *Generator) drawSetup() {
 	cfg := g.cfg
-	// maxExec (re-derived, E5) is the worst-case number of times ONE
-	// statement site can execute: the product of enclosing trip counts
-	// over at most Depth levels, each at most tripCap — for-loops trip
-	// <= LoopCap and slice ranges <= tripCap, held there by the gate
-	// plus the loop-nest freeze; fold loops carry no statement sites.
-	// This is what a loop-carried write's contribution is multiplied by
-	// in W4 bound arithmetic ("+fixed") and what an in-loop append or
-	// string concat charges maxLenBound. The old value (the
-	// whole-program worst, Stmts included) over-approximated per-site
-	// executions by orders of magnitude; every use is per-site, so the
-	// tight value is the honest one — and it is sound for
-	// helper-internal writes too, because their bounds are per-call
-	// values and helper bodies nest loops at most one level deep.
+	// E6: per-site execution counts are EXACT now — execMul is the
+	// product of the actual enclosing literal trips at every emission
+	// point, replacing the E5 worst-case formula (maxExec) everywhere:
+	// W4 "+fixed" contributions, append and concat growth, and index
+	// bounds all use the site's real multiplier. tripCap remains the
+	// range/string-fold gate cap, which (with the loop-nest freeze) is
+	// what keeps range trip counts priceable at emission.
 	g.tripCap = 8 * int64(cfg.LoopCap)
-	g.maxExec = 1
-	for i := 0; i < cfg.Depth; i++ {
-		g.maxExec = boundMul(g.maxExec, g.tripCap)
-	}
-	if g.maxExec < g.tripCap {
-		// Helper and method bodies nest one loop level REGARDLESS of
-		// Depth (generateHelper emits at depth 1), and their bounds are
-		// per-call values: a helper-internal loop write still executes
-		// up to a full loop's trips per call, even at Depth=0. Floor at
-		// one level so those sites never under-multiply. (This floor
-		// also covers the old formula's Depth=0 gap, where Stmts <
-		// LoopCap under-multiplied the same sites.)
-		g.maxExec = g.tripCap
-	}
+	g.execMul = 1
+	g.budgetLeft = ExecBudget - fixedReserve
 	switch {
 	case cfg.Constructs != nil:
 		// g.cfg's map is already OUR copy (snapshotConfig at construction
@@ -667,6 +629,9 @@ func (g *Generator) Generate() (c Case, err error) {
 	if g.enabled("recover_wrapper") && g.c.chance(3) {
 		g.wrapped = true
 		g.mark("recover_wrapper")
+		// The wrapper's prologue and defer body, pre-paid (E6); its
+		// per-statement psite lines are charged with each statement.
+		g.charge(wrapperReserve)
 	}
 	g.generateHelpers()
 	g.createDefinedTypes()
@@ -689,12 +654,22 @@ func (g *Generator) Generate() (c Case, err error) {
 	// statement draws). emitWrapperDefer makes no draws, so the tape is
 	// unchanged — only text assembly is reordered.
 	stmts := &emitter{indent: 1}
+	// The top-level slots are the budget's root commitment (E6): each
+	// statement costs one execution, two when the wrapper's psite line
+	// rides along.
+	perStmt := int64(1)
+	if g.wrapped {
+		perStmt = 2
+	}
+	releaseTop := g.commitFloor(satMul(int64(g.cfg.Stmts), perStmt))
 	for i := 0; i < g.cfg.Stmts; i++ {
 		if g.wrapped {
+			g.charge(1)
 			stmts.line("psite = %d", i+1)
 		}
 		g.stmt(stmts, g.cfg.Depth)
 	}
+	releaseTop()
 	g.guardBias = false
 	if g.wrapped {
 		// Sentinel for the final observation region (tight audit F4): the
@@ -886,16 +861,23 @@ func (g *Generator) generateHelper(idx int) helper {
 		g.vars = append(g.vars, binding{name: fmt.Sprintf("p%d", j), typ: pt})
 	}
 	body := &emitter{indent: 1}
-	for j := 1 + g.c.draw(3); j > 0; j-- {
-		g.stmtIn(body, 1, false, false)
-	}
 	rs := make([]string, len(results))
 	rbs := make([]int64, len(results))
-	for j, rt := range results {
-		rv := g.expr(rt, g.cfg.ExprFuel)
-		rs[j] = rv.text
-		rbs[j] = rv.bound
-	}
+	// Priced, not budgeted (E6): the body's charges accrue to the
+	// recorded per-call cost, which every call site weighs.
+	cost := g.priceBody(func() {
+		stmts := 1 + g.c.draw(3)
+		release := g.commitFloor(int64(stmts))
+		for j := 0; j < stmts; j++ {
+			g.stmtIn(body, 1, false, false)
+		}
+		release()
+		for j, rt := range results {
+			rv := g.expr(rt, g.cfg.ExprFuel)
+			rs[j] = rv.text
+			rbs[j] = rv.bound
+		}
+	})
 	body.line("return %s", strings.Join(rs, ", "))
 	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
 	g.mark("helpers")
@@ -911,7 +893,7 @@ func (g *Generator) generateHelper(idx int) helper {
 	name := fmt.Sprintf("h%d", idx)
 	src := fmt.Sprintf("func %s(%s) (%s) {\n%s}\n\n",
 		name, strings.Join(ps, ", "), strings.Join(rt, ", "), body.buf.String())
-	return helper{name: name, params: params, results: results, resultBounds: rbs, src: src}
+	return helper{name: name, params: params, results: results, resultBounds: rbs, src: src, cost: cost}
 }
 
 // createDefinedTypes draws the per-seed defined types (before methods, which
@@ -1075,10 +1057,17 @@ func (g *Generator) generateMethod(di int) method {
 		g.vars = append(g.vars, binding{name: fmt.Sprintf("p%d", j), typ: pt})
 	}
 	body := &emitter{indent: 1}
-	for j := 1 + g.c.draw(2); j > 0; j-- {
-		g.stmtIn(body, 1, false, false)
-	}
-	body.line("return %s", g.expr(result, g.cfg.ExprFuel).text)
+	ret := ""
+	cost := g.priceBody(func() {
+		stmts := 1 + g.c.draw(2)
+		release := g.commitFloor(int64(stmts))
+		for j := 0; j < stmts; j++ {
+			g.stmtIn(body, 1, false, false)
+		}
+		release()
+		ret = g.expr(result, g.cfg.ExprFuel).text
+	})
+	body.line("return %s", ret)
 	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
 	g.mark("methods")
 
@@ -1090,7 +1079,7 @@ func (g *Generator) generateMethod(di int) method {
 	g.methodSeq++
 	src := fmt.Sprintf("func (r %s) %s(%s) %s {\n%s}\n\n",
 		dt.GoName(), name, strings.Join(ps, ", "), result.GoName(), body.buf.String())
-	return method{name: name, params: params, result: result, src: src}
+	return method{name: name, params: params, result: result, src: src, cost: cost}
 }
 
 // methodsWithResult returns the methods whose single result has type t.
@@ -1151,6 +1140,11 @@ func (g *Generator) witness(v value, t Type) value {
 	if t.Shape != ShapeInt || t.Bits != 0 || t.Unsigned || t.Named != "" {
 		return v
 	}
+	// Budget mask before the density draw (E6): the wrap costs two
+	// executed lines per evaluation.
+	if !g.afford(satMul(2, g.execMul)) {
+		return v
+	}
 	// Density draw: wrap 2-in-3. Wrapped and unwrapped operands stay
 	// mixed across seeds, so the corner's population varies which
 	// operands carry witnesses rather than saturating every site the
@@ -1160,6 +1154,8 @@ func (g *Generator) witness(v value, t Type) value {
 	}
 	g.witSeq++
 	g.mark("order_witness")
+	// The wit helper's two lines execute per evaluation of this site (E6).
+	g.charge(satMul(2, g.execMul))
 	if g.shortCircuitDepth > 0 {
 		// The wrap sits under && / || — conditionally executed, the
 		// sharpest R2b shape and the one GoLean's frontend quarantines.
@@ -1217,7 +1213,10 @@ func (g *Generator) writeBound(target *binding, rhs int64, op string) {
 	case "+":
 		target.bound = boundAdd(target.bound, rhs)
 	case "+fixed":
-		target.bound = boundAdd(target.bound, boundMul(rhs, g.maxExec))
+		// E6: execMul is the site's EXACT worst-case execution count
+		// (the product of enclosing literal trips), replacing the old
+		// whole-config over-approximation.
+		target.bound = boundAdd(target.bound, boundMul(rhs, g.execMul))
 	case "*":
 		target.bound = boundMul(target.bound, rhs)
 	case "max":
@@ -1349,6 +1348,11 @@ func (g *Generator) declare(out *emitter) error {
 }
 
 func (g *Generator) declareOne(out *emitter, typ Type) {
+	// Pre-pay the binding's whole observation shape (E6): declaration,
+	// discharge/obs line, and the worst aggregate-fold base. Appends
+	// pre-pay their own fold visits on top, so observe() emits without
+	// consulting the budget.
+	g.charge(perVarReserve)
 	name := fmt.Sprintf("v%d", len(g.vars))
 	observed := g.c.choose("liveness", []arm{
 		{name: "observed", weight: 4, ok: true},
@@ -1439,6 +1443,11 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 // every unobserved, never-read variable with `_ = v` (legal deadness — the
 // eliminable case, recorded as dead_value). An unobserved variable that WAS
 // read is a feeder: visible through what it feeds.
+//
+// Budget (E6): everything emitted here is PRE-PAID — each declaration
+// charged perVarReserve for its discharge/obs line and aggregate-fold
+// base, and every append charged one extra execution for the element
+// its fold visits — so this function emits without consulting the pool.
 func (g *Generator) observe(out *emitter) []binding {
 	var observed []binding
 	var names []string

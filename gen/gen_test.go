@@ -1512,9 +1512,6 @@ func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: -1, ExprFuel: 3, LoopCap: 6},
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 0, LoopCap: 6},
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6, Corner: "bogus"},
-		// Practically non-terminating: worst-case executed statements bound.
-		{Seed: 1, Vars: 4, Stmts: 8, Depth: 3, ExprFuel: 3, LoopCap: 1 << 40},
-		{Seed: 1, Vars: 4, Stmts: 8, Depth: 6, ExprFuel: 3, LoopCap: 4096},
 		// Misspelled construct key: silent population degradation.
 		{Seed: 1, Vars: 4, Stmts: 8, Depth: 2, ExprFuel: 3, LoopCap: 6,
 			Constructs: map[string]bool{"array": true}},
@@ -1536,5 +1533,23 @@ func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 	}
 	if err := DefaultConfig(1).Validate(); err != nil {
 		t.Fatalf("the default config fails its own validation: %v", err)
+	}
+	// Configs the old worst-case FORMULA refused are ACCEPTED under the
+	// execution budget (E6): the ceiling is enforced at emission for
+	// every tape, so extreme LoopCap/Depth degrade to cheap arms instead
+	// of refusing. Generation must succeed and stay inside the budget's
+	// own accounting (the measured half of this witness lives in
+	// execmeasure_test.go).
+	for i, cfg := range []Config{
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 3, ExprFuel: 3, LoopCap: 1 << 40, Swarm: true},
+		{Seed: 1, Vars: 4, Stmts: 8, Depth: 6, ExprFuel: 3, LoopCap: 4096, Swarm: true},
+	} {
+		g := New(cfg)
+		if _, err := g.Generate(); err != nil {
+			t.Fatalf("extreme config %d refused under the budget: %v", i, err)
+		}
+		if g.budgetBreached {
+			t.Fatalf("extreme config %d breached the budget accounting", i)
+		}
 	}
 }

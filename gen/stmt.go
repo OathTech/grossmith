@@ -18,6 +18,11 @@ import (
 func (g *Generator) stmt(out *emitter, depth int) { g.stmtIn(out, depth, false, false) }
 
 func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
+	// Every statement slot costs one execution per pass (E6). The slot
+	// itself was made payable by the owner's floor commitment; arms
+	// whose emission costs MORE than the slot carry afford() in their
+	// legality below, so the extras never overdraw.
+	g.charge(g.execMul)
 	terminalWeight := 3
 	if !last {
 		terminalWeight = 1
@@ -39,7 +44,7 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			emit: func() { g.incDec(out) }},
 		{name: "elem-assign", weight: 3, ok: g.enabled("index") && len(g.indexableVars()) > 0,
 			emit: func() { g.elemAssign(out) }},
-		{name: "append", weight: 3, ok: g.enabled("slices", "append") && len(g.appendableSlices()) > 0,
+		{name: "append", weight: 3, ok: g.enabled("slices", "append") && len(g.appendableSlices()) > 0 && g.afford(satMul(3, g.execMul)),
 			emit: func() { g.appendStmt(out) }},
 		{name: "map-write", weight: 3, ok: g.enabled("maps") && len(g.mapVars(nil)) > 0,
 			emit: func() { g.mapWrite(out) }},
@@ -56,38 +61,40 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 			// conversion, so the arm is conversion-gated and masked under
 			// the kinds corner like every laundering site.
 			ok: g.enabled("interfaces", "type_switch", "switch", "conversions") &&
-				g.corner != "kinds" && len(g.ifaceVars()) > 0,
+				g.corner != "kinds" && len(g.ifaceVars()) > 0 && g.afford(g.execMul),
 			emit: func() { g.typeSwitchStmt(out) }},
-		{name: "defer", weight: 2, ok: g.enabled("defer") && !g.pureMode,
+		{name: "defer", weight: 2, ok: g.enabled("defer") && !g.pureMode && g.afford(g.execMul),
 			emit: func() { g.deferPrint(out) }},
-		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0 && !g.pureMode,
+		{name: "guarded", weight: 1, ok: g.enabled("recover") && depth > 0 && !g.pureMode && g.afford(satMul(6, g.execMul)),
 			emit: func() { g.guardedStmt(out) }},
-		{name: "linearize", weight: 1, ok: g.enabled("linearize", "division", "modulo") && !g.pureMode,
+		{name: "linearize", weight: 1, ok: g.enabled("linearize", "division", "modulo") && !g.pureMode && g.afford(satMul(2, g.execMul)),
 			emit: func() { g.linearizedRisk(out) }},
-		{name: "map-fold", weight: 2, ok: g.enabled("maps", "range") && len(g.intElemMapVars()) > 0,
+		{name: "map-fold", weight: 2, ok: g.enabled("maps", "range") && len(g.intElemMapVars()) > 0 && g.afford(satMul(4, g.execMul)),
 			emit: func() { g.mapRangeFold(out) }},
 		{name: "string-fold", weight: 2,
 			// int(r) is a conversion, so the fold is conversion-gated and
 			// masked under the kinds corner like every laundering site.
 			ok: g.enabled("strings", "string_range", "range", "conversions") && g.corner != "kinds" &&
-				len(g.varsOfShape(ShapeString, nil)) > 0,
+				len(g.varsOfShape(ShapeString, nil)) > 0 && g.afford(satMul(g.tripCap, g.execMul)),
 			emit: func() { g.stringRangeFold(out) }},
 
 		{name: "slice-triple", weight: 2,
 			// The observation fold converts (int(e)) — conversion-gated and
 			// masked under the kinds corner like every laundering site.
 			ok: g.enabled("slices", "slice_triple", "append", "range", "conversions") &&
-				g.corner != "kinds" && len(g.intElemSliceVars()) > 0,
+				g.corner != "kinds" && len(g.intElemSliceVars()) > 0 && g.afford(satMul(7, g.execMul)),
 			emit: func() { g.sliceTripleStmt(out) }},
 		{name: "field-assign", weight: 2, ok: g.enabled("structs", "field") && len(g.fieldSources(nil)) > 0,
 			emit: func() { g.fieldAssign(out) }},
-		{name: "if", weight: 3, ok: g.enabled("if") && depth > 0,
+		{name: "if", weight: 3, ok: g.enabled("if") && depth > 0 && g.afford(satMul(2*blockFloorStmts+2, g.execMul)),
 			emit: func() { g.ifStmt(out, depth, inLoop) }},
-		{name: "for", weight: 3, ok: g.enabled("loops") && depth > 0,
+		{name: "for", weight: 3, ok: g.enabled("loops") && depth > 0 &&
+			g.afford(satMul(satMul(int64(g.cfg.LoopCap), loopBodyFloor), g.execMul)),
 			emit: func() { g.forStmt(out, depth) }},
-		{name: "range", weight: 2, ok: g.enabled("range") && depth > 0 && len(g.rangeableVars()) > 0,
+		{name: "range", weight: 2, ok: g.enabled("range") && depth > 0 && len(g.rangeableVars()) > 0 &&
+			g.afford(satMul(satMul(maxInt64(g.tripCap, 4), loopBodyFloor), g.execMul)),
 			emit: func() { g.rangeStmt(out, depth) }},
-		{name: "switch", weight: 2, ok: g.enabled("switch") && depth > 0,
+		{name: "switch", weight: 2, ok: g.enabled("switch") && depth > 0 && g.afford(satMul(4*(blockFloorStmts-2)+1, g.execMul)),
 			emit: func() { g.switchStmt(out, depth, inLoop) }},
 		{name: "break", weight: terminalWeight, ok: g.enabled("break") && inLoop,
 			emit: terminal("break")},
@@ -96,9 +103,9 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 		// The order corner biases the witness-site-bearing arms up (calls
 		// and multi-assigns), the same lever as guardBias for the wrapper:
 		// the corner densifies where its instrument lives.
-		{name: "call", weight: 2 + 2*boolToInt(g.corner == "order"), ok: g.enabled("helpers") && len(g.helpers) > 0,
+		{name: "call", weight: 2 + 2*boolToInt(g.corner == "order"), ok: g.enabled("helpers") && len(g.affordableHelpers()) > 0,
 			emit: func() { g.callStmt(out) }},
-		{name: "bare-call", weight: 1, ok: g.enabled("helpers", "bare_call") && len(g.helpers) > 0,
+		{name: "bare-call", weight: 1, ok: g.enabled("helpers", "bare_call") && len(g.affordableHelpers()) > 0,
 			emit: func() { g.bareCallStmt(out) }},
 		// Weight 3 (vs call's 2): the fix-pair cross-validation's
 		// detection density rides on this arm — interface-typed slots
@@ -106,7 +113,7 @@ func (g *Generator) stmtIn(out *emitter, depth int, inLoop, last bool) {
 		// for a 300-case campaign to hit the fix pair repeatedly.
 		// Subject-only: pairs are top-level and their creation swaps the
 		// variable environment.
-		{name: "tuple-forward", weight: 3, ok: g.enabled("helpers", "tuple_forward") && !g.pureMode,
+		{name: "tuple-forward", weight: 3, ok: g.enabled("helpers", "tuple_forward") && !g.pureMode && g.afford(satMul(fwdPairWorstCost, g.execMul)),
 			emit: func() { g.tupleForwardStmt(out) }},
 		{name: "multi-assign", weight: 3 + 2*boolToInt(g.corner == "order"), ok: g.enabled("multi_assign") && len(g.vars) >= 2,
 			emit: func() { g.multiAssign(out) }},
@@ -227,6 +234,7 @@ func (g *Generator) maybeDeclareInner(out *emitter) *binding {
 	t := pick(g.c, pool)
 	name := fmt.Sprintf("w%d", g.innerSeq)
 	g.innerSeq++
+	g.charge(g.execMul) // the declaration line (E6)
 	g.mark(append([]string{"block_decl", "short_decl"}, t.Tags()...)...)
 	init := g.expr(t, g.cfg.ExprFuel)
 	out.line("%s := %s", name, init.text)
@@ -242,6 +250,7 @@ func (g *Generator) maybeDeclareInner(out *emitter) *binding {
 // projectInner folds the inner variable into an enclosing one before scope
 // exit — the observation path for block-scoped state.
 func (g *Generator) projectInner(out *emitter, w binding) {
+	g.charge(g.execMul) // the projection line (E6)
 	switch w.typ.Shape {
 	case ShapeBool:
 		o := &g.vars[g.pickOuter(Bool())]
@@ -412,14 +421,11 @@ func (g *Generator) compoundAssign(out *emitter) {
 			litBytes += lv.strLen
 		}
 		// Growth is literal bytes only — independent of any loop-mutated
-		// state, so it is the "+fixed" class: charge this site's
-		// worst-case executions (E5). Conditional bodies grow AT MOST
-		// this much, so plain accumulation covers them too.
-		grow := litBytes
-		if g.loopDepth > 0 {
-			grow = boundMul(litBytes, g.maxExec)
-		}
-		target.maxLenBound = boundAdd(target.maxLenBound, grow)
+		// state, so it is the "+fixed" class: charge this site's exact
+		// executions (E5; E6 made the multiplier the site's real trip
+		// product). Conditional bodies grow AT MOST this much, so plain
+		// accumulation covers them too.
+		target.maxLenBound = boundAdd(target.maxLenBound, boundMul(litBytes, g.execMul))
 		g.mark("assignment", "strings", "concat")
 		out.line("%s += %s", target.name, strings.Join(parts, " + "))
 		return
@@ -546,13 +552,14 @@ func (g *Generator) appendStmt(out *emitter) {
 		elem = g.expr(*s.typ.Elem, g.cfg.ExprFuel)
 	}
 	g.writeBound(s, elem.bound, "max")
-	// The static length bound absorbs this site's worst-case executions
-	// (E4): +1 per execution, maxExec-multiplied inside loops.
-	grow := int64(1)
-	if g.loopDepth > 0 {
-		grow = g.maxExec
-	}
-	s.maxLenBound += grow
+	// The static length bound absorbs this site's exact executions
+	// (E4; E6): +1 per execution, execMul executions. The budget takes
+	// THREE extra executions per element for the observation fold that
+	// will walk the final slice — the bool-element fold shape spends up
+	// to three lines per element, and pre-paying the worst shape here
+	// is what lets observe() emit without consulting the pool.
+	s.maxLenBound = boundAdd(s.maxLenBound, g.execMul)
+	g.charge(satMul(3, g.execMul))
 	out.line("%s = append(%s, %s)", s.name, s.name, elem.text)
 }
 
@@ -623,7 +630,8 @@ func (g *Generator) indexableVarsOfElem(t Type) []int {
 // env) or a target collision (`v1, v1 = h()` reads poorly even if legal).
 func (g *Generator) callStmt(out *emitter) {
 	g.resetRisk()
-	h := g.helpers[g.c.draw(len(g.helpers))]
+	h := g.helpers[pick(g.c, g.affordableHelpers())]
+	g.charge(satMul(h.cost, g.execMul))
 	targets := make([]string, len(h.results))
 	seen := map[int]bool{}
 	for i, rt := range h.results {
@@ -662,7 +670,8 @@ func (g *Generator) callStmt(out *emitter) {
 // clone to perform.
 func (g *Generator) bareCallStmt(out *emitter) {
 	g.resetRisk()
-	h := g.helpers[g.c.draw(len(g.helpers))]
+	h := g.helpers[pick(g.c, g.affordableHelpers())]
+	g.charge(satMul(h.cost, g.execMul))
 	g.mark("helpers", "bare_call")
 	out.line("%s(%s)", h.name, g.callArgs(h, g.cfg.ExprFuel-1))
 }
@@ -870,6 +879,7 @@ func (g *Generator) typeSwitchStmt(out *emitter) {
 	w := fmt.Sprintf("w%d", g.innerSeq)
 	g.innerSeq++
 	g.mark("interfaces", "type_switch", "switch", "control_flow", "cases", "default", "short_decl")
+	g.charge(g.execMul) // the taken arm's fold line (E6)
 	out.open("switch %s := %s.(type) {", w, iv.name)
 	count := 1 + g.c.draw(len(impls))
 	cands := append([]int(nil), impls...)
@@ -941,6 +951,7 @@ func (g *Generator) assertOk(out *emitter) {
 // during panic unwinding too — guaranteed exit observations even on panic
 // paths.
 func (g *Generator) deferPrint(out *emitter) {
+	g.charge(g.execMul) // the deferred call runs at exit, once per registration (E6)
 	var cands []int
 	for i, v := range g.vars {
 		switch v.typ.Shape {
@@ -976,6 +987,11 @@ func (g *Generator) guardedStmt(out *emitter) {
 	prev := g.guardBias
 	g.guardBias = true
 	defer func() { g.guardBias = prev }()
+	// Budget (E6): scaffolding beyond the slot — defer registration and
+	// the recover body at exit — plus the inner statement's own slot.
+	release := g.commitFloor(satMul(5, g.execMul))
+	defer release()
+	g.charge(satMul(4, g.execMul))
 	out.open("func() {")
 	out.open("defer func() {")
 	out.open("if r := recover(); r != nil {")
@@ -1007,6 +1023,7 @@ func (g *Generator) guardedStmt(out *emitter) {
 // (the multi-site-in-one-expression form has spec-unspecified panic
 // identity and stays excluded by the risk budget).
 func (g *Generator) linearizedRisk(out *emitter) {
+	g.charge(satMul(2, g.execMul)) // two hoist lines beyond the slot (E6)
 	t := pick(g.c, intTypes())
 	t0 := fmt.Sprintf("t%d", g.tmpSeq)
 	t1 := fmt.Sprintf("t%d", g.tmpSeq+1)
@@ -1083,6 +1100,9 @@ func (g *Generator) intElemSliceVars() []int {
 // shows. cap itself remains UNOBSERVED (that quotient stands).
 func (g *Generator) sliceTripleStmt(out *emitter) {
 	g.resetRisk()
+	// Two extra lines plus the fold over the derived temp, whose length
+	// is at most minLen+1 <= 5 (E6).
+	g.charge(satMul(7, g.execMul))
 	// Base pick biased 3:1 toward observed/aggregate-observed slices
 	// (audit finding 5: only ~17% of emissions put the discriminating
 	// shared-write where the observation could see it).
@@ -1157,6 +1177,7 @@ func (g *Generator) mapRangeFold(out *emitter) {
 	acc.reads++
 	e := fmt.Sprintf("e%d", g.tmpSeq)
 	g.tmpSeq++
+	g.charge(satMul(4, g.execMul)) // fold body: at most the 4-key alphabet (E6)
 	g.mark("maps", "range", "assignment", "control_flow", "short_decl")
 	g.note("map_range_fold")
 	// W4: a commutative sum of map values is bounded by the map's element
@@ -1196,17 +1217,21 @@ func (g *Generator) stringRangeFold(out *emitter) {
 	// a loop (or a helper body, whose string parameters have caller-decided
 	// lengths) the fold ranges a LITERAL instead — immutable and small, so
 	// re-execution cannot move its trip count.
-	operand := ""
+	operand, operandTrips := "", int64(0)
 	if g.loopDepth == 0 && !g.pureMode {
 		if cands := g.stringRangeableVars(); len(cands) > 0 {
 			sv := &g.vars[pick(g.c, cands)]
 			sv.reads++
-			operand = sv.name
+			operand, operandTrips = sv.name, sv.maxLenBound
 		}
 	}
 	if operand == "" {
-		operand = g.literal(Str()).text
+		lv := g.literal(Str())
+		operand, operandTrips = lv.text, lv.strLen
 	}
+	// One fold line per byte of the operand's bound (E6; the arm's gate
+	// afforded tripCap, which caps both operand kinds).
+	g.charge(satMul(operandTrips, g.execMul))
 	// The accumulator is the guaranteed plain-int variable: the subject's
 	// pool floor, or a helper's p0 (methods have no string vars, so the arm
 	// never fires there).
@@ -1294,6 +1319,18 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 	g.loopSeq++
 	g.mark("control_flow", "short_decl")
 	out.open("for %s := range %s {", index, arr.name)
+	// Budget (E6): the trip bound is exact at emission — an array's
+	// declared length, or the slice's length bound, which the gate
+	// capped and the freeze above holds still for as long as this
+	// range can re-execute.
+	trips := int64(arr.typ.Len)
+	if arr.typ.Shape == ShapeSlice {
+		trips = arr.maxLenBound
+	}
+	trips = maxInt64(trips, 1) // a zero multiplier would price the body free
+	release := g.commitFloor(satMul(trips, satMul(loopBodyFloor, g.execMul)))
+	savedMul := g.execMul
+	g.execMul = satMul(g.execMul, trips)
 	// Int-element containers offer the ELEMENT to the fold (witness arc
 	// W3, survey finding F14): base[index] is in range by construction —
 	// index < len(base) for the whole loop, since appends to a ranged
@@ -1303,9 +1340,11 @@ func (g *Generator) rangeStmt(out *emitter, depth int) {
 		elemBase = arr
 	}
 	g.loopDepth++
-	g.consumeIndex(out, index, elemBase)
+	g.consumeIndex(out, index, elemBase, trips)
 	g.block(out, depth, 1+g.c.draw(2), true)
 	g.loopDepth--
+	g.execMul = savedMul
+	release()
 	g.releaseFrozenSlices()
 	out.close()
 }
@@ -1321,6 +1360,11 @@ func (g *Generator) releaseFrozenSlices() {
 func (g *Generator) ifStmt(out *emitter, depth int, inLoop bool) {
 	g.resetRisk()
 	g.mark("if", "control_flow")
+	// Budget (E6): both branches are charged as they emit though only
+	// one executes per pass — a bounded overcharge, never an
+	// undercharge. Commit their floors before the condition expression
+	// can spend into them.
+	release := g.commitFloor(satMul(2*blockFloorStmts, g.execMul))
 	out.open("if %s {", g.boolExpr(g.cfg.ExprFuel).text)
 	g.condDepth++
 	g.block(out, depth, 1+g.c.draw(2), inLoop)
@@ -1331,6 +1375,7 @@ func (g *Generator) ifStmt(out *emitter, depth int, inLoop bool) {
 		g.block(out, depth, 1+g.c.draw(2), inLoop)
 	}
 	g.condDepth--
+	release()
 	out.close()
 }
 
@@ -1344,15 +1389,24 @@ func (g *Generator) forStmt(out *emitter, depth int) {
 	trips := 1 + g.c.draw(g.cfg.LoopCap)
 	g.mark("loops", "control_flow", "short_decl")
 	out.open("for %s := 0; %s < %d; %s++ {", index, index, trips, index)
+	// Budget (E6): the arm's gate afforded LoopCap x loopBodyFloor at
+	// the parent multiplier; commit the ACTUAL trips' floor before any
+	// body draw can spend it, and multiply the site multiplier for
+	// everything inside.
+	release := g.commitFloor(satMul(int64(trips), satMul(loopBodyFloor, g.execMul)))
+	savedMul := g.execMul
+	g.execMul = satMul(g.execMul, int64(trips))
 	// The index is folded into a variable FIRST, before the body can emit a
 	// terminal statement — otherwise a trailing accumulation is dead on any
 	// early-exit path and the loop can compute nothing at all (34% of the
 	// prototype's loops did, before this ordering).
 	// A plain for-loop's index has no container behind it: no element.
 	g.loopDepth++
-	g.consumeIndex(out, index, nil)
+	g.consumeIndex(out, index, nil, int64(trips))
 	g.block(out, depth, 1+g.c.draw(2), true)
 	g.loopDepth--
+	g.execMul = savedMul
+	release()
 	g.releaseFrozenSlices()
 	out.close()
 }
@@ -1367,16 +1421,15 @@ func (g *Generator) forStmt(out *emitter, depth int) {
 // a write through a slice_triple alias never reached the observation).
 // The decision is made HERE, at the fold expression, never as a mid-body
 // arity change — the tuple is untouched (the charter's structural rule).
-func (g *Generator) consumeIndex(out *emitter, index string, base *binding) {
+func (g *Generator) consumeIndex(out *emitter, index string, base *binding, trips int64) {
+	// One fold line per iteration (E6).
+	g.charge(g.execMul)
 	// The element read is an index operation and folds through a
 	// conversion when types differ — both gated AND marked (audit F1).
 	elemOK := base != nil && g.enabled("index")
-	// W4: an index's magnitude is execution-bounded (a container's length
-	// grows at most one per executed statement; a for-loop count is capped
-	// by LoopCap <= that). The index-only fold therefore accumulates a
-	// known contribution and, under DefaultConfig, never reaches the
-	// window — the single biggest source of the old 98% saturation.
-	idxBound := boundAdd(g.maxExec, 8)
+	// W4 (tightened by E6): the index is strictly below the loop's trip
+	// count, which the caller knows exactly.
+	idxBound := trips
 	if g.enabled("conversions") && g.corner != "kinds" {
 		t := pick(g.c, intTypes())
 		if i, ok := g.pickVar(t); ok {
@@ -1503,6 +1556,11 @@ func (g *Generator) switchStmt(out *emitter, depth int, inLoop bool) {
 	out.open("switch %s {", tagExpr)
 	seen := map[int]bool{}
 	caseCount := 1 + g.c.draw(3) // hoisted: never draw in a loop condition
+	// Budget (E6): every case body plus the default is charged as it
+	// emits though one arm runs per pass — bounded overcharge. Each
+	// case block carries one statement slot plus the inner-declaration
+	// pair.
+	release := g.commitFloor(satMul(int64(caseCount+1)*(blockFloorStmts-2), g.execMul))
 	for i := 0; i < caseCount; i++ {
 		n := low + g.c.draw(high-low+1)
 		if seen[n] {
@@ -1526,6 +1584,7 @@ func (g *Generator) switchStmt(out *emitter, depth int, inLoop bool) {
 	g.condDepth++
 	g.block(out, depth, 1, inLoop)
 	g.condDepth--
+	release()
 	out.dedent()
 	out.line("}")
 }

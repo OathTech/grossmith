@@ -173,3 +173,57 @@ func TestExecutedStatementsMeasured(t *testing.T) {
 	}
 	t.Logf("measured %d subjects, worst %d executed statements", measured, worst)
 }
+
+// TestChargedCoversMeasured is E6's parity witness — the strongest one:
+// the budget's charges must DOMINATE what the program actually executes,
+// for real programs, measured by instrumentation. An emitter that emits
+// more executions than it charges shows up here as measured > charged.
+// Configs include the ones the old worst-case formula refused.
+func TestChargedCoversMeasured(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs binaries")
+	}
+	configs := []struct {
+		name  string
+		cfg   func(int64) Config
+		seeds []int64
+	}{
+		{"default", DefaultConfig, []int64{1, 2, 3, 4, 5, 6, 7, 8}},
+		{"review counterexample", func(seed int64) Config {
+			cfg := DefaultConfig(seed)
+			cfg.Stmts, cfg.Depth, cfg.LoopCap = 1, 2, 250
+			return cfg
+		}, []int64{174810, 174813, 174816}},
+		{"deep", func(seed int64) Config {
+			cfg := DefaultConfig(seed)
+			cfg.Stmts, cfg.Depth, cfg.LoopCap = 64, 6, 4096
+			return cfg
+		}, []int64{1, 2, 3}},
+	}
+	var worstRatio float64
+	for _, tc := range configs {
+		for _, seed := range tc.seeds {
+			g := New(tc.cfg(seed))
+			c, err := g.Generate()
+			if err != nil {
+				t.Fatalf("%s seed %d: %v", tc.name, seed, err)
+			}
+			if g.budgetBreached {
+				t.Fatalf("%s seed %d: budget accounting breached", tc.name, seed)
+			}
+			charged := int64(ExecBudget) - g.budgetLeft
+			measured := measureExec(t, c)
+			if measured > charged {
+				t.Fatalf("%s seed %d: measured %d executed statements but only %d charged — an emitter under-charges\n%s",
+					tc.name, seed, measured, charged, c.Source)
+			}
+			if measured > ExecBudget {
+				t.Fatalf("%s seed %d: measured %d past the ceiling", tc.name, seed, measured)
+			}
+			if r := float64(measured) / float64(charged); r > worstRatio {
+				worstRatio = r
+			}
+		}
+	}
+	t.Logf("measured/charged worst ratio %.3f (1.0 would mean an exactly-priced program)", worstRatio)
+}

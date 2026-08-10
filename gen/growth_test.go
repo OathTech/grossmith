@@ -96,8 +96,8 @@ func TestValidateSourceSizeBound(t *testing.T) {
 // Incidence, re-measured for this witness (pre-freeze generator, the
 // review's config): exactly ONE program in seeds 150,000-210,000 — seed
 // 174813 itself, reproduced byte-for-byte. The converse order never
-// occurs on a real slice, because an in-loop append charges maxExec to
-// the bound and the range gate then refuses it; slice_triple's
+// occurs on a real slice, because an in-loop append charges its trip
+// product to the bound and the range gate then refuses it; slice_triple's
 // statement-local temps are the one exempt append target. The stress
 // sweep below covers the seed range the counterexample lives in.
 //

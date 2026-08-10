@@ -69,6 +69,11 @@ func TestWidthDepUntaggedObservesInWindow(t *testing.T) {
 //
 // Measurement history, most recent first (each re-stated when the
 // mechanism moved, per the arc-end review's stale-figure finding):
+//   - E6 (2026-08-09): 86.70% at n=2000, 90% on this test's window —
+//     execMul made "+fixed" multipliers EXACT per site, and len()
+//     bounds moved to the tracked container bounds; margin ~4pp,
+//     off-tag ~13.3%. Soundness screen: 120 untagged programs, 1,541
+//     observed values, all in-window.
 //   - E5 (2026-08-09): 87.30% at n=2000, 91% on this test's window —
 //     the per-site maxExec re-derivation (trip products instead of the
 //     whole-program worst) tightened "+fixed" contributions and undid
