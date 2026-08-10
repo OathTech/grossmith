@@ -1,9 +1,10 @@
 *ACTIVE (2026-08-09): governing the evidence arc, branch `evidence-arc`.
-E5 is executed and re-reviewed: E3's exit condition is MET; E4's is met
-on its measured mechanisms and UNMET on the universal bound, which is
-stopped at `docs/2026-08-09_execution-bound-design-note.md` per this
-charter's own exit condition — a design decision for the user. Status
-of record: `docs/2026-08-09_evidence-arc-status.md`. Sequencing:
+The arc is COMPLETE: E5 and E6 are executed and re-reviewed, E3's and
+E4's exit conditions are MET (E4's universal half via E6's execution
+budget — the user's option-B call on the design note), and the closing
+campaign held the known quarantine floor. The merge itself waits for
+the user, per the review plan. Status of record:
+`docs/2026-08-09_evidence-arc-status.md`. Sequencing:
 `docs/roadmap.md`.*
 
 # The evidence arc: charter (2026-08-09)
@@ -211,12 +212,16 @@ E5 STATUS (2026-08-09): the measured MECHANISMS are closed (the
 loop-nest freeze, the string gates, budgeted and group-killed identity
 probes — each with its witness, including instrumented replay of the
 counterexample neighborhood at 123,825 statements vs the measured
-14.4M). The UNIVERSAL bound remains open by design decision: an honest
-closed form must also price block branching, fold trips, and calls, and
-cannot fit 4e6 without deleting real populations — stopped at
+14.4M). The UNIVERSAL bound was stopped at
 `docs/2026-08-09_execution-bound-design-note.md` per the exit condition
-below; `Validate`'s formula is marked a plausibility screen until the
-user decides. This half of the exit condition stays UNMET.
+below.
+MET BY E6 (2026-08-09; the user chose option B, and the E6 re-review's
+one blocking finding — a hand-counted forward-pair cost, the exact
+class the rung retires — is fixed and re-witnessed): the
+executed-statement bound is enforced at emission for every tape, with
+the accounting-invariant, built-text, parity, and
+instrumented-execution witnesses standing where the formula used to.
+Details: the status document's E6 entries.
 
 **E5 — arc-end findings closed.** (Added 2026-08-09 after the arc-end
 review; the user's call was to keep the arc whole rather than land

@@ -1,10 +1,11 @@
-*ACTIVE (2026-08-09): the evidence arc's honest status record. E5 is
-EXECUTED and RE-REVIEWED: six of the seven blockers are closed with the
-re-review's own probes confirming them (its one blocking finding fixed
-on-branch); the seventh — A1's universal executed-statement bound — is
-STOPPED at `docs/2026-08-09_execution-bound-design-note.md`, a design
-decision that is the user's. Merge waits on that decision and the
-per-merge sign-off. Sequencing: `docs/roadmap.md`; charter:
+*ACTIVE (2026-08-09): the evidence arc's honest status record. The arc
+is COMPLETE: E5 closed six of the seven blockers (re-reviewed, its one
+blocking finding fixed on-branch), the user chose the design note's
+option B for the seventh, and E6 delivered it — the executed-statement
+bound is enforced at emission for every tape, with E6's own re-review
+finding one hand-counted cost (fixed, re-witnessed). Both re-reviews'
+probes and three clean campaigns stand behind the branch. Merge waits
+on the per-merge sign-off. Sequencing: `docs/roadmap.md`; charter:
 `docs/2026-08-09_evidence-arc-charter.md`.*
 
 # Evidence arc: status at arc-end review (2026-08-09)
@@ -322,8 +323,35 @@ new rung. Recorded as items land:
   balanced, pool bounded) across five config families including the
   formerly-refused ones; the forward-pair cost pin; and the PARITY
   witness — instrumented execution counts dominated by the charges on
-  real programs (worst measured/charged ratio 0.508). E4's exit
-  condition flips to MET pending the re-review of the E6 diff.
+  real programs.
+- **The E6 re-review (2026-08-09) and its fixes.** The reviewer
+  verified charge coverage, floors, multipliers, and the W4 knock-on
+  path by path — and found the exact class the rung exists to retire
+  still alive in ONE body: `buildForwardSource` emits real statements
+  (loops included) but a pair's cost was a hand count of 8, so reused
+  pairs under-charged every cache-hit site. Measured refutation: seed
+  80 at `Stmts=24, Depth=3, LoopCap=4096` (a config the deleted
+  formula used to refuse) executed 9,354,662 statements against a
+  56,077 charge — past the ceiling itself. Fixed on-branch: the source
+  body is priced through `priceBody` like every other pure body; call
+  sites decide affordability against the real cost with a plain-assign
+  fallback and charge before argument expressions can spend (R2, also
+  applied to appendStmt's pre-pay); `Generate` refuses a
+  budget-breached program instead of returning it; the in-loop
+  map-fold contribution degrades to unknown (R3, a stale element-bound
+  read the old over-approximation papered over); the vacuous pair-cost
+  witness (formula compared to itself — which is HOW the hand count
+  escaped) now checks the built text, and the parity witness carries
+  the refutation family (worst measured/charged ratio there: 0.962)
+  plus an honest statement of its coarse-net scope. Saturation after:
+  86.80% (n=2000), screen green. With these, E4's exit condition is
+  MET: the resource witnesses hold and the executed-statement bound is
+  enforced by construction, with the accounting, parity, and
+  instrumented-execution witnesses standing where the formula used to.
+  The post-fix campaign (n=300 vs deps/golean): 291 match, 9
+  clone-infra, all in the known short-circuit quarantine class — the
+  floor held through both E6 commits — and `gengo -verify` binds the
+  published batch end to end, clone tree included.
 - **Explicitly deferred, with reasons:** `setsid()` escapees still
   leak until process exit and cost a silent 5s `WaitDelay` each (the
   real worst case is budget + 5s) — closing that needs PID-namespace

@@ -125,9 +125,12 @@ now first-party. Mapping onto this backlog:
   same day (every subprocess launch site budgeted and group-killed,
   budgets persisted). W4 saturation re-measured with history in the
   docstring (87.30% n=2000, ~3pp margin); the weak witnesses now assert
-  what they read. REMAINING for the arc: the A1 universal-bound design
-  decision above — everything else in this entry is done and
-  re-reviewed.
+  what they read. THE ARC IS COMPLETE (2026-08-09): Mike chose the
+  design note's option B and E6 delivered it — the execution budget
+  enforces the ceiling at emission for every tape, the E6 re-review's
+  one blocking finding (a hand-counted forward-pair cost) is fixed and
+  re-witnessed, and Validate's worst-case formula is gone along with
+  its refusals. Remaining: the merge sign-off, then push.
 - **The repo is not gofmt-clean and nothing gates it** (noticed during
   the 2026-08-09 wording pass): `gofmt -l` flags nine files, six of
   them untouched by recent work — mostly struct-tag alignment that
