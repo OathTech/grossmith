@@ -117,13 +117,83 @@ func TestJudgeMapping(t *testing.T) {
 		"go-observation":   harness.VerdictHarnessError,
 		"brand-new-stage":  harness.VerdictHarnessError,
 	}
+	// lean-observation reads its STRUCTURED document (see
+	// TestLeanObservationClassification), so it needs a realistic detail;
+	// every other stage classifies on the stage alone.
+	detailFor := func(stage string) string {
+		if stage == "lean-observation" {
+			return `expected status ok, got {"schema":"golean-observation-v1","status":"panic","values":[]}`
+		}
+		return "d"
+	}
 	for stage, want := range cases {
-		res, err := judge("FAIL", stage, "d")
+		res, err := judge("FAIL", stage, detailFor(stage))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if res.Verdict != want {
-			t.Fatalf("stage %s: got %s, want %s", stage, res.Verdict, want)
+			t.Fatalf("stage %s: got %s (%s), want %s", stage, res.Verdict, res.Detail, want)
+		}
+	}
+}
+
+// TestLeanObservationClassification (2026-08-10 audit, P1): the
+// semantic/infra boundary was decided by a SUFFIX test against two
+// literal JSON tails, so whitespace, field order, an added field, or
+// encoder evolution would have turned the same structured refusal into a
+// semantic divergence. It reads a typed status now, and anything it
+// cannot classify is a harness error — never a mismatch.
+func TestLeanObservationClassification(t *testing.T) {
+	got := func(doc string) harness.Verdict {
+		t.Helper()
+		res, err := judge("FAIL", "lean-observation", "expected status ok, got "+doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Verdict
+	}
+	// Statuses meaning their machine produced NO observation: infra.
+	for _, doc := range []string{
+		`{"message":"m","schema":"golean-observation-v1","status":"stuck"}`,
+		`{"message":"m","schema":"golean-observation-v1","status":"unsupported"}`,
+		// The shapes the old suffix test would have MISSED, each
+		// downgrading a refusal into a fabricated semantic divergence.
+		`{"status":"unsupported","schema":"golean-observation-v1","message":"m"}`,
+		`{ "schema": "golean-observation-v1", "status": "stuck", "message": "m" }`,
+		`{"message":"m","schema":"golean-observation-v1","status":"unsupported","newField":1}`,
+		`{"message":"m","schema":"golean-observation-v1","status":"stuck"}` + "\n",
+	} {
+		if v := got(doc); v != harness.VerdictCloneInfra {
+			t.Fatalf("a refusal classified %s, want clone-infra: %s", v, doc)
+		}
+	}
+	// Statuses meaning their machine DID produce an outcome: the semantic
+	// signal the campaign exists to find.
+	for _, status := range []string{"ok", "panic", "deadlock", "race", "error"} {
+		doc := `{"message":"m","schema":"golean-observation-v1","status":"` + status + `"}`
+		if v := got(doc); v != harness.VerdictMismatch {
+			t.Fatalf("status %q classified %s, want mismatch", status, v)
+		}
+	}
+	// Unclassifiable: a grown vocabulary, another schema, no document at
+	// all (their machine's error text, captured with 2>&1), or a detail
+	// with no document separator. Never a mismatch.
+	for _, tc := range []struct{ name, detail string }{
+		{"unknown status", `expected status ok, got {"schema":"golean-observation-v1","status":"quantum"}`},
+		{"foreign schema", `expected status ok, got {"schema":"golean-observation-v2","status":"stuck"}`},
+		{"machine error text", "expected status ok, got lean: internal error: uncaught exception"},
+		{"no separator", "something else entirely"},
+	} {
+		res, err := judge("FAIL", "lean-observation", tc.detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Verdict != harness.VerdictHarnessError {
+			t.Fatalf("%s classified %s, want harness-error", tc.name, res.Verdict)
+		}
+		// The raw detail survives into the record, or triage is blind.
+		if !strings.Contains(res.Detail, tc.detail) {
+			t.Fatalf("%s: detail %q lost the original", tc.name, res.Detail)
 		}
 	}
 }

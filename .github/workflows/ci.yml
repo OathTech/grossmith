@@ -43,6 +43,12 @@ jobs:
         # -verify on the batch CI just produced, plus one edit it must
         # catch (E5: the arc-end review found -verify exercised by
         # nothing, and its report binding refuted by a hand edit).
+        # This step exercises the INTEGRITY layer end to end through the
+        # CLI. The other claim — a report whose bytes are honestly bound
+        # but whose MEANING is false — is the mutation table in
+        # harness/report_test.go, which re-binds complete.json after each
+        # mutation and runs in the witness-suite step above (2026-08-10
+        # audit: it asked for exactly that negative test).
         run: |
           go run ./cmd/gengo -verify "$RUNNER_TEMP/smoke"
           sed -i 's/"total": 50/"total": 99999/' "$RUNNER_TEMP/smoke/batch.json"

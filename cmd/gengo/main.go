@@ -318,16 +318,29 @@ func run(cfg config) error {
 		// compiled from, checked against the report's recorded digests.
 		workDir := filepath.Join(cfg.verify, "golean-work")
 		batchPath := filepath.Join(cfg.verify, "batch.json")
-		switch rb, err := os.ReadFile(batchPath); {
+		switch _, err := os.Stat(batchPath); {
 		case os.IsNotExist(err):
 			fmt.Printf("  no batch.json: an unjudged batch — nothing further to bind\n")
 		case err != nil:
 			return err
 		default:
-			var rep harness.BatchReport
-			if err := json.Unmarshal(rb, &rep); err != nil {
-				return fmt.Errorf("batch.json: %w", err)
+			// SELF-CONSISTENCY, a claim separate from integrity (2026-08-10
+			// audit, P0/P1: the report was decoded with a plain Unmarshal
+			// and nothing about its MEANING was checked, so a
+			// self-contradictory statement whose bytes were honestly bound
+			// received a successful "verified").
+			rep, err := harness.ReadBatchReport(cfg.verify)
+			if err != nil {
+				return err
 			}
+			m, err := harness.ReadManifest(cfg.verify)
+			if err != nil {
+				return err
+			}
+			if err := harness.ValidateBatchReport(cfg.verify, rep, m); err != nil {
+				return err
+			}
+			fmt.Printf("  report self-consistent: membership, totals, histograms, wrapper accounting, and per-case documents all recompute\n")
 			cloneRecorded := rep.CloneWorkFiles != nil
 			for _, cr := range rep.Cases {
 				if cr.CloneSourceSHA256 != "" {

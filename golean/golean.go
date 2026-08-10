@@ -15,12 +15,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -647,16 +649,18 @@ func judge(result, stage, detail string) (Result, error) {
 		// frontend-quarantined gap, and the same side of the
 		// infra/semantics line (audit F6 for stuck; rung 1 added
 		// unsupported when wrapped subjects' p.(error) asserts hit their
-		// machine-level $runtime.Error refusal). The detail carries their
-		// observation JSON verbatim, which is the only channel that
-		// distinguishes a refusal from a wrong value.
-		// Suffix match, not substring (Phase 4 audit): their encoder sorts
-		// keys, so a refusal document ENDS with its status — a free-text
-		// detail that merely mentioned the string mid-message could
-		// otherwise downgrade a genuine wrong answer to infra.
-		if stage == "lean-observation" &&
-			(strings.HasSuffix(detail, `"status":"stuck"}`) || strings.HasSuffix(detail, `"status":"unsupported"}`)) {
-			res.Verdict = harness.VerdictCloneInfra
+		// machine-level $runtime.Error refusal).
+		//
+		// The semantic/infra boundary is decided by a TYPED status now,
+		// not by matching free text (2026-08-10 audit, P1: it was a
+		// suffix test against two literal JSON tails, so whitespace,
+		// field order, an added field, or encoder evolution would have
+		// turned the same structured refusal into a semantic divergence).
+		// Unknown schema, unparseable document, or unknown status is
+		// harness-error — explicitly unclassifiable, never a semantic
+		// claim.
+		if stage == "lean-observation" {
+			res.Verdict, res.Detail = classifyLeanObservation(detail)
 		}
 	case "frontend-export", "lean-run", "harness":
 		res.Verdict = harness.VerdictCloneInfra
@@ -667,6 +671,87 @@ func judge(result, stage, detail string) (Result, error) {
 		res.Detail = fmt.Sprintf("unrecognized GoLean stage %q: %s", stage, detail)
 	}
 	return res, nil
+}
+
+// CloneObservationSchema is the schema string GoLean's observation
+// documents carry. Anything else is a protocol change we must not
+// interpret.
+const CloneObservationSchema = "golean-observation-v1"
+
+// leanObservationPrefix is how their script builds a lean-observation
+// failure detail: `report_fail ... "expected status $expected_status,
+// got $lean_observation"` (deps/golean/scripts/diff-coverage). The
+// document is therefore the text AFTER this separator — and it is
+// captured with 2>&1, so it is not necessarily a document at all when
+// their machine fails to produce one.
+const leanObservationPrefix = ", got "
+
+// cloneObservation is the part of GoLean's observation document that
+// decides classification. Decoded NON-strictly on purpose: they may add
+// fields (they vendor us, we do not gate their evolution), and an
+// unknown FIELD is not a reason to refuse. An unknown SCHEMA or STATUS
+// is, because those are what the classification reads.
+type cloneObservation struct {
+	Schema  string `json:"schema"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// cloneStatusProducedNoObservation is the closed set of statuses meaning
+// their machine produced NO observation to compare — the infrastructure
+// side of the line. Read from deps/golean/scripts/diff-coverage and
+// their findings doc; anything outside these and the value-carrying set
+// below is unclassifiable by construction.
+var cloneStatusProducedNoObservation = map[string]bool{
+	"stuck":       true, // the machine did not progress (audit F6)
+	"unsupported": true, // a frontend-quarantined declaration refused
+}
+
+// cloneStatusCarriesObservation is the closed set of statuses meaning
+// their machine DID produce an outcome: a status disagreement here is
+// the semantic signal the campaign exists to find.
+var cloneStatusCarriesObservation = map[string]bool{
+	"ok":       true,
+	"panic":    true,
+	"deadlock": true,
+	"race":     true,
+	"error":    true,
+}
+
+// classifyLeanObservation decides the verdict for a lean-observation
+// failure from the STRUCTURED document their script appends to the
+// detail, and returns the detail to record.
+func classifyLeanObservation(detail string) (harness.Verdict, string) {
+	_, doc, found := strings.Cut(detail, leanObservationPrefix)
+	if !found {
+		return harness.VerdictHarnessError,
+			"lean-observation detail does not carry an observation document (no " +
+				strconv.Quote(leanObservationPrefix) + " separator): " + detail
+	}
+	var obs cloneObservation
+	if err := json.Unmarshal([]byte(strings.TrimSpace(doc)), &obs); err != nil {
+		// Their machine failed without emitting a document (the field is
+		// captured with 2>&1, so this is their error text). No observation
+		// exists, so no semantic comparison happened — unclassifiable
+		// rather than a divergence.
+		return harness.VerdictHarnessError,
+			"lean-observation carried no decodable observation document: " + detail
+	}
+	if obs.Schema != CloneObservationSchema {
+		return harness.VerdictHarnessError,
+			"lean-observation document has schema " + strconv.Quote(obs.Schema) +
+				", want " + strconv.Quote(CloneObservationSchema) + ": " + detail
+	}
+	switch {
+	case cloneStatusProducedNoObservation[obs.Status]:
+		return harness.VerdictCloneInfra, detail
+	case cloneStatusCarriesObservation[obs.Status]:
+		return harness.VerdictMismatch, detail
+	default:
+		return harness.VerdictHarnessError,
+			"lean-observation document has unrecognized status " + strconv.Quote(obs.Status) +
+				" (their vocabulary grew; classify it before trusting this campaign): " + detail
+	}
 }
 
 func tail(b []byte, n int) string {
