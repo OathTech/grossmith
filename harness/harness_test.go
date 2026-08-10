@@ -189,6 +189,56 @@ func TestJudgeDocumentStatusAxis(t *testing.T) {
 	}
 }
 
+// TestJudgeValidatesBeforeClassifying (2026-08-10 audit, P1): validation
+// used to happen inside observe.Equal, which the error-document branches
+// return before ever reaching — so an INVALID document carrying
+// status:"error" was classified as an infrastructure failure on one side
+// or both, when what it actually reports is an adapter contract
+// violation. The full side matrix: any invalid document is a harness
+// error naming its side, and only structurally valid documents reach
+// infrastructure or semantic classification.
+func TestJudgeValidatesBeforeClassifying(t *testing.T) {
+	ran := func(d observe.Document) Outcome { return Outcome{Status: StatusRan, Document: d} }
+	valid := ran(observe.OK(nil, []observe.Value{{Kind: "int", GoType: "int", Int: 7}}))
+	validErr := ran(observe.Errored(observe.ErrTimeout, "deadline"))
+	// The audit's shape: an error STATUS with no error payload — a
+	// document no driver can emit, which the old order let through into
+	// the infra branches.
+	invalidErr := ran(observe.Document{Schema: observe.Schema, Status: observe.StatusError})
+	// And a second invalid shape, to show it is validation and not a
+	// special case: ok status with a panic payload.
+	invalidOK := ran(observe.Document{Schema: observe.Schema, Status: observe.StatusOK,
+		Values: []observe.Value{{Kind: "int", GoType: "int", Int: 1}},
+		Panic:  &observe.PanicInfo{Kind: "runtime", Message: "boom"}})
+
+	for _, tc := range []struct {
+		name        string
+		ref, clone  Outcome
+		want        Verdict
+		wantMention string
+	}{
+		{"invalid reference", invalidErr, valid, VerdictHarnessError, "reference returned an invalid document"},
+		{"invalid clone", valid, invalidErr, VerdictHarnessError, "clone returned an invalid document"},
+		{"both invalid", invalidErr, invalidOK, VerdictHarnessError, "both adapters returned invalid documents"},
+		{"invalid reference against a valid error doc", invalidErr, validErr, VerdictHarnessError, "reference returned an invalid document"},
+		{"invalid clone with ok-plus-panic", valid, invalidOK, VerdictHarnessError, "clone returned an invalid document"},
+		// The valid rows keep their existing classification.
+		{"valid error documents stay infrastructure", validErr, validErr, VerdictBothInfra, ""},
+		{"valid clone error stays clone-infra", valid, validErr, VerdictCloneInfra, ""},
+		{"valid documents still compare", valid, valid, VerdictMatch, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, detail := Judge(tc.ref, tc.clone, observe.PanicExact)
+			if v != tc.want {
+				t.Fatalf("judged %s (%s), want %s", v, detail, tc.want)
+			}
+			if tc.wantMention != "" && !strings.Contains(detail, tc.wantMention) {
+				t.Fatalf("detail %q does not name the side: want %q", detail, tc.wantMention)
+			}
+		})
+	}
+}
+
 // TestRunBatchAbortsOnCancel (audit L5): a cancelled batch is an error,
 // never a conformance statement full of infra verdicts.
 func TestRunBatchAbortsOnCancel(t *testing.T) {

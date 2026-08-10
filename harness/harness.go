@@ -76,6 +76,25 @@ func Judge(ref, clone Outcome, policy observe.PanicPolicy) (Verdict, string) {
 	case !cloneOK:
 		return VerdictCloneInfra, clone.Detail
 	}
+	// STRUCTURE BEFORE MEANING (2026-08-10 audit, P1): both ran documents
+	// are validated HERE, before any classification. Validation used to
+	// happen inside observe.Equal, which the error-document branches below
+	// return before ever reaching — so an invalid document with
+	// status:"error" was classified as reference-, clone-, or
+	// both-infrastructure failure, when what it actually reports is an
+	// adapter contract violation. An invalid document is a harness error,
+	// named by side, and only structurally valid error documents take part
+	// in infrastructure classification.
+	refErr, cloneErr := ref.Document.Validate(), clone.Document.Validate()
+	switch {
+	case refErr != nil && cloneErr != nil:
+		return VerdictHarnessError, "both adapters returned invalid documents: reference: " +
+			refErr.Error() + " / clone: " + cloneErr.Error()
+	case refErr != nil:
+		return VerdictHarnessError, "reference returned an invalid document: " + refErr.Error()
+	case cloneErr != nil:
+		return VerdictHarnessError, "clone returned an invalid document: " + cloneErr.Error()
+	}
 	// The DOCUMENT status is the second infrastructure axis (audit H2): an
 	// adapter can report StatusRan while its document says "error" — no
 	// observation exists, so there is nothing semantic to compare. Without

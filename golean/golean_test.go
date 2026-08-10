@@ -32,8 +32,13 @@ func TestProfileMasksEvents(t *testing.T) {
 // explicit non-semantic verdict, never a manifest row.
 func TestTranslateFailsClosed(t *testing.T) {
 	root := t.TempDir()
+	// A VALID ran document: status ok with at least one observed value.
+	// (These fixtures used to carry no values, which Document.Validate
+	// rejects — prevalidate refuses that before the run now, so a fixture
+	// has to be a document a real driver could emit.)
 	ranOK := harness.Outcome{Status: harness.StatusRan,
-		Document: observe.Document{Schema: observe.Schema, Status: observe.StatusOK}}
+		Document: observe.Document{Schema: observe.Schema, Status: observe.StatusOK,
+			Values: []observe.Value{{Kind: "int", GoType: "int", Int: 1}}}}
 
 	// Reference infra failure propagates as reference-infra.
 	_, res, ok := translate(root, Case{ID: "a", Dir: root,
@@ -131,8 +136,13 @@ func TestJudgeMapping(t *testing.T) {
 // conformance statement. Run must instead error on a no-publish run, and
 // on results published for a different manifest.
 func TestStaleResultsNeverRepublished(t *testing.T) {
+	// A VALID ran document: status ok with at least one observed value.
+	// (These fixtures used to carry no values, which Document.Validate
+	// rejects — prevalidate refuses that before the run now, so a fixture
+	// has to be a document a real driver could emit.)
 	ranOK := harness.Outcome{Status: harness.StatusRan,
-		Document: observe.Document{Schema: observe.Schema, Status: observe.StatusOK}}
+		Document: observe.Document{Schema: observe.Schema, Status: observe.StatusOK,
+			Values: []observe.Value{{Kind: "int", GoType: "int", Int: 1}}}}
 	caseDir := t.TempDir()
 	src := "package main\n\nfunc fuzzSubject() int {\n\treturn 1\n}\n"
 	if err := os.WriteFile(filepath.Join(caseDir, "subject.go"), []byte(src), 0o644); err != nil {
@@ -280,4 +290,233 @@ func TestGoLeanEndToEnd(t *testing.T) {
 		}
 	}
 	t.Logf("golean verdicts: %v", counts)
+}
+
+// TestRunFailsClosedOnCaseSlice (2026-08-10 audit, P1 — both halves
+// reproduced against the exported boundary before the fix, each
+// returning err=nil and a `match` verdict). `golean.Run` is a product
+// API: the default CLI does not construct these inputs, but the contract
+// has to hold for programmatic callers.
+func TestRunFailsClosedOnCaseSlice(t *testing.T) {
+	caseDir := t.TempDir()
+	src := "package main\n\nfunc fuzzSubject() int {\n\treturn 1\n}\n"
+	if err := os.WriteFile(filepath.Join(caseDir, "subject.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valid := observe.Document{Schema: observe.Schema, Status: observe.StatusOK,
+		Values: []observe.Value{{Kind: "int", GoType: "int", Int: 1}}}
+	// A stub that would PASS every row, so a leaked case reaches `match`.
+	checkout := passingStub(t)
+
+	t.Run("duplicate case ID fails the run", func(t *testing.T) {
+		// The reproduction: the duplicate was recorded as a harness-error
+		// and then OVERWRITTEN by the translated row's verdict, because
+		// both entries share the map key. A whole-run precondition cannot
+		// be a per-case verdict.
+		dup := Case{ID: "case_00000", Dir: caseDir, Features: []string{"ints"},
+			Reference: harness.Outcome{Status: harness.StatusRan, Document: valid}}
+		res, err := Run(context.Background(), t.TempDir(), []Case{dup, dup}, Config{Checkout: checkout})
+		if err == nil {
+			t.Fatalf("duplicate IDs accepted: %v", res)
+		}
+		if !strings.Contains(err.Error(), "duplicate case ID") {
+			t.Fatalf("refusal does not name the cause: %v", err)
+		}
+	})
+	t.Run("invalid exported document fails the run", func(t *testing.T) {
+		// The reproduction: translate switched on Document.Status alone,
+		// so an impossible document — status ok carrying a panic payload,
+		// empty schema — was translated and judged `match`.
+		bad := Case{ID: "case_00000", Dir: caseDir, Features: []string{"ints"},
+			Reference: harness.Outcome{Status: harness.StatusRan,
+				Document: observe.Document{Status: observe.StatusOK,
+					Panic: &observe.PanicInfo{Kind: "runtime", Message: "boom"}}}}
+		res, err := Run(context.Background(), t.TempDir(), []Case{bad}, Config{Checkout: checkout})
+		if err == nil {
+			t.Fatalf("an invalid exported document was judged: %v", res)
+		}
+		if !strings.Contains(err.Error(), "reference document is invalid") {
+			t.Fatalf("refusal does not name the cause: %v", err)
+		}
+	})
+	t.Run("unsafe feature tag fails the run before any write", func(t *testing.T) {
+		work := t.TempDir()
+		bad := Case{ID: "case_00000", Dir: caseDir, Features: []string{"a\tb"},
+			Reference: harness.Outcome{Status: harness.StatusRan, Document: valid}}
+		if _, err := Run(context.Background(), work, []Case{bad}, Config{Checkout: checkout}); err == nil {
+			t.Fatal("unsafe feature tag accepted")
+		}
+		if _, err := os.Stat(filepath.Join(work, "cases")); !os.IsNotExist(err) {
+			t.Fatal("a case tree was written before the metadata was validated")
+		}
+	})
+	t.Run("a clean slice still runs", func(t *testing.T) {
+		ok := Case{ID: "case_00000", Dir: caseDir, Features: []string{"ints"},
+			Reference: harness.Outcome{Status: harness.StatusRan, Document: valid}}
+		res, err := Run(context.Background(), t.TempDir(), []Case{ok}, Config{Checkout: checkout})
+		if err != nil {
+			t.Fatalf("clean slice refused: %v", err)
+		}
+		if res["case_00000"].Verdict != harness.VerdictMatch {
+			t.Fatalf("clean slice verdict %s, want match", res["case_00000"].Verdict)
+		}
+	})
+}
+
+// TestClearCaseRootRefusesForeignTrees (2026-08-10 audit, P1/P2: cases
+// were written into whatever was already in the work tree, so a previous
+// run's case directories survived beside this run's). The tree starts
+// empty, and a leftover must prove it is OURS — by a marker naming this
+// work directory — before it is removed. A name test cannot do this job:
+// safe case IDs are permissive, so `vendor/main.go` looks exactly like a
+// translated case.
+func TestClearCaseRootRefusesForeignTrees(t *testing.T) {
+	seed := func(t *testing.T, withMarker bool, markerFor string) (work, victim string) {
+		t.Helper()
+		work = t.TempDir()
+		dir := filepath.Join(work, "cases", "case_00007")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		victim = filepath.Join(dir, "main.go")
+		if err := os.WriteFile(victim, []byte("precious"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if withMarker {
+			target := work
+			if markerFor != "" {
+				target = markerFor
+			}
+			if err := os.WriteFile(filepath.Join(work, workMarker), []byte(workMarkerContent(target)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return work, victim
+	}
+	t.Run("our own marked leftover is cleared", func(t *testing.T) {
+		work, _ := seed(t, true, "")
+		if err := clearCaseRoot(work); err != nil {
+			t.Fatalf("our own leftover was refused: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(work, "cases")); !os.IsNotExist(err) {
+			t.Fatal("leftover survived")
+		}
+	})
+	t.Run("unmarked tree refuses untouched", func(t *testing.T) {
+		work, victim := seed(t, false, "")
+		if err := clearCaseRoot(work); err == nil {
+			t.Fatal("an unmarked work tree was cleared")
+		}
+		if b, err := os.ReadFile(victim); err != nil || string(b) != "precious" {
+			t.Fatalf("the unmarked tree was damaged: %v %q", err, b)
+		}
+	})
+	t.Run("marker for another directory refuses", func(t *testing.T) {
+		work, victim := seed(t, true, filepath.Join(t.TempDir(), "elsewhere"))
+		if err := clearCaseRoot(work); err == nil {
+			t.Fatal("a marker naming another work dir was accepted")
+		}
+		if b, err := os.ReadFile(victim); err != nil || string(b) != "precious" {
+			t.Fatalf("the tree was damaged: %v %q", err, b)
+		}
+	})
+	t.Run("case root is a symlink", func(t *testing.T) {
+		work := t.TempDir()
+		elsewhere := t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(work, "cases")); err != nil {
+			t.Fatal(err)
+		}
+		if err := clearCaseRoot(work); err == nil {
+			t.Fatal("a symlinked case root was accepted")
+		}
+	})
+	// End to end: a second Run over the same work dir clears only its own
+	// previous cases, and a foreign directory there stops the run.
+	t.Run("second run clears its own tree", func(t *testing.T) {
+		caseDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(caseDir, "subject.go"),
+			[]byte("package main\n\nfunc fuzzSubject() int { return 1 }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		valid := observe.Document{Schema: observe.Schema, Status: observe.StatusOK,
+			Values: []observe.Value{{Kind: "int", GoType: "int", Int: 1}}}
+		checkout := passingStub(t)
+		work := t.TempDir()
+		run := func(id string) error {
+			_, err := Run(context.Background(), work, []Case{{ID: id, Dir: caseDir,
+				Features:  []string{"ints"},
+				Reference: harness.Outcome{Status: harness.StatusRan, Document: valid}}},
+				Config{Checkout: checkout})
+			return err
+		}
+		if err := run("case_00000"); err != nil {
+			t.Fatal(err)
+		}
+		if err := run("case_00001"); err != nil {
+			t.Fatalf("second run into the same work dir: %v", err)
+		}
+		// The first run's case must be gone, not sitting beside the second's.
+		if _, err := os.Stat(filepath.Join(work, "cases", "case_00000")); !os.IsNotExist(err) {
+			t.Fatal("the previous run's translated case survived into this run's tree")
+		}
+	})
+}
+
+// TestProfileMergesCallerPolicy (2026-08-10 audit, P1/P2: Profile
+// ASSIGNED both slices, so a caller's own masks and exclusions were
+// silently discarded — and a profile whose job is to remove capability
+// must never be able to restore any).
+func TestProfileMergesCallerPolicy(t *testing.T) {
+	cfg := gen.DefaultConfig(1)
+	cfg.NoObserve = []gen.Shape{gen.ShapeString}
+	cfg.Exclude = []string{"linearize"}
+	got := Profile(cfg)
+	shapes := map[gen.Shape]bool{}
+	for _, s := range got.NoObserve {
+		shapes[s] = true
+	}
+	for _, want := range []gen.Shape{gen.ShapeString, gen.ShapeSlice, gen.ShapeMap} {
+		if !shapes[want] {
+			t.Fatalf("profile dropped mask %v: %v", want, got.NoObserve)
+		}
+	}
+	tags := map[string]bool{}
+	for _, tag := range got.Exclude {
+		tags[tag] = true
+	}
+	for _, want := range []string{"linearize", "observe_point", "defer", "recover"} {
+		if !tags[want] {
+			t.Fatalf("profile dropped exclusion %q: %v", want, got.Exclude)
+		}
+	}
+	// Idempotent and order-independent: applying it twice, or to a config
+	// that already carries the profile, changes nothing.
+	twice := Profile(got)
+	if len(twice.NoObserve) != len(got.NoObserve) || len(twice.Exclude) != len(got.Exclude) {
+		t.Fatalf("profile is not idempotent: %v / %v", twice.NoObserve, twice.Exclude)
+	}
+	if err := twice.Validate(); err != nil {
+		t.Fatalf("merged profile does not validate: %v", err)
+	}
+}
+
+// passingStub is a diff-coverage stand-in that PASSES every manifest row
+// and publishes meta for the manifest it was handed — so anything that
+// reaches it lands on `match`, which is what makes the fail-closed
+// witnesses above meaningful.
+func passingStub(t *testing.T) string {
+	t.Helper()
+	checkout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/usr/bin/env bash\n" +
+		"printf 'result\\tid\\tfeatures\\tstage\\tdetail\\n' > \"$GOLEAN_COVERAGE_RESULTS\"\n" +
+		"while IFS=$'\\t' read -r id rest; do [ \"${id#\\#}\" = \"$id\" ] || continue; " +
+		"printf 'PASS\\t%s\\tints\\t-\\t-\\n' \"$id\" >> \"$GOLEAN_COVERAGE_RESULTS\"; done < \"$1\"\n" +
+		"printf 'key\\tvalue\\nmanifest_sha256\\t%s\\n' \"$(sha256sum \"$1\" | cut -d' ' -f1)\" > \"$GOLEAN_COVERAGE_META\"\n"
+	if err := os.WriteFile(filepath.Join(checkout, "scripts", "diff-coverage"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return checkout
 }

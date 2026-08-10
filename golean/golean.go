@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,14 +78,57 @@ func RunCeiling(lakeBudget time.Duration, nCases int) time.Duration {
 // has no model of the grossmith obs* event API — so slices and maps leave
 // the observed tier (feeder/dead stay legal) and the event-emitting
 // constructs are excluded. Everything else generates unchanged.
+// The profile is a UNION with whatever the caller already set: it adds
+// its masks and exclusions and never drops one (2026-08-10 audit,
+// P1/P2: it assigned both slices, so a caller who had masked another
+// shape or excluded another construct had that policy silently
+// discarded — and a profile whose job is to REMOVE capability must not
+// be able to restore any). Deterministic: masks in enum order,
+// exclusions sorted and deduplicated, so a config's identity in
+// batch.json does not depend on call order.
 func Profile(cfg gen.Config) gen.Config {
-	cfg.NoObserve = []gen.Shape{gen.ShapeSlice, gen.ShapeMap}
+	cfg.NoObserve = unionShapes(cfg.NoObserve, gen.ShapeSlice, gen.ShapeMap)
 	// recover_wrapper is deliberately NOT excluded (Phase 4 rung 1, their
 	// R1 request): the wrapper observes panics through named results —
 	// pure Go, no obs* events — so defer/recover semantics reach their
 	// machine despite the event exclusions below.
-	cfg.Exclude = []string{"observe_point", "defer", "recover"}
+	cfg.Exclude = unionTags(cfg.Exclude, "observe_point", "defer", "recover")
 	return cfg
+}
+
+func unionShapes(have []gen.Shape, add ...gen.Shape) []gen.Shape {
+	seen := map[gen.Shape]bool{}
+	for _, s := range append(append([]gen.Shape(nil), have...), add...) {
+		seen[s] = true
+	}
+	var out []gen.Shape
+	// Enum order, so the result is independent of input order.
+	for _, s := range []gen.Shape{gen.ShapeInt, gen.ShapeBool, gen.ShapeString,
+		gen.ShapeArray, gen.ShapeStruct, gen.ShapeMap, gen.ShapeInterface, gen.ShapeSlice} {
+		if seen[s] {
+			out = append(out, s)
+			delete(seen, s)
+		}
+	}
+	// Anything outside the enum is preserved rather than dropped;
+	// Config.Validate is what refuses it, and it must see it.
+	for s := range seen {
+		out = append(out, s)
+	}
+	return out
+}
+
+func unionTags(have []string, add ...string) []string {
+	seen := map[string]bool{}
+	for _, t := range append(append([]string(nil), have...), add...) {
+		seen[t] = true
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Case is one grossmith case handed to a GoLean campaign, with the gc
@@ -193,8 +237,32 @@ func Run(ctx context.Context, workDir string, cases []Case, cfg Config) (map[str
 	if err != nil {
 		return nil, err
 	}
+	// PREVALIDATE THE WHOLE SLICE BEFORE ANY WRITE (2026-08-10 audit, P1,
+	// reproduced: a duplicate ID first recorded a harness-error and then
+	// had that entry OVERWRITTEN by the translated row's verdict when the
+	// results were folded back in — `golean.Run` returned err=nil and
+	// `match` for a case list it should have refused outright. A
+	// whole-run precondition cannot be a per-case verdict, because the
+	// map key is the same key.)
+	if err := prevalidate(cases); err != nil {
+		return nil, err
+	}
+	// The case tree starts EMPTY (2026-08-10 audit, P1/P2: cases were
+	// written into whatever was already there, so a previous run's case
+	// directories survived beside this run's and were caught only later,
+	// by optional digest verification). A leftover must prove it is ours
+	// before it is removed — the same content-test discipline the batch
+	// output directory uses.
 	caseRoot := filepath.Join(absWork, "cases")
+	if err := clearCaseRoot(absWork); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(caseRoot, 0o755); err != nil {
+		return nil, err
+	}
+	// The marker is written with the tree, so the NEXT run can prove this
+	// one's leftovers are ours.
+	if err := os.WriteFile(filepath.Join(absWork, workMarker), []byte(workMarkerContent(absWork)), 0o644); err != nil {
 		return nil, err
 	}
 
@@ -202,22 +270,7 @@ func Run(ctx context.Context, workDir string, cases []Case, cfg Config) (map[str
 	var manifest strings.Builder
 	manifest.WriteString("# id\tgo_dir\tfunction\targs\texpected_status\tfeatures\texpected_reason\tlane\twhy\tparams\n")
 	translated := map[string]bool{}
-	seenID := map[string]bool{}
 	for _, c := range cases {
-		// IDs are API inputs (E1; audit P2/P3: a crafted ID could
-		// escape the case root or break the TSV field structure). The CLI
-		// generates safe IDs; the package validates for every caller.
-		if !caseIDRe.MatchString(c.ID) {
-			results[c.ID] = Result{Verdict: harness.VerdictHarnessError,
-				Detail: fmt.Sprintf("case ID %q is not manifest-safe (want %s)", c.ID, caseIDRe)}
-			continue
-		}
-		if seenID[c.ID] {
-			results[c.ID] = Result{Verdict: harness.VerdictHarnessError,
-				Detail: fmt.Sprintf("duplicate case ID %q", c.ID)}
-			continue
-		}
-		seenID[c.ID] = true
 		row, res, ok := translate(caseRoot, c)
 		if !ok {
 			results[c.ID] = res
@@ -276,6 +329,79 @@ func Run(ctx context.Context, workDir string, cases []Case, cfg Config) (map[str
 	return results, nil
 }
 
+// workMarker names the ownership marker written at the work root before
+// the first case is translated. Its CONTENT binds the marker to that
+// exact work directory, so a leftover tree can be proven ours before it
+// is cleared — the discipline the batch staging tree already uses. A
+// name test alone cannot work here: case IDs are caller-chosen and the
+// safe-ID shape is permissive, so a directory called `vendor` holding a
+// `main.go` is indistinguishable from a translated case.
+const workMarker = ".golean-work"
+
+func workMarkerContent(absWork string) string {
+	return "golean translated-case tree for " + absWork + " — safe to delete\n"
+}
+
+// clearCaseRoot empties the translated-case tree so a run never writes
+// into another run's cases. It removes the tree only when the ownership
+// marker proves it is ours and names THIS work directory; anything else
+// — no marker, a marker for another directory, a symlink, a file — is
+// left untouched and refuses the run.
+func clearCaseRoot(absWork string) error {
+	caseRoot := filepath.Join(absWork, "cases")
+	fi, err := os.Lstat(caseRoot)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("golean work: %s is not a directory — refusing to touch it", caseRoot)
+	}
+	b, err := os.ReadFile(filepath.Join(absWork, workMarker))
+	if err != nil || string(b) != workMarkerContent(absWork) {
+		return fmt.Errorf("golean work: %s exists but %s does not mark it as this run's work tree — refusing to clear it (point workDir at a fresh directory, or move this one aside)",
+			caseRoot, workMarker)
+	}
+	return os.RemoveAll(caseRoot)
+}
+
+// prevalidate checks the RUN's preconditions — the properties that
+// cannot be expressed as one case's verdict — before anything is
+// written (2026-08-10 audit, P1). Per-case reasons a case cannot reach
+// GoLean (a non-ran reference, an unsupported document status, an obs*
+// call) stay per-case verdicts in translate; these are different: they
+// mean the caller handed us a case LIST we cannot judge.
+func prevalidate(cases []Case) error {
+	seen := map[string]bool{}
+	for i, c := range cases {
+		if !caseIDRe.MatchString(c.ID) {
+			return fmt.Errorf("golean: case %d has ID %q, which is not manifest-safe (want %s)", i, c.ID, caseIDRe)
+		}
+		if seen[c.ID] {
+			return fmt.Errorf("golean: duplicate case ID %q — verdicts are keyed by ID, so a duplicate cannot be reported per case", c.ID)
+		}
+		seen[c.ID] = true
+		for _, f := range c.Features {
+			if strings.ContainsAny(f, "\t\n\r,") || f == "" {
+				return fmt.Errorf("golean: case %s has feature tag %q, which is not manifest-safe", c.ID, f)
+			}
+		}
+		// An exported ran Outcome carries a Document the caller built, so
+		// it is an API input: validate the tagged union before its status
+		// is trusted (reproduced: an empty-schema document with
+		// status:"ok" AND a panic payload was translated and judged
+		// `match`, because translate switched on Status alone).
+		if c.Reference.Status == harness.StatusRan {
+			if err := c.Reference.Document.Validate(); err != nil {
+				return fmt.Errorf("golean: case %s reference document is invalid: %w", c.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
 // translate writes one case's GoLean tree and returns its manifest row.
 // ok=false means the case cannot reach GoLean; res says why.
 func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
@@ -320,14 +446,9 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 		return "", Result{Verdict: harness.VerdictHarnessError, Detail: err.Error()}, false
 	}
 
-	for _, f := range c.Features {
-		// Feature tags ride in a TSV column: a tab/newline would break
-		// the field structure, a comma would split the list (E1).
-		if strings.ContainsAny(f, "\t\n\r,") || f == "" {
-			return "", Result{Verdict: harness.VerdictHarnessError,
-				Detail: fmt.Sprintf("feature tag %q is not manifest-safe", f)}, false
-		}
-	}
+	// Feature-tag safety is a RUN precondition, checked by prevalidate
+	// before any write (2026-08-10 audit: it used to be checked here,
+	// after this case's main.go had already been written).
 	features := strings.Join(c.Features, ",")
 	if features == "" {
 		features = "none"
