@@ -9,6 +9,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -1551,5 +1552,49 @@ func TestInvalidConfigIsRejectedNotPanicked(t *testing.T) {
 		if g.budgetBreached {
 			t.Fatalf("extreme config %d breached the budget accounting", i)
 		}
+	}
+}
+
+// TestGenPackageIsSingleThreaded pins the premise that lets CI's race
+// leg skip this package (2026-08-11: the first race run over the
+// E5/E6/containment sweeps blew the 10-minute package alarm, and race
+// instrumentation multiplies this package's single-threaded generation
+// cost roughly tenfold while having nothing to detect — a Generator is
+// documented single-use and unshared, and the package spawns no
+// goroutines and shares no state). If concurrency ever enters the
+// package, this fails and the CI exclusion must be revisited in the
+// same change.
+func TestGenPackageIsSingleThreaded(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		checked++
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range file.Imports {
+			if p := strings.Trim(imp.Path.Value, `"`); p == "sync" || p == "sync/atomic" {
+				t.Fatalf("%s imports %s — the race-leg exclusion's premise is gone; revisit .github/workflows/ci.yml", name, p)
+			}
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if g, ok := n.(*ast.GoStmt); ok {
+				t.Fatalf("%s spawns a goroutine at %s — the race-leg exclusion's premise is gone; revisit .github/workflows/ci.yml",
+					name, fset.Position(g.Pos()))
+			}
+			return true
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no package sources checked — the witness asserted nothing")
 	}
 }

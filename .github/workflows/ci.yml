@@ -24,8 +24,17 @@ jobs:
         run: go vet ./...
       - name: witness suite
         run: go test -count=1 ./...
-      - name: race (pure logic; -short skips the binary-building witnesses)
-        run: go test -race -short -count=1 ./...
+      - name: race (concurrent packages; -short skips the binary-building witnesses)
+        # ./gen/ is excluded: the package is single-threaded by
+        # construction — no goroutines, no sync — so race
+        # instrumentation has nothing to detect there and multiplies its
+        # generation-sweep cost roughly tenfold (2026-08-11: the first
+        # race run over the E5/E6/containment sweeps blew the 10-minute
+        # package alarm). The premise is PINNED by
+        # gen.TestGenPackageIsSingleThreaded, which fails if concurrency
+        # ever enters the package; gen still runs fully in the witness
+        # suite above.
+        run: go test -race -short -count=1 ./harness/ ./golean/ ./observe/ ./cmd/gengo/
       - name: race, resource witnesses
         # The E4/E5 subprocess witnesses under the race detector too —
         # the plain -short race leg skips them (E5: previously they ran

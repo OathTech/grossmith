@@ -17,12 +17,28 @@ import (
 
 var tempSliceRe = regexp.MustCompile("^t[0-9]+$")
 
+// sweep scales a generation sweep for the mode: full breadth in the
+// default suite, the stated reduced breadth under -short. The race CI
+// leg runs -short, and race instrumentation multiplies single-threaded
+// generation cost roughly tenfold while adding no detection here — the
+// Generator is single-use and unshared by design — so the sweeps'
+// breadth belongs to the full leg (2026-08-11: the first race run over
+// the E5/E6/containment sweeps blew the 10-minute package alarm at
+// full breadth). Every witness still asserts a non-vacuous population
+// in both modes.
+func sweep(full, short int64) int64 {
+	if testing.Short() {
+		return short
+	}
+	return full
+}
+
 // TestNoGrowthUnderSliceRanges: structurally, no append call may appear
 // inside the body of a range over a SLICE — to any target, not just the
 // ranged one (the amplification fed through OTHER slices).
 func TestNoGrowthUnderSliceRanges(t *testing.T) {
 	ranges, checked := 0, 0
-	for seed := int64(1); seed < 1500; seed++ {
+	for seed := int64(1); seed < sweep(1500, 150); seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()
 		if err != nil {
 			t.Fatal(err)
@@ -66,7 +82,7 @@ func TestNoGrowthUnderSliceRanges(t *testing.T) {
 		})
 	}
 	if ranges == 0 {
-		t.Fatal("no slice ranges in 1500 seeds — the witness asserted nothing")
+		t.Fatal("no slice ranges in the sweep — the witness asserted nothing")
 	}
 	t.Logf("checked %d slice ranges over %d programs, none grow anything", ranges, checked)
 }
@@ -105,7 +121,7 @@ func TestValidateSourceSizeBound(t *testing.T) {
 // targets, so "ranged X that is also appended somewhere" identifies the
 // slice ranges that matter.
 func TestNoAppendAfterRangeInLoopNest(t *testing.T) {
-	sweep := func(t *testing.T, cfg func(int64) Config, first, seeds int64) {
+	run := func(t *testing.T, cfg func(int64) Config, first, seeds int64) {
 		nests := 0
 		for seed := first; seed < first+seeds; seed++ {
 			c, err := New(cfg(seed)).Generate()
@@ -160,18 +176,23 @@ func TestNoAppendAfterRangeInLoopNest(t *testing.T) {
 		t.Logf("checked %d loop nests", nests)
 	}
 	t.Run("default config", func(t *testing.T) {
-		sweep(t, DefaultConfig, 1, 1500)
+		run(t, DefaultConfig, 1, sweep(1500, 200))
 	})
 	t.Run("review counterexample config", func(t *testing.T) {
 		// Stmts=1, Depth=2, LoopCap=250, seeds around 174813. The freeze
 		// legitimately changes that seed's tape, so the regenerated
 		// program differs from the review's artifact; the CLASS is what
-		// the sweep refuses.
-		sweep(t, func(seed int64) Config {
+		// the sweep refuses. The short window narrows but stays centered
+		// on the counterexample seed.
+		start, n := int64(170000), int64(10000)
+		if testing.Short() {
+			start, n = 174300, 1000
+		}
+		run(t, func(seed int64) Config {
 			cfg := DefaultConfig(seed)
 			cfg.Stmts, cfg.Depth, cfg.LoopCap = 1, 2, 250
 			return cfg
-		}, 170000, 10000)
+		}, start, n)
 	})
 }
 
@@ -258,7 +279,7 @@ func TestSwapMovesStringLengthBounds(t *testing.T) {
 // LITERAL, whose trip count nothing can move.
 func TestStringRangeOperandsGated(t *testing.T) {
 	varFolds, litFolds := 0, 0
-	for seed := int64(1); seed <= 3000; seed++ {
+	for seed := int64(1); seed <= sweep(3000, 300); seed++ {
 		c, err := New(DefaultConfig(seed)).Generate()
 		if err != nil {
 			continue

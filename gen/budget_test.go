@@ -114,9 +114,9 @@ func TestBudgetAccountingInvariants(t *testing.T) {
 	}
 	for _, tc := range configs {
 		t.Run(tc.name, func(t *testing.T) {
-			seeds := int64(400)
+			seeds := sweep(400, 60)
 			if tc.name == "wide and deep" {
-				seeds = 40 // 4096 statements per program; keep the sweep sane
+				seeds = sweep(40, 6) // 4096 statements per program; keep the sweep sane
 			}
 			for seed := int64(1); seed <= seeds; seed++ {
 				g := New(tc.cfg(seed))
@@ -146,7 +146,7 @@ func TestBudgetAccountingInvariants(t *testing.T) {
 // once per call (loops make the priced cost strictly larger).
 func TestForwardPairCostCoversBody(t *testing.T) {
 	pairs := 0
-	for seed := int64(1); seed <= 300; seed++ {
+	for seed := int64(1); seed <= sweep(300, 100); seed++ {
 		g := New(DefaultConfig(seed))
 		if _, err := g.Generate(); err != nil {
 			t.Fatal(err)
