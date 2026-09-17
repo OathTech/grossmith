@@ -42,6 +42,29 @@ type Outcome struct {
 	Detail   string           `json:"detail,omitempty"`
 }
 
+// Validate checks the adapter result before it participates in a verdict.
+// A ran result carries a valid document; a failure carries a reason and
+// no document. Unknown statuses are adapter contract errors.
+func (o Outcome) Validate() error {
+	switch o.Status {
+	case StatusRan:
+		if err := o.Document.Validate(); err != nil {
+			return fmt.Errorf("document is invalid: %w", err)
+		}
+	case StatusBuildFailed, StatusRunFailed, StatusTimeout, StatusAdapterErr:
+		if o.Detail == "" {
+			return fmt.Errorf("%s with no detail", o.Status)
+		}
+		d := o.Document
+		if d.Schema != "" || d.Status != "" || d.Events != nil || d.Values != nil || d.Panic != nil || d.Error != nil {
+			return fmt.Errorf("%s carries a document although it did not run", o.Status)
+		}
+	default:
+		return fmt.Errorf("unknown status %q", o.Status)
+	}
+	return nil
+}
+
 // Adapter runs cases under one implementation.
 type Adapter interface {
 	Name() string
@@ -66,15 +89,8 @@ const (
 
 // Judge compares two outcomes under the policy.
 func Judge(ref, clone Outcome, policy observe.PanicPolicy) (Verdict, string) {
-	refOK := ref.Status == StatusRan
-	cloneOK := clone.Status == StatusRan
-	switch {
-	case !refOK && !cloneOK:
-		return VerdictBothInfra, ref.Detail + " / " + clone.Detail
-	case !refOK:
-		return VerdictRefInfra, ref.Detail
-	case !cloneOK:
-		return VerdictCloneInfra, clone.Detail
+	if policy != observe.PanicExact && policy != observe.PanicKindOnly {
+		return VerdictHarnessError, fmt.Sprintf("unknown panic policy %q", policy)
 	}
 	// STRUCTURE BEFORE MEANING (2026-08-10 audit, P1): both ran documents
 	// are validated HERE, before any classification. Validation used to
@@ -85,15 +101,17 @@ func Judge(ref, clone Outcome, policy observe.PanicPolicy) (Verdict, string) {
 	// adapter contract violation. An invalid document is a harness error,
 	// named by side, and only structurally valid error documents take part
 	// in infrastructure classification.
-	refErr, cloneErr := ref.Document.Validate(), clone.Document.Validate()
+	// Validate each outcome independently: a build failure on one side
+	// must not hide an invalid document or status on the other side.
+	refErr, cloneErr := ref.Validate(), clone.Validate()
 	switch {
 	case refErr != nil && cloneErr != nil:
-		return VerdictHarnessError, "both adapters returned invalid documents: reference: " +
+		return VerdictHarnessError, "both adapters returned invalid outcomes: reference: " +
 			refErr.Error() + " / clone: " + cloneErr.Error()
 	case refErr != nil:
-		return VerdictHarnessError, "reference returned an invalid document: " + refErr.Error()
+		return VerdictHarnessError, "reference returned an invalid outcome: " + refErr.Error()
 	case cloneErr != nil:
-		return VerdictHarnessError, "clone returned an invalid document: " + cloneErr.Error()
+		return VerdictHarnessError, "clone returned an invalid outcome: " + cloneErr.Error()
 	}
 	// The DOCUMENT status is the second infrastructure axis (audit H2): an
 	// adapter can report StatusRan while its document says "error" — no
@@ -101,14 +119,21 @@ func Judge(ref, clone Outcome, policy observe.PanicPolicy) (Verdict, string) {
 	// this gate two error documents compared equal (a fabricated match) and
 	// one error document against a real observation became a fabricated
 	// observation-mismatch.
-	refDocOK, cloneDocOK := !ref.Document.Failed(), !clone.Document.Failed()
+	refOK := ref.Status == StatusRan && !ref.Document.Failed()
+	cloneOK := clone.Status == StatusRan && !clone.Document.Failed()
+	failureDetail := func(o Outcome) string {
+		if o.Status == StatusRan {
+			return docDetail(o.Document)
+		}
+		return o.Detail
+	}
 	switch {
-	case !refDocOK && !cloneDocOK:
-		return VerdictBothInfra, docDetail(ref.Document) + " / " + docDetail(clone.Document)
-	case !refDocOK:
-		return VerdictRefInfra, docDetail(ref.Document)
-	case !cloneDocOK:
-		return VerdictCloneInfra, docDetail(clone.Document)
+	case !refOK && !cloneOK:
+		return VerdictBothInfra, failureDetail(ref) + " / " + failureDetail(clone)
+	case !refOK:
+		return VerdictRefInfra, failureDetail(ref)
+	case !cloneOK:
+		return VerdictCloneInfra, failureDetail(clone)
 	}
 	eq, err := observe.Equal(ref.Document, clone.Document, policy)
 	if err != nil {

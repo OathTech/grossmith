@@ -108,6 +108,9 @@ The CLI also supports `-clone gc`, a separate `-clone-go` toolchain, and
 `-clone-gcflags` for optimization comparisons. Direct gc clone identities
 include compiler flags and binary digests, and offline verification recognizes
 that gc clones build the same manifested inputs as the reference.
+Outcome validation now precedes every comparison, including mixed build-failure
+and document-error pairs. A 100-pair matrix checks classification and rejects
+unknown policies, unknown statuses, and contradictory adapter payloads.
 
 ## House convention: wording
 

@@ -296,17 +296,8 @@ func ValidateBatchReport(root string, rep BatchReport, m Manifest) error {
 // validateOutcome checks one recorded outcome's structure: a ran outcome
 // carries a valid document, a non-ran one carries a reason.
 func validateOutcome(id, side string, o Outcome) error {
-	switch o.Status {
-	case StatusRan:
-		if err := o.Document.Validate(); err != nil {
-			return fmt.Errorf("report: case %s %s document is invalid: %w", id, side, err)
-		}
-	case StatusBuildFailed, StatusRunFailed, StatusTimeout, StatusAdapterErr:
-		if o.Detail == "" {
-			return fmt.Errorf("report: case %s %s is %s with no detail", id, side, o.Status)
-		}
-	default:
-		return fmt.Errorf("report: case %s %s has unknown status %q", id, side, o.Status)
+	if err := o.Validate(); err != nil {
+		return fmt.Errorf("report: case %s %s %w", id, side, err)
 	}
 	return nil
 }

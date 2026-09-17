@@ -1,8 +1,8 @@
 package harness
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,11 +217,11 @@ func TestJudgeValidatesBeforeClassifying(t *testing.T) {
 		want        Verdict
 		wantMention string
 	}{
-		{"invalid reference", invalidErr, valid, VerdictHarnessError, "reference returned an invalid document"},
-		{"invalid clone", valid, invalidErr, VerdictHarnessError, "clone returned an invalid document"},
-		{"both invalid", invalidErr, invalidOK, VerdictHarnessError, "both adapters returned invalid documents"},
-		{"invalid reference against a valid error doc", invalidErr, validErr, VerdictHarnessError, "reference returned an invalid document"},
-		{"invalid clone with ok-plus-panic", valid, invalidOK, VerdictHarnessError, "clone returned an invalid document"},
+		{"invalid reference", invalidErr, valid, VerdictHarnessError, "reference returned an invalid outcome"},
+		{"invalid clone", valid, invalidErr, VerdictHarnessError, "clone returned an invalid outcome"},
+		{"both invalid", invalidErr, invalidOK, VerdictHarnessError, "both adapters returned invalid outcomes"},
+		{"invalid reference against a valid error doc", invalidErr, validErr, VerdictHarnessError, "reference returned an invalid outcome"},
+		{"invalid clone with ok-plus-panic", valid, invalidOK, VerdictHarnessError, "clone returned an invalid outcome"},
 		// The valid rows keep their existing classification.
 		{"valid error documents stay infrastructure", validErr, validErr, VerdictBothInfra, ""},
 		{"valid clone error stays clone-infra", valid, validErr, VerdictCloneInfra, ""},
