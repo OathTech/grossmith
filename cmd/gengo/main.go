@@ -14,7 +14,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -29,6 +28,7 @@ import (
 	"grossmith/gen"
 	"grossmith/golean"
 	"grossmith/harness"
+	"grossmith/internal/strictjson"
 	"grossmith/observe"
 )
 
@@ -757,11 +757,9 @@ func runReplay(cfg config) error {
 		return err
 	}
 	var rec caseRecordIn
-	dec := json.NewDecoder(strings.NewReader(string(b)))
 	// Strict decode (E3; audit P1: unknown record fields passed through
 	// silently — a record from a future or foreign producer verified).
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&rec); err != nil {
+	if err := strictjson.Unmarshal(b, &rec); err != nil {
 		return fmt.Errorf("case.json: %w", err)
 	}
 	if rec.Schema != harness.CaseSchema {
@@ -850,7 +848,7 @@ func runReplay(cfg config) error {
 	batchPath := filepath.Join(filepath.Dir(filepath.Clean(cfg.replay)), "batch.json")
 	if rb, err := os.ReadFile(batchPath); err == nil {
 		var rep harness.BatchReport
-		if err := json.Unmarshal(rb, &rep); err != nil {
+		if err := strictjson.Unmarshal(rb, &rep); err != nil {
 			return fmt.Errorf("batch.json: %w", err)
 		}
 		refIdentity = rep.ReferenceIdentity

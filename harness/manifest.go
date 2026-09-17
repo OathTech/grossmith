@@ -21,13 +21,14 @@
 package harness
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+
+	"grossmith/internal/strictjson"
 )
 
 const ManifestSchema = "grossmith-manifest-v1"
@@ -155,9 +156,7 @@ func ReadManifest(root string) (Manifest, error) {
 		return Manifest{}, err
 	}
 	var m Manifest
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil {
+	if err := strictjson.Unmarshal(b, &m); err != nil {
 		return Manifest{}, fmt.Errorf("manifest: %w", err)
 	}
 	if m.Schema != ManifestSchema {
@@ -404,12 +403,10 @@ func checkComplete(root string) (Complete, error) {
 		return Complete{}, fmt.Errorf("batch: completion descriptor unreadable: %w", err)
 	}
 	var c Complete
-	dec := json.NewDecoder(bytes.NewReader(b))
 	// Strict on purpose: this is an integrity descriptor, so a field the
 	// checker does not understand must refuse rather than silently not
 	// bind. Additive evolution goes through a schema bump.
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&c); err != nil {
+	if err := strictjson.Unmarshal(b, &c); err != nil {
 		return Complete{}, fmt.Errorf("batch: complete.json: %w", err)
 	}
 	if c.Schema != CompleteSchema {

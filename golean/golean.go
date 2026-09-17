@@ -28,6 +28,7 @@ import (
 
 	"grossmith/gen"
 	"grossmith/harness"
+	"grossmith/internal/strictjson"
 	"grossmith/observe"
 )
 
@@ -729,7 +730,12 @@ func classifyLeanObservation(detail string) (harness.Verdict, string) {
 				strconv.Quote(leanObservationPrefix) + " separator): " + detail
 	}
 	var obs cloneObservation
-	if err := json.Unmarshal([]byte(strings.TrimSpace(doc)), &obs); err != nil {
+	data := []byte(strings.TrimSpace(doc))
+	decodeErr := strictjson.Validate(data)
+	if decodeErr == nil {
+		decodeErr = json.Unmarshal(data, &obs)
+	}
+	if decodeErr != nil {
 		// Their machine failed without emitting a document (the field is
 		// captured with 2>&1, so this is their error text). No observation
 		// exists, so no semantic comparison happened — unclassifiable

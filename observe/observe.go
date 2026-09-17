@@ -15,6 +15,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"grossmith/internal/strictjson"
 )
 
 // Schema is the wire tag carried by every document. A reader that does not
@@ -40,12 +42,12 @@ const (
 type PanicKind string
 
 const (
-	PanicDivide         PanicKind = "divide"
-	PanicIndexRange     PanicKind = "index-out-of-range"
-	PanicSliceBounds    PanicKind = "slice-bounds"
-	PanicIfaceConv      PanicKind = "interface-conversion"
-	PanicNilDeref       PanicKind = "nil-dereference"
-	PanicOther          PanicKind = "other"
+	PanicDivide      PanicKind = "divide"
+	PanicIndexRange  PanicKind = "index-out-of-range"
+	PanicSliceBounds PanicKind = "slice-bounds"
+	PanicIfaceConv   PanicKind = "interface-conversion"
+	PanicNilDeref    PanicKind = "nil-dereference"
+	PanicOther       PanicKind = "other"
 )
 
 // KindFromMessage maps a Go runtime panic message to its kind. This is the
@@ -183,16 +185,9 @@ func (d Document) Canonical() ([]byte, error) {
 // unknown status, unknown kinds, or a STRUCTURALLY impossible document
 // (Validate) are errors, never partial reads.
 func Parse(data []byte) (Document, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var d Document
-	if err := dec.Decode(&d); err != nil {
+	if err := strictjson.Unmarshal(data, &d); err != nil {
 		return Document{}, fmt.Errorf("observe: %w", err)
-	}
-	if dec.More() {
-		// One document per parse: trailing bytes mean the producer is not
-		// speaking the protocol (two concatenated documents, stray output).
-		return Document{}, fmt.Errorf("observe: trailing data after document")
 	}
 	if err := d.Validate(); err != nil {
 		return Document{}, err

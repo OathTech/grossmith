@@ -17,13 +17,12 @@ package harness
 // for the recorded documents.
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 
+	"grossmith/internal/strictjson"
 	"grossmith/observe"
 )
 
@@ -36,13 +35,8 @@ func ReadBatchReport(root string) (BatchReport, error) {
 		return BatchReport{}, err
 	}
 	var rep BatchReport
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&rep); err != nil {
+	if err := strictjson.Unmarshal(b, &rep); err != nil {
 		return BatchReport{}, fmt.Errorf("batch.json: %w", err)
-	}
-	if dec.More() {
-		return BatchReport{}, fmt.Errorf("batch.json: trailing content after the report")
 	}
 	if rep.Schema != BatchSchema {
 		return BatchReport{}, fmt.Errorf("batch.json: schema %q, want %q", rep.Schema, BatchSchema)
@@ -64,7 +58,7 @@ func readCaseFeatures(root string, m Manifest) (map[string]map[string]int, error
 			return nil, err
 		}
 		var rec CaseRecord
-		if err := json.Unmarshal(b, &rec); err != nil {
+		if err := strictjson.Unmarshal(b, &rec); err != nil {
 			return nil, fmt.Errorf("case %s record: %w", mc.ID, err)
 		}
 		if rec.ID != mc.ID {

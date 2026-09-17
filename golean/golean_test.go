@@ -180,6 +180,8 @@ func TestLeanObservationClassification(t *testing.T) {
 	// with no document separator. Never a mismatch.
 	for _, tc := range []struct{ name, detail string }{
 		{"unknown status", `expected status ok, got {"schema":"golean-observation-v1","status":"quantum"}`},
+		{"duplicate status", `expected status ok, got {"schema":"golean-observation-v1","status":"unsupported","status":"ok"}`},
+		{"duplicate nested field", `expected status ok, got {"schema":"golean-observation-v1","status":"unsupported","extra":{"x":1,"x":2}}`},
 		{"foreign schema", `expected status ok, got {"schema":"golean-observation-v2","status":"stuck"}`},
 		{"machine error text", "expected status ok, got lean: internal error: uncaught exception"},
 		{"no separator", "something else entirely"},

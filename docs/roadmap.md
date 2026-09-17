@@ -115,6 +115,9 @@ Saved-report validation requires complete comparison evidence, rejects dropped
 histograms and unknown policies, checks case-record identities against the
 manifest, and recomputes judged composition and both wrapper counters. These
 checks are witnessed by report mutations with faithfully rebound file digests.
+All JSON evidence readers now reject duplicate object names (including escaped
+aliases) and trailing content. GoLean's external observation reader retains its
+unknown-field compatibility while rejecting ambiguous status fields.
 
 ## House convention: wording
 

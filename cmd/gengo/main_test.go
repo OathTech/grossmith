@@ -221,6 +221,13 @@ func TestReplayFromArtifacts(t *testing.T) {
 	// config-absent error must name the real cause).
 	tamper("hash", `"subjectSha256": "`, `"subjectSha256": "0000`)
 	tamper("trace", `"drawTrace": [`, `"drawTrace": [999999999, `)
+	tamper("duplicate schema", `"schema":`, `"schema":"ignored","schema":`)
+	if err := os.WriteFile(recPath, append(append([]byte(nil), orig...), ']'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(rcfg); err == nil {
+		t.Fatal("record with a trailing delimiter accepted")
+	}
 	// Config-absent simulation: REMOVE the field (E3's strict decode
 	// rejects unknown fields, so the old rename-to-configGone trick now
 	// fails earlier, on the strictness itself — also worth witnessing).
