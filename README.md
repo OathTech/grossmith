@@ -80,6 +80,12 @@ corpus — produces byte-identical output on every run; other lanes
 (designed, not yet emitted — membership first) carry explicit
 lane-specific oracles (`docs/2026-08-09_membership-lane-emission-design.md`).
 
+For adapters that cannot directly observe maps and slices, selected containers
+contribute scalar fingerprints. These capture current state on normal returns,
+early returns, and recovered panics. Fingerprints can collide; they offer less
+sensitivity than the full typed observations used by the reference driver.
+An unrecovered panic still reports panic evidence without a returned value tuple.
+
 ## Packages
 
 - `gen` — the generator: one weighted-choice primitive, construct swarm,

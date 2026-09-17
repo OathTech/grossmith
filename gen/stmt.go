@@ -140,18 +140,28 @@ func (g *Generator) earlyReturn(out *emitter) {
 	g.mark("early_return", "return")
 	g.note(tagDeadCode)
 	names := g.observedNames()
-	// Aggregate slots (rung 4) are computed only at the final return;
-	// an early exit reports them as zero — path-dependent liveness, the
-	// same honesty as any early return, and deterministic.
+	// A separate scope lets multiple return sites reuse the aggregate
+	// local names without conflicting with each other or the final tail.
+	hasAggregates := false
 	for _, v := range g.vars {
 		if v.aggObserved {
-			names = append(names, "0")
+			hasAggregates = true
+			break
+		}
+	}
+	if hasAggregates {
+		out.open("{")
+		for _, b := range g.aggregateObservations(out) {
+			names = append(names, b.name)
 		}
 	}
 	if g.wrapped {
 		names = append(names, "0")
 	}
 	out.line("return %s", strings.Join(names, ", "))
+	if hasAggregates {
+		out.close()
+	}
 }
 
 // observePoint prints one scalar/string variable mid-execution — an
@@ -1123,9 +1133,9 @@ func (g *Generator) sliceTripleStmt(out *emitter) {
 	s.reads++
 	// 0 <= a <= b <= c <= minLen, with cap = c-a >= 1 so the shared case is
 	// reachable; minLen >= 2 for every slice declaration.
-	a := g.c.draw(s.minLen - 1)          // [0, minLen-2]
-	cc := a + 1 + g.c.draw(s.minLen-a)   // [a+1, minLen]
-	b := a + g.c.draw(cc-a+1)            // [a, cc]
+	a := g.c.draw(s.minLen - 1)        // [0, minLen-2]
+	cc := a + 1 + g.c.draw(s.minLen-a) // [a+1, minLen]
+	b := a + g.c.draw(cc-a+1)          // [a, cc]
 	tn := fmt.Sprintf("t%d", g.tmpSeq)
 	en := fmt.Sprintf("e%d", g.tmpSeq+1)
 	g.tmpSeq += 2

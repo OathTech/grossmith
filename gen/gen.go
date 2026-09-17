@@ -219,7 +219,7 @@ type binding struct {
 	observed bool
 	// aggObserved (rung 4, GoLean R5): the liveness draw chose observed
 	// but the shape is profile-masked (NoObserve) — observed THROUGH an
-	// int aggregate at function end instead of dropped to the feeder tier.
+	// int aggregate at each returning exit instead of dropped to the feeder tier.
 	aggObserved bool
 	reads       int
 	// bound is the binding's static magnitude bound (W4): 0 = unknown,
@@ -1463,7 +1463,7 @@ func (g *Generator) declareOne(out *emitter, typ Type) {
 //
 // Budget (E6): everything emitted here is PRE-PAID — each declaration
 // charged perVarReserve for its discharge/obs line and aggregate-fold
-// base, and every append charged one extra execution for the element
+// base, and every append charged three extra executions for the element
 // its fold visits — so this function emits without consulting the pool.
 func (g *Generator) observe(out *emitter) []binding {
 	var observed []binding
@@ -1485,9 +1485,45 @@ func (g *Generator) observe(out *emitter) []binding {
 			g.note(tagFeederValue)
 		}
 	}
+	for _, b := range g.aggregateObservations(out) {
+		observed = append(observed, b)
+		names = append(names, b.name)
+	}
+	g.mark("return")
+	if g.witSeq > 0 {
+		// The order-witness slot (R2b): the accumulator's final value as a
+		// trailing observed int, after the aggregate slots and before the
+		// panic-code slot. It is LIVE during the body, so the wrapper's
+		// defer snapshots it on the panic path — a
+		// mid-expression panic truncates the accumulator, and site + partial
+		// state + order-before-panic compose (E3).
+		observed = append(observed, binding{name: "wOrd", typ: Int(0, false)})
+		names = append(names, "wOrd")
+	}
+	if g.wrapped {
+		// The panic-code slot: a synthetic trailing int result, zero on
+		// the normal path, written by the wrapper's recover on the panic
+		// path. The binding gives the driver its arity and type.
+		observed = append(observed, binding{name: "qP", typ: Int(0, false)})
+		names = append(names, "0")
+	}
+	out.line("return %s", strings.Join(names, ", "))
+	return observed
+}
+
+// aggregateObservations snapshots profile-masked containers on a returning
+// exit path. The folds are total and do not mutate subject state. Although
+// several exits contain this code, exactly one snapshot executes: an early
+// return, the normal tail, or the recover wrapper. The declaration/append
+// observation reserve therefore pays once, even for a return inside a loop.
+//
+// These scalar fingerprints are lossy; preserving them at every returning
+// exit fixes path blindness, not collisions between different containers.
+func (g *Generator) aggregateObservations(out *emitter) []binding {
+	var observed []binding
 	// Aggregate observation (rung 4, GoLean R5): profile-masked
 	// containers the liveness draw wanted observed are folded into plain
-	// ints at function end — key-weighted commutative sums for maps (an
+	// ints at the selected exit — key-weighted commutative sums for maps (an
 	// order-safe map observation), position-weighted chains for slices
 	// (order is specified, so the stronger encoding is free). Plain-int
 	// accumulators wrap platform-width: width_dependent, tagged so.
@@ -1554,27 +1590,7 @@ func (g *Generator) observe(out *emitter) []binding {
 			out.line("}")
 		}
 		observed = append(observed, binding{name: name, typ: Int(0, false)})
-		names = append(names, name)
 	}
-	g.mark("return")
-	if g.witSeq > 0 {
-		// The order-witness slot (R2b): the accumulator's final value as a
-		// trailing observed int, after the aggregate slots and before the
-		// panic-code slot. Unlike the aggregate folds it is LIVE during the
-		// body, so the wrapper's defer snapshots it on the panic path — a
-		// mid-expression panic truncates the accumulator, and site + partial
-		// state + order-before-panic compose (E3).
-		observed = append(observed, binding{name: "wOrd", typ: Int(0, false)})
-		names = append(names, "wOrd")
-	}
-	if g.wrapped {
-		// The panic-code slot: a synthetic trailing int result, zero on
-		// the normal path, written by the wrapper's recover on the panic
-		// path. The binding gives the driver its arity and type.
-		observed = append(observed, binding{name: "qP", typ: Int(0, false)})
-		names = append(names, "0")
-	}
-	out.line("return %s", strings.Join(names, ", "))
 	return observed
 }
 
@@ -1584,9 +1600,9 @@ func (g *Generator) observe(out *emitter) []binding {
 // Capture semantics are the point: the locals are read at RECOVER time.
 func (g *Generator) emitWrapperDefer(out *emitter) {
 	names := g.observedNames()
-	// Aggregate slots (rung 4) sit between the observed locals and the
-	// panic code in the result tuple; on the panic path they stay zero
-	// (the folds only run at normal exit), so only the slot INDEX moves.
+	// Aggregate slots sit between the observed locals and the panic code.
+	// Snapshot them after recovery, using the same folds as a normal or
+	// early return, so pre-panic mutations remain observable.
 	// The order-witness slot (W2) sits after them and, unlike them, is
 	// LIVE during the body — the defer snapshots it, so a caught panic
 	// reports the order-before-panic prefix (E3 composition). Callers run
@@ -1609,6 +1625,9 @@ func (g *Generator) emitWrapperDefer(out *emitter) {
 	}
 	for i, n := range names {
 		out.line("q%d = %s", i, n)
+	}
+	for i, b := range g.aggregateObservations(out) {
+		out.line("q%d = %s", len(names)+i, b.name)
 	}
 	out.close()
 	out.dedent()

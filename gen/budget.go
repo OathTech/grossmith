@@ -26,10 +26,12 @@ package gen
 //
 // The "executed statement" unit matches the instrumentation witness
 // (gen/execmeasure_test.go): one count per statement position in a
-// block, per execution. Observation folds at the subject's end are
+// block, per execution. Observation folds on a subject's returning exit are
 // PRE-PAID: each declaration charges a per-variable constant covering
-// its observation shape, and each append charges one extra execution
-// for the element the final fold will visit.
+// its observation shape, and each append charges three extra executions
+// for the element the fold will visit (the bool-element worst case).
+// Normal return, early return and wrapper recovery are exclusive paths:
+// the total, panic-free folds execute once, whichever exit is taken.
 
 const (
 	// ExecBudget is the ceiling on one subject's worst-case executed

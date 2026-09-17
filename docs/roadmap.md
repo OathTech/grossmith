@@ -94,10 +94,16 @@ Write." The subject-run path uses two distinct buffers. No race; no
 change.
 
 Deferred to their own charter (the audit's R2 onward): aggregate-fold
-lossiness and path-valid aggregates, whole-case resource limits
+lossiness, whole-case resource limits
 (driver reflection tree, JSON, parser), order-witness collision
 bounds, real build/run matrices, and the incidence/sensitivity
 accounting.
+
+Branch work (2026-09-17, `codex/grossmith-improvements`): aggregate fingerprints
+now snapshot state on early returns and wrapper recovery as well as normal
+returns. Controlled mutation witnesses reproduce the former zero-slot blindness
+and check all returning paths; generation sweeps and execution counters check
+composition and budget preservation. Fingerprint collisions remain open.
 
 ## House convention: wording
 
