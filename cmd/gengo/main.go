@@ -350,6 +350,9 @@ func run(cfg config) error {
 				return err
 			}
 			fmt.Printf("  report self-consistent: membership, totals, histograms, wrapper accounting, and per-case documents all recompute\n")
+			if rep.CloneName == "golean" {
+				fmt.Printf("  GoLean verdicts are external adapter attestations; clone observations are not available for offline re-judging\n")
+			}
 			cloneRecorded := rep.CloneWorkFiles != nil
 			for _, cr := range rep.Cases {
 				if cr.CloneSourceSHA256 != "" {

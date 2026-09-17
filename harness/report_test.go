@@ -29,6 +29,7 @@ func reportFixture(t *testing.T) (string, BatchReport, Manifest) {
 		"case_00000": []byte("package main\n\nfunc fuzzSubject() int { return 1 }\n"),
 		"case_00001": []byte("package main\n\nfunc fuzzSubject() int { return 2 }\n"),
 	}
+	seeds := map[string]int64{"case_00000": 1, "case_00001": 2}
 	var ids []string
 	for id, src := range subjects {
 		dir := filepath.Join(root, id)
@@ -42,7 +43,7 @@ func reportFixture(t *testing.T) (string, BatchReport, Manifest) {
 			t.Fatal(err)
 		}
 		rec := map[string]any{
-			"schema": CaseSchema, "id": id, "seed": 1, "generatorRev": "t",
+			"schema": CaseSchema, "id": id, "seed": seeds[id], "generatorRev": "t",
 			"subjectSha256": SubjectHash(src),
 			"features":      map[string]int{"ints": 1},
 			"drawTrace":     []int{1},
@@ -57,7 +58,7 @@ func reportFixture(t *testing.T) (string, BatchReport, Manifest) {
 		ids = append(ids, id)
 	}
 	sortStrings(ids)
-	m, err := WriteManifest(root, "t", "go 1.26", ids, map[string]int64{"case_00000": 1, "case_00001": 2})
+	m, err := WriteManifest(root, "t", "go 1.26", ids, seeds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,6 @@ func TestReportMutationsRefuse(t *testing.T) {
 		}, "unknown status"},
 		{"unknown verdict", func(r *BatchReport) { r.Cases[0].Verdict = Verdict("probably-fine") }, "unknown verdict"},
 		{"histogram disagrees", func(r *BatchReport) {
-			r.Cases[0].Verdict, r.Cases[1].Verdict = VerdictMatch, VerdictMatch
 			r.Verdicts = map[Verdict]int{VerdictMatch: 99}
 		}, "histogram disagrees"},
 		{"wrapper caught inflated", func(r *BatchReport) { r.WrapperCaught = 3 }, "wrapperCaught 3"},
@@ -198,15 +198,8 @@ func TestReportMutationsRefuse(t *testing.T) {
 // conclusion this validator cannot recompute, which is stated in
 // report.go rather than silently skipped.
 func TestReportVerdictsAreRecomputed(t *testing.T) {
-	root, rep, m := reportFixture(t)
-	clone := rep.Cases[0].Reference // identical documents => match
-	rep.Cases[0].Clone = &clone
+	root, rep, m := comparisonReportFixture(t)
 	rep.Cases[0].Verdict = VerdictMismatch // the lie
-	rep.Cases[1].Verdict = VerdictMatch
-	rep.CloneName = "gc-386"
-	rep.CloneIdentity = "gc-386"
-	zero := 0
-	rep.WrapperJudged, rep.WrapperCloneInfra = &zero, &zero
 	rep.Verdicts = map[Verdict]int{VerdictMismatch: 1, VerdictMatch: 1}
 	if err := WriteBatch(root, rep); err != nil {
 		t.Fatal(err)

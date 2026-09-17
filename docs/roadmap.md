@@ -111,6 +111,10 @@ that gc clones build the same manifested inputs as the reference.
 Outcome validation now precedes every comparison, including mixed build-failure
 and document-error pairs. A 100-pair matrix checks classification and rejects
 unknown policies, unknown statuses, and contradictory adapter payloads.
+Saved-report validation requires complete comparison evidence, rejects dropped
+histograms and unknown policies, checks case-record identities against the
+manifest, and recomputes judged composition and both wrapper counters. These
+checks are witnessed by report mutations with faithfully rebound file digests.
 
 ## House convention: wording
 

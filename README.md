@@ -81,7 +81,11 @@ Clones:
 Use `go run ./cmd/gengo -verify <batch-dir>` to check a saved campaign's
 artifact integrity and report consistency offline. Direct gc comparisons
 build the same manifested source files; GoLean additionally records its
-translated work tree.
+translated work tree. Verification requires the per-case records and complete
+comparison results, recomputes verdict and coverage totals, and checks each
+wrapper counter against the individual verdicts. GoLean verdicts remain
+attestations by its external adapter; its clone observations are not stored
+for offline re-judging.
 
 Generated programs cover: all integer kinds, bool, string, arrays, slices,
 maps (no map-range except an order-invariant fold), named structs, defined
