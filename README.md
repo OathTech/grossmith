@@ -104,6 +104,10 @@ coverage tags and generation history are not inferred, and the recorded seed
 is a zero placeholder. These records use `-check` again, rather than draw-tape
 `-replay`. The usual clone, toolchain, and timeout options apply. Existing source
 is used as supplied; generator capability profiles do not rewrite it.
+For GoLean, directory mode requires the saved driver to be byte-identical to
+the current observation driver: GoLean's nested comparison runs its own driver
+over the subject alone. Edited or older drivers are refused. Selecting the
+`subject.go` file explicitly opts into the current driver instead.
 
 Generated programs cover: all integer kinds, bool, string, arrays, slices,
 maps (no map-range except an order-invariant fold), named structs, defined

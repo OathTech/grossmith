@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,6 +85,15 @@ func loadCheck(cfg config) (*gen.Case, *harness.CaseOrigin, error) {
 	}
 	if err != nil {
 		return nil, nil, err
+	}
+	if driverPath != "" && (cfg.clone == "golean" || strings.HasPrefix(cfg.clone, "golean:")) {
+		current, err := gen.DriverForSource(source)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !bytes.Equal(driver, current) {
+			return nil, nil, fmt.Errorf("GoLean requires the current observation driver: its comparison executes subject.go with its own driver, so it cannot compare an edited or older saved driver; use -check on subject.go to explicitly select the current driver")
+		}
 	}
 	return &gen.Case{Source: source, Driver: driver, FeatureCounts: map[string]int{}}, origin, nil
 }

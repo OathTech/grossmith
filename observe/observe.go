@@ -159,8 +159,81 @@ type Event struct {
 
 // PanicInfo is a structured panic identity.
 type PanicInfo struct {
-	Kind    PanicKind `json:"kind"`
-	Message string    `json:"message"`
+	Kind         PanicKind `json:"kind"`
+	Message      string    `json:"message"`
+	MessageBytes []byte    `json:"messageBytes,omitempty"`
+	// Presence is necessary for an explicit empty string. Nonempty Message
+	// fields from existing callers remain valid; use NewPanicInfo for empty
+	// messages or arbitrary bytes.
+	messagePresent bool
+}
+
+// NewPanicInfo preserves arbitrary Go string bytes, including an empty message.
+func NewPanicInfo(kind PanicKind, message string) PanicInfo {
+	p := PanicInfo{Kind: kind}
+	if utf8.ValidString(message) {
+		p.Message, p.messagePresent = message, true
+	} else {
+		p.MessageBytes = []byte(message)
+	}
+	return p
+}
+
+// MessageData returns the original panic message bytes in a Go string.
+func (p PanicInfo) MessageData() string {
+	if p.MessageBytes != nil {
+		return string(p.MessageBytes)
+	}
+	return p.Message
+}
+
+func (p PanicInfo) MarshalJSON() ([]byte, error) {
+	if err := checkPanicInfo(&p); err != nil {
+		return nil, err
+	}
+	var message *string
+	if p.MessageBytes == nil {
+		message = &p.Message
+	}
+	return json.Marshal(struct {
+		Kind         PanicKind `json:"kind"`
+		Message      *string   `json:"message,omitempty"`
+		MessageBytes []byte    `json:"messageBytes,omitempty"`
+	}{p.Kind, message, p.MessageBytes})
+}
+
+func (p *PanicInfo) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Kind         PanicKind       `json:"kind"`
+		Message      json.RawMessage `json:"message"`
+		MessageBytes json.RawMessage `json:"messageBytes"`
+	}
+	if err := strictjson.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	parsed := PanicInfo{Kind: wire.Kind}
+	if wire.Message != nil {
+		if bytes.Equal(wire.Message, []byte("null")) {
+			return fmt.Errorf("observe: panic message must be a string, not null")
+		}
+		if err := json.Unmarshal(wire.Message, &parsed.Message); err != nil {
+			return err
+		}
+		parsed.messagePresent = true
+	}
+	if wire.MessageBytes != nil {
+		if len(wire.MessageBytes) == 0 || wire.MessageBytes[0] != '"' {
+			return fmt.Errorf("observe: panic messageBytes must be a base64 string")
+		}
+		if err := json.Unmarshal(wire.MessageBytes, &parsed.MessageBytes); err != nil {
+			return err
+		}
+	}
+	if err := checkPanicInfo(&parsed); err != nil {
+		return err
+	}
+	*p = parsed
+	return nil
 }
 
 // ErrorInfo is a structured non-observation.
@@ -186,8 +259,9 @@ func OK(events []Event, values []Value) Document {
 
 // Panicked builds an unrecovered-panic document.
 func Panicked(events []Event, kind PanicKind, message string) Document {
+	p := NewPanicInfo(kind, message)
 	return Document{Schema: Schema, Status: StatusPanic, Events: events,
-		Panic: &PanicInfo{Kind: kind, Message: message}}
+		Panic: &p}
 }
 
 // Errored builds a non-observation.
@@ -309,8 +383,8 @@ func (d Document) Validate() error {
 	return nil
 }
 
-// checkPanicInfo: the closed panic taxonomy plus a non-empty message —
-// every producer maps a concrete runtime panic, which always has prose.
+// checkPanicInfo requires one lossless message payload, including an explicitly
+// present empty string. Missing evidence is different from panic("").
 func checkPanicInfo(p *PanicInfo) error {
 	if p == nil {
 		return nil
@@ -320,7 +394,16 @@ func checkPanicInfo(p *PanicInfo) error {
 	default:
 		return fmt.Errorf("observe: unknown panic kind %q", p.Kind)
 	}
-	if p.Message == "" {
+	if p.MessageBytes != nil {
+		if p.Message != "" || p.messagePresent || utf8.Valid(p.MessageBytes) {
+			return fmt.Errorf("observe: panic messageBytes requires invalid UTF-8 bytes and no message payload")
+		}
+		return nil
+	}
+	if !utf8.ValidString(p.Message) {
+		return fmt.Errorf("observe: invalid UTF-8 in panic message; use NewPanicInfo or messageBytes")
+	}
+	if p.Message == "" && !p.messagePresent {
 		return fmt.Errorf("observe: panic %q without a message", p.Kind)
 	}
 	return nil
@@ -534,16 +617,14 @@ func Equal(a, b Document, policy PanicPolicy) (bool, error) {
 
 func normalizePanicMessages(d Document) Document {
 	if d.Panic != nil {
-		p := *d.Panic
-		p.Message = ""
+		p := NewPanicInfo(d.Panic.Kind, "")
 		d.Panic = &p
 	}
 	events := make([]Event, len(d.Events))
 	copy(events, d.Events)
 	for i, e := range events {
 		if e.Panic != nil {
-			p := *e.Panic
-			p.Message = ""
+			p := NewPanicInfo(e.Panic.Kind, "")
 			events[i].Panic = &p
 		}
 	}

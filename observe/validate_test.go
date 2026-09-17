@@ -18,7 +18,7 @@ func TestValidateRejectsForbiddenCombinations(t *testing.T) {
 		"ok with panic payload":  `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"int","goType":"int"}],"panic":{"kind":"divide","message":"m"}}`,
 		"ok with error payload":  `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"int","goType":"int"}],"error":{"kind":"run","detail":"d"}}`,
 		"panic with values":      `{"schema":"grossmith-observation-v2","status":"panic","panic":{"kind":"divide","message":"m"},"values":[{"kind":"int","goType":"int"}]}`,
-		"panic with empty msg":   `{"schema":"grossmith-observation-v2","status":"panic","panic":{"kind":"divide","message":""}}`,
+		"panic with missing msg": `{"schema":"grossmith-observation-v2","status":"panic","panic":{"kind":"divide"}}`,
 		"error with values":      `{"schema":"grossmith-observation-v2","status":"error","error":{"kind":"run","detail":"d"},"values":[{"kind":"int","goType":"int"}]}`,
 		"error with events":      `{"schema":"grossmith-observation-v2","status":"error","error":{"kind":"run","detail":"d"},"events":[{"at":"point","value":{"kind":"int","goType":"int"}}]}`,
 		"empty goType":           `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"int","goType":""}]}`,

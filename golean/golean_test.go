@@ -301,6 +301,38 @@ func TestStuckIsInfraNotMismatch(t *testing.T) {
 	}
 }
 
+func TestCloneObservationFieldAliases(t *testing.T) {
+	for _, doc := range []string{
+		`{"schema":"golean-observation-v1","status":"stuck","Status":"ok"}`,
+		`{"schema":"golean-observation-v1","status":"stuck","ſtatus":"ok"}`,
+		`{"schema":"wrong","Schema":"golean-observation-v1","status":"ok"}`,
+	} {
+		v, _ := classifyLeanObservation("expected status ok, got " + doc)
+		if v != harness.VerdictHarnessError {
+			t.Fatalf("alias accepted: %s: %s", doc, v)
+		}
+	}
+	v, _ := classifyLeanObservation(`expected status ok, got {"schema":"golean-observation-v1","status":"stuck","future":{"status":1,"Status":2}}`)
+	if v != harness.VerdictCloneInfra {
+		t.Fatalf("unknown fields broke compatible classification: %s", v)
+	}
+}
+
+func TestGoLeanUnrepresentablePanicMessages(t *testing.T) {
+	for _, message := range []string{"", "\xc2", "\xb5", "-", "a\nb", "\x00"} {
+		doc := observe.Panicked(nil, observe.PanicOther, message)
+		if err := doc.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		_, result, ok := translate(t.TempDir(), Case{ID: "panic_message", Reference: harness.Outcome{
+			Status: harness.StatusRan, Document: doc,
+		}})
+		if ok || result.Verdict != harness.VerdictCloneInfra || !strings.Contains(result.Detail, "represented exactly") {
+			t.Errorf("unrepresentable panic %q reached comparison: %+v", message, result)
+		}
+	}
+}
+
 // TestGoLeanEndToEnd is the Phase 1 vertical slice: profile-generated
 // cases, gc reference pass, GoLean campaign, verdicts. Requires the
 // deps/golean checkout (skipped elsewhere) and builds real binaries.

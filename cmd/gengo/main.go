@@ -791,6 +791,14 @@ func runReplay(cfg config) error {
 	if rec.Schema != harness.CaseSchema {
 		return fmt.Errorf("case.json: schema %q, want %q", rec.Schema, harness.CaseSchema)
 	}
+	originRecord := harness.CaseRecord{Origin: rec.Origin, Seed: rec.Seed,
+		DrawTrace: rec.DrawTrace, Features: rec.Features}
+	if rec.Config != nil {
+		originRecord.Config = rec.Config
+	}
+	if err := originRecord.ValidateOrigin(); err != nil {
+		return fmt.Errorf("case.json: %w", err)
+	}
 	// The directory IS the ID: a record copied into another case's dir
 	// would otherwise verify under the wrong identity (E3).
 	if base := filepath.Base(filepath.Clean(cfg.replay)); base != rec.ID {

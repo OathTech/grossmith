@@ -15,7 +15,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"grossmith/gen"
 	"grossmith/harness"
@@ -419,14 +419,14 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 		status = "ok"
 	case observe.StatusPanic:
 		status = "panic"
-		if doc.Panic == nil || doc.Panic.Message == "" {
+		if doc.Panic == nil {
 			return "", Result{Verdict: harness.VerdictHarnessError,
 				Detail: "reference panicked without a message — no expected_reason to pin"}, false
 		}
-		reason = doc.Panic.Message
-		if strings.ContainsAny(reason, "\t\n\r") {
-			return "", Result{Verdict: harness.VerdictHarnessError,
-				Detail: fmt.Sprintf("panic message not manifest-safe: %q", reason)}, false
+		reason = doc.Panic.MessageData()
+		if reason == "" || reason == "-" || !utf8.ValidString(reason) || strings.ContainsAny(reason, "\x00\t\n\r") {
+			return "", Result{Verdict: harness.VerdictCloneInfra,
+				Detail: fmt.Sprintf("panic message cannot be represented exactly by GoLean's expected_reason field: %q", reason)}, false
 		}
 	default:
 		return "", Result{Verdict: harness.VerdictRefInfra,
@@ -688,10 +688,11 @@ const CloneObservationSchema = "golean-observation-v1"
 const leanObservationPrefix = ", got "
 
 // cloneObservation is the part of GoLean's observation document that
-// decides classification. Decoded NON-strictly on purpose: they may add
+// decides classification. Unknown fields are allowed: they may add
 // fields (they vendor us, we do not gate their evolution), and an
 // unknown FIELD is not a reason to refuse. An unknown SCHEMA or STATUS
-// is, because those are what the classification reads.
+// is, because those are what the classification reads. Recognized fields
+// require exact spelling so unknown case aliases cannot overwrite them.
 type cloneObservation struct {
 	Schema  string `json:"schema"`
 	Status  string `json:"status"`
@@ -731,10 +732,7 @@ func classifyLeanObservation(detail string) (harness.Verdict, string) {
 	}
 	var obs cloneObservation
 	data := []byte(strings.TrimSpace(doc))
-	decodeErr := strictjson.Validate(data)
-	if decodeErr == nil {
-		decodeErr = json.Unmarshal(data, &obs)
-	}
+	decodeErr := strictjson.UnmarshalExtensible(data, &obs)
 	if decodeErr != nil {
 		// Their machine failed without emitting a document (the field is
 		// captured with 2>&1, so this is their error text). No observation

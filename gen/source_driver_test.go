@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -32,6 +33,38 @@ func TestDriverForSourceSignature(t *testing.T) {
 		}
 		if !strings.Contains(string(driver), "r0, r1, r2 := fuzzSubject()") {
 			t.Fatalf("wrong result arity for %s", sig)
+		}
+	}
+}
+
+func TestDriverPreservesPanicMessages(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs binaries")
+	}
+	for _, recovered := range []bool{false, true} {
+		for _, message := range []string{"", "\xc2", "\xb5"} {
+			body := fmt.Sprintf("panic(%q)", message)
+			if recovered {
+				body = `defer func() { if r := recover(); r != nil { obsRecovered(r.(string)) } }(); ` + body
+			}
+			source := []byte("package main; func fuzzSubject() (n int) { " + body + " }")
+			driver, err := DriverForSource(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := runCase(t, Case{Source: source, Driver: driver})
+			p := doc.Panic
+			if recovered {
+				if doc.Status != observe.StatusOK || len(doc.Events) != 1 || doc.Events[0].At != "recovered" {
+					t.Fatalf("missing recovered event: %+v", doc)
+				}
+				p = doc.Events[0].Panic
+			} else if doc.Status != observe.StatusPanic {
+				t.Fatalf("explicit panic became %s", doc.Status)
+			}
+			if p == nil || p.MessageData() != message {
+				t.Fatalf("panic message %x changed: %+v", message, p)
+			}
 		}
 	}
 }

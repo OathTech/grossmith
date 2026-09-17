@@ -125,6 +125,11 @@ also supports this coverage through its existing byte-array string channel.
 The CLI's `-check` mode now reruns saved cases or edited single-file subjects
 into a separate verifiable batch. It records source provenance and driver
 choice without claiming generated coverage or a replayable draw tape.
+The [pre-landing review](2026-09-17_grossmith-improvements-prelanding-audit.md)
+found four gaps in these additions. The
+[review response](2026-09-17_grossmith-improvements-review-response.md) records
+the driver contract, lossless panic messages, exact JSON field spelling, and
+shared source-provenance validation that address them.
 
 ## House convention: wording
 

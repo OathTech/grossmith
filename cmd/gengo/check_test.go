@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"grossmith/gen"
 	"grossmith/harness"
 	"grossmith/internal/strictjson"
+	"grossmith/observe"
 )
 
 func checkConfig(t *testing.T, input string) config {
@@ -149,5 +152,154 @@ func TestCheckExistingSource(t *testing.T) {
 	}
 	if after, err := os.ReadFile(input); err != nil || !bytes.Equal(after, source) {
 		t.Fatal("check modified original source")
+	}
+}
+
+func TestCheckGoLeanRequiresCurrentDriver(t *testing.T) {
+	dir := t.TempDir()
+	source := []byte("package main; func fuzzSubject() int { return 1 }")
+	driver, err := gen.DriverForSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "subject.go"), source, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, edited := range []bool{false, true} {
+		data := driver
+		if edited {
+			data = bytes.Replace(driver, []byte("r0 := fuzzSubject()"), []byte("r0 := fuzzSubject() + 1"), 1)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "driver.go"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := checkConfig(t, dir)
+		cfg.clone, cfg.cloneGCFlags = "golean", ""
+		delete(cfg.explicit, "clone-gcflags")
+		_, _, err := loadCheck(cfg)
+		if edited {
+			err = run(cfg)
+		}
+		if edited && (err == nil || !strings.Contains(err.Error(), "current observation driver")) {
+			t.Fatalf("GoLean accepted an edited reference driver: %v", err)
+		}
+		if !edited && err != nil {
+			t.Fatalf("unchanged driver refused: %v", err)
+		}
+		if _, err := os.Stat(cfg.out); !os.IsNotExist(err) {
+			t.Fatal("driver validation wrote output")
+		}
+	}
+}
+
+func TestCheckPanicMessages(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs binaries")
+	}
+	var docs []observe.Document
+	for _, message := range []string{"", "\xc2", "\xb5"} {
+		input := filepath.Join(t.TempDir(), "subject.go")
+		source := fmt.Sprintf("package main; func fuzzSubject() int { panic(%q) }", message)
+		if err := os.WriteFile(input, []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := checkConfig(t, input)
+		if err := run(cfg); err != nil {
+			t.Fatal(err)
+		}
+		rep, err := harness.ReadBatchReport(cfg.out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Verdicts[harness.VerdictMatch] != 1 {
+			t.Fatalf("gc disagreed with itself: %v", rep.Verdicts)
+		}
+		doc := rep.Cases[0].Reference.Document
+		if doc.Status != observe.StatusPanic || doc.Panic.MessageData() != message {
+			t.Fatalf("panic %x was changed: %+v", message, doc)
+		}
+		if err := run(config{verify: cfg.out}); err != nil {
+			t.Fatal(err)
+		}
+		docs = append(docs, doc)
+	}
+	if equal, err := observe.Equal(docs[1], docs[2], observe.PanicExact); err != nil || equal {
+		t.Fatalf("checked panic bytes collapsed: equal=%v err=%v", equal, err)
+	}
+}
+
+func TestReplayChecksSourceOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*harness.CaseRecord)
+		want   string
+	}{
+		{"valid", func(r *harness.CaseRecord) {}, "existing-source check"},
+		{"kind", func(r *harness.CaseRecord) { r.Origin.Kind = "generated" }, "origin kind"},
+		{"driver", func(r *harness.CaseRecord) { r.Origin.Driver = "unknown" }, "origin driver"},
+		{"path", func(r *harness.CaseRecord) { r.Origin.Path = "" }, "origin path"},
+		{"config", func(r *harness.CaseRecord) { r.Config = gen.DefaultConfig(0) }, "generated config"},
+		{"trace", func(r *harness.CaseRecord) { r.DrawTrace = []int{1} }, "draw trace"},
+		{"seed", func(r *harness.CaseRecord) { r.Seed = 1 }, "zero placeholder"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "case_00000")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			rec := harness.CaseRecord{Schema: harness.CaseSchema, ID: "case_00000",
+				Origin: &harness.CaseOrigin{Kind: "source-check", Path: "/moved/source.go", Driver: "current"}}
+			tc.mutate(&rec)
+			b, err := json.Marshal(rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "case.json"), b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := run(config{replay: dir, timeout: time.Second}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestCheckGoLeanCurrentDriver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("invokes GoLean's differential harness")
+	}
+	checkout, err := filepath.Abs(filepath.Join("..", "..", "deps", "golean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, "scripts", "diff-coverage")); err != nil {
+		t.Skip("GoLean checkout unavailable")
+	}
+	dir := t.TempDir()
+	source := []byte("package main; func fuzzSubject() int { return 1 }")
+	driver, err := gen.DriverForSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"subject.go": source, "driver.go": driver} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := checkConfig(t, dir)
+	cfg.clone, cfg.cloneGCFlags = "golean:"+checkout, ""
+	delete(cfg.explicit, "clone-gcflags")
+	if err := run(cfg); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := harness.ReadBatchReport(cfg.out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdicts[harness.VerdictMatch] != 1 || rep.Cases[0].Reference.Document.Values[0].Int != 1 {
+		t.Fatalf("unchanged-driver comparison failed: %+v", rep.Cases)
+	}
+	if err := run(config{verify: cfg.out}); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -69,5 +69,59 @@ func FuzzValidate(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
 		_ = Validate([]byte(raw)) // arbitrary input must never panic.
+		var dst struct {
+			Status string `json:"status"`
+			Items  []struct {
+				Kind string `json:"kind"`
+			} `json:"items"`
+		}
+		_ = Unmarshal([]byte(raw), &dst)
+		_ = UnmarshalExtensible([]byte(raw), &dst)
 	})
+}
+
+func TestSchemaFieldSpelling(t *testing.T) {
+	type item struct {
+		Kind string `json:"kind"`
+	}
+	type record struct {
+		Status string          `json:"status"`
+		Items  []item          `json:"items"`
+		ByName map[string]item `json:"byName"`
+		Open   map[string]int  `json:"open"`
+	}
+	for _, decode := range []func([]byte, any) error{Unmarshal, UnmarshalExtensible} {
+		for _, raw := range []string{
+			`{"status":"error","Status":"ok"}`,
+			`{"Status":"ok"}`,
+			`{"ſtatus":"ok"}`,
+			`{"items":[{"kind":"int","Kind":"bool"}]}`,
+			`{"items":[{"Kind":"int"}]}`,
+			`{"byName":{"A":{"Kind":"int"}}}`,
+		} {
+			var dst record
+			if err := decode([]byte(raw), &dst); err == nil || !strings.Contains(err.Error(), "exact spelling") {
+				t.Errorf("accepted schema alias: %s: %v", raw, err)
+			}
+		}
+		var dst record
+		if err := decode([]byte(`{"open":{"status":1,"Status":2,"ſtatus":3},"byName":{"A":{"kind":"int"},"a":{"kind":"bool"}}}`), &dst); err != nil {
+			t.Fatalf("case-sensitive map keys refused: %v", err)
+		}
+		if dst.Open["status"] != 1 || dst.Open["Status"] != 2 || dst.Open["ſtatus"] != 3 || len(dst.ByName) != 2 {
+			t.Fatal("map keys folded together")
+		}
+	}
+	var dst record
+	if err := UnmarshalExtensible([]byte(`{"status":"ok","newField":{"status":1,"Status":2}}`), &dst); err != nil {
+		t.Fatalf("external unknown-field compatibility lost: %v", err)
+	}
+	// Exact fields take precedence even if their spellings differ only in case.
+	var distinct struct {
+		Lower int `json:"x"`
+		Upper int `json:"X"`
+	}
+	if err := Unmarshal([]byte(`{"x":1,"X":2}`), &distinct); err != nil || distinct.Lower != 1 || distinct.Upper != 2 {
+		t.Fatalf("distinct exact schema fields: %+v: %v", distinct, err)
+	}
 }

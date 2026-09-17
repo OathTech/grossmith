@@ -61,6 +61,9 @@ func readCaseFeatures(root string, m Manifest) (map[string]map[string]int, error
 		if err := strictjson.Unmarshal(b, &rec); err != nil {
 			return nil, fmt.Errorf("case %s record: %w", mc.ID, err)
 		}
+		if err := rec.ValidateOrigin(); err != nil {
+			return nil, fmt.Errorf("case %s record: %w", mc.ID, err)
+		}
 		if rec.ID != mc.ID {
 			return nil, fmt.Errorf("case %s record names itself %q", mc.ID, rec.ID)
 		}

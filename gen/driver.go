@@ -114,7 +114,17 @@ func _gStringPayload(s string) map[string]any {
 
 func obsRecovered(msg string) {
 	_gEvents = append(_gEvents, map[string]any{"at": "recovered",
-		"panic": map[string]any{"kind": _gPanicKind(msg), "message": msg}})
+		"panic": _gPanicPayload(msg)})
+}
+
+func _gPanicPayload(msg string) map[string]any {
+	p := map[string]any{"kind": _gPanicKind(msg)}
+	if _gutf8.ValidString(msg) {
+		p["message"] = msg
+	} else {
+		p["messageBytes"] = []byte(msg)
+	}
+	return p
 }
 
 func _gPanicKind(msg string) string {
@@ -247,7 +257,7 @@ func _gEmit(status string, ptrs []any, panicMsg string) {
 		doc["values"] = values
 	}
 	if status == "panic" {
-		doc["panic"] = map[string]any{"kind": _gPanicKind(panicMsg), "message": panicMsg}
+		doc["panic"] = _gPanicPayload(panicMsg)
 	}
 	out, err := _gjson.Marshal(doc)
 	if err != nil {

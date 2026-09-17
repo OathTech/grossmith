@@ -183,6 +183,33 @@ type CaseOrigin struct {
 	Driver string `json:"driver"` // "copied" from a case directory, or "current"
 }
 
+// ValidateOrigin checks the existing-source record variant. It checks recorded
+// path structure only: moving the original source must not break verification.
+// A nil origin is a generated or legacy record, never an inferred source check.
+func (r CaseRecord) ValidateOrigin() error {
+	if r.Origin == nil {
+		return nil
+	}
+	o := r.Origin
+	switch {
+	case o.Kind != "source-check":
+		return fmt.Errorf("unknown origin kind %q", o.Kind)
+	case strings.TrimSpace(o.Path) == "" || strings.ContainsRune(o.Path, '\x00'):
+		return fmt.Errorf("source-check origin path must be nonempty and contain no NUL")
+	case o.Driver != "copied" && o.Driver != "current":
+		return fmt.Errorf("unknown source-check origin driver %q", o.Driver)
+	case r.Seed != 0:
+		return fmt.Errorf("source-check seed must be the zero placeholder")
+	case r.Config != nil:
+		return fmt.Errorf("source-check cannot carry a generated config")
+	case r.DrawTrace != nil:
+		return fmt.Errorf("source-check cannot carry a generated draw trace")
+	case len(r.Features) != 0:
+		return fmt.Errorf("source-check cannot claim generated features")
+	}
+	return nil
+}
+
 const CaseSchema = "grossmith-case-v1"
 
 // CaseResult is one case's judged result inside a batch report.
