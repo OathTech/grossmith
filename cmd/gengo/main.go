@@ -53,6 +53,8 @@ type config struct {
 	// replay: path to a case directory containing case.json; regenerate
 	// the case from its record and verify byte and observation identity.
 	replay string
+	// check: existing subject.go or case directory to judge without generation.
+	check string
 	// verify: path to a PUBLISHED batch; run the full descriptor
 	// verification offline (mid-arc review finding 7: the descriptor's
 	// guarantee was unreachable outside the producing process).
@@ -92,6 +94,7 @@ func main() {
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-case run timeout")
 	flag.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "parallel build/run workers")
 	flag.StringVar(&cfg.replay, "replay", "", "case directory to REPLAY from its case.json record (verifies byte + observation identity; ignores generation flags)")
+	flag.StringVar(&cfg.check, "check", "", "existing subject.go or case directory to judge without generation (requires a separate -out)")
 	flag.StringVar(&cfg.verify, "verify", "", "batch directory to VERIFY offline against its descriptor (complete.json required; no generation)")
 	flag.IntVar(&cfg.pairs, "pairs", 0, "pairwise-coverage mode: generate this many cases per optional-construct PAIR (replaces -n)")
 	flag.BoolVar(&cfg.allowDirty, "allow-dirty", false, "permit judged campaigns from a dirty tree (records a content hash instead of refusing)")
@@ -381,6 +384,16 @@ func run(cfg config) error {
 	if cfg.replay != "" {
 		return runReplay(cfg)
 	}
+	var input *gen.Case
+	var origin *harness.CaseOrigin
+	if cfg.check != "" {
+		var err error
+		input, origin, err = loadCheck(cfg)
+		if err != nil {
+			return err
+		}
+		cfg.n, cfg.seed, cfg.judge = 1, 0, true
+	}
 	policy, checkout, err := cfg.validate()
 	if err != nil {
 		return err
@@ -523,9 +536,17 @@ func run(cfg config) error {
 			gcfg = golean.Profile(gcfg)
 		}
 		gcfg.Include = spec.include
-		c, err := gen.New(gcfg).Generate()
-		if err != nil {
-			return fmt.Errorf("seed %d: %w", caseSeed, err)
+		var c gen.Case
+		var recordedConfig any
+		if input != nil {
+			c = *input
+		} else {
+			var err error
+			c, err = gen.New(gcfg).Generate()
+			if err != nil {
+				return fmt.Errorf("seed %d: %w", caseSeed, err)
+			}
+			recordedConfig = gcfg
 		}
 		id := fmt.Sprintf("case_%05d", i)
 		dir := filepath.Join(work, id)
@@ -543,7 +564,7 @@ func run(cfg config) error {
 			SubjectSHA256: harness.SubjectHash(c.Source),
 			DriverSHA256:  harness.SubjectHash(c.Driver),
 			Features:      c.FeatureCounts, DrawTrace: c.Tape,
-			Config: gcfg,
+			Config: recordedConfig, Origin: origin,
 		}); err != nil {
 			return err
 		}
@@ -586,7 +607,11 @@ func run(cfg config) error {
 	if _, err := harness.WriteManifest(work, rev, "go 1.26", caseIDs, caseSeeds); err != nil {
 		return err
 	}
-	fmt.Printf("generated %d cases (seeds %d..%d)\n", len(specs), cfg.seed, cfg.seed+int64(len(specs))-1)
+	if origin != nil {
+		fmt.Printf("checking existing source %s (driver: %s; coverage tags not inferred)\n", origin.Path, origin.Driver)
+	} else {
+		fmt.Printf("generated %d cases (seeds %d..%d)\n", len(specs), cfg.seed, cfg.seed+int64(len(specs))-1)
+	}
 	if cfg.pairs > 0 {
 		// Realized co-emission per forced pair: enabling a pair arms its
 		// sites but emission depends on draws and legality — unrealized
@@ -722,15 +747,16 @@ func run(cfg config) error {
 // caseRecordIn is CaseRecord with the config typed for reading back —
 // the harness keeps it opaque, the CLI knows it is a gen.Config.
 type caseRecordIn struct {
-	Schema        string         `json:"schema"`
-	ID            string         `json:"id"`
-	Seed          int64          `json:"seed"`
-	GeneratorRev  string         `json:"generatorRev"`
-	SubjectSHA256 string         `json:"subjectSha256"`
-	DriverSHA256  string         `json:"driverSha256"`
-	Features      map[string]int `json:"features"`
-	DrawTrace     []int          `json:"drawTrace"`
-	Config        *gen.Config    `json:"config"`
+	Schema        string              `json:"schema"`
+	ID            string              `json:"id"`
+	Seed          int64               `json:"seed"`
+	GeneratorRev  string              `json:"generatorRev"`
+	SubjectSHA256 string              `json:"subjectSha256"`
+	DriverSHA256  string              `json:"driverSha256"`
+	Features      map[string]int      `json:"features"`
+	DrawTrace     []int               `json:"drawTrace"`
+	Config        *gen.Config         `json:"config"`
+	Origin        *harness.CaseOrigin `json:"origin"`
 }
 
 // runReplay is Phase 3's done-when as a command: regenerate a case from
@@ -769,6 +795,9 @@ func runReplay(cfg config) error {
 	// would otherwise verify under the wrong identity (E3).
 	if base := filepath.Base(filepath.Clean(cfg.replay)); base != rec.ID {
 		return fmt.Errorf("case directory %q does not match the record's ID %q", base, rec.ID)
+	}
+	if rec.Origin != nil {
+		return fmt.Errorf("case is an existing-source check, with no generator tape to replay; use -check with a new -out to rerun its source")
 	}
 	if rec.Config == nil {
 		// Fail closed with the real cause (audit F6: the zero config can

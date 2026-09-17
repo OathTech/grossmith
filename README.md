@@ -87,6 +87,24 @@ wrapper counter against the individual verdicts. GoLean verdicts remain
 attestations by its external adapter; its clone observations are not stored
 for offline re-judging.
 
+Use `-check` to rerun existing source without regenerating it:
+
+```sh
+go run ./cmd/gengo -check out3/case_00063 -clone golean -out checked-case
+go run ./cmd/gengo -check reduced/subject.go -clone gc -clone-gcflags='-N -l' -out checked-source
+go run ./cmd/gengo -verify checked-source
+```
+
+A case-directory input copies its `subject.go` and `driver.go` exactly. A
+single-file input gets a current driver for its parameterless `fuzzSubject`
+function, which must return at least one value in package `main`. Each check
+requires an explicit empty or absent output directory and runs the reference
+even without `-judge`. Its record identifies the input and driver choice;
+coverage tags and generation history are not inferred, and the recorded seed
+is a zero placeholder. These records use `-check` again, rather than draw-tape
+`-replay`. The usual clone, toolchain, and timeout options apply. Existing source
+is used as supplied; generator capability profiles do not rewrite it.
+
 Generated programs cover: all integer kinds, bool, string, arrays, slices,
 maps (no map-range except an order-invariant fold), named structs, defined
 integer types, pure value-receiver methods, interfaces (derived and

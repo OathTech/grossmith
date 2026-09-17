@@ -171,6 +171,16 @@ type CaseRecord struct {
 	// profile exclusions all change the program for a fixed seed). Typed
 	// as the producer's config struct; opaque to the harness.
 	Config any `json:"config,omitempty"`
+	// Origin identifies an existing source check. Such records have no
+	// generator configuration or draw tape; Seed is the zero placeholder.
+	Origin *CaseOrigin `json:"origin,omitempty"`
+}
+
+// CaseOrigin distinguishes imported source from a generated, replayable case.
+type CaseOrigin struct {
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	Driver string `json:"driver"` // "copied" from a case directory, or "current"
 }
 
 const CaseSchema = "grossmith-case-v1"

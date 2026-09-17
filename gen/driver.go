@@ -2,8 +2,54 @@ package gen
 
 import (
 	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
 	"strings"
 )
+
+// DriverForSource builds the current observation driver for an existing
+// single-file subject. It does not change the subject or infer its features.
+// The subject must define a non-generic, parameterless fuzzSubject with at
+// least one result, in package main. Type errors are left to the compiler.
+func DriverForSource(source []byte) ([]byte, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), "subject.go", source, 0)
+	if err != nil {
+		return nil, fmt.Errorf("subject: %w", err)
+	}
+	if file.Name.Name != "main" {
+		return nil, fmt.Errorf("subject must use package main")
+	}
+	var subject *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		if fn.Name.Name == "main" {
+			return nil, fmt.Errorf("subject must not define main (the driver supplies it)")
+		}
+		if fn.Name.Name == Subject {
+			if subject != nil {
+				return nil, fmt.Errorf("subject defines %s more than once", Subject)
+			}
+			subject = fn
+		}
+	}
+	if subject == nil || subject.Body == nil {
+		return nil, fmt.Errorf("subject must define %s", Subject)
+	}
+	if subject.Type.Params.NumFields() != 0 || subject.Type.TypeParams.NumFields() != 0 {
+		return nil, fmt.Errorf("%s must have no parameters or type parameters", Subject)
+	}
+	arity := subject.Type.Results.NumFields()
+	if arity == 0 {
+		return nil, fmt.Errorf("%s must return at least one observed value", Subject)
+	}
+	var g Generator
+	return format.Source([]byte(g.driverSource(make([]binding, arity))))
+}
 
 // driverTemplate is the gc reference driver: one static core implementing
 // the obs* API and a reflection serializer emitting a

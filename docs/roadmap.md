@@ -122,6 +122,9 @@ String observations now preserve arbitrary bytes through the additive
 `strBytes` payload, and `string_bytes` enables slicing across UTF-8 boundaries.
 The driver and comparator preserve scalar, nested and event values. GoLean
 also supports this coverage through its existing byte-array string channel.
+The CLI's `-check` mode now reruns saved cases or edited single-file subjects
+into a separate verifiable batch. It records source provenance and driver
+choice without claiming generated coverage or a replayable draw tape.
 
 ## House convention: wording
 
