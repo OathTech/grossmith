@@ -36,6 +36,8 @@ enforced at emission by the execution budget
 go test ./...                                          # the witness suite
 go run ./cmd/gengo -n 1000 -seed 1 -out out            # generate a batch
 go run ./cmd/gengo -n 1000 -seed 1 -out out -judge     # + gc reference pass
+go run ./cmd/gengo -n 300 -out out-opt -clone gc -clone-gcflags='-N -l' # compare optimization
+go run ./cmd/gengo -n 300 -out out-next -clone gc -clone-go /path/to/other/go # compare toolchains
 go run ./cmd/gengo -n 300 -seed 9000 -out out2 -clone gc-386   # cross-arch clone
 go run ./cmd/gengo -n 300 -seed 4242 -out out3 -clone golean   # GoLean campaign
 ```
@@ -54,9 +56,18 @@ divergence.
 
 Clones:
 
-- **`gc-386`** — the same toolchain at GOARCH=386, a degenerate clone that
+- **`gc`** — a Go toolchain on the host architecture. `-clone-go` selects
+  its executable (defaults to the reference's `-go`), and `-clone-gcflags`
+  passes a `go build -gcflags` value to the clone only. For example,
+  `-N -l` compares the reference's default optimization against a build
+  with optimization and inlining disabled. Both toolchains must accept
+  the generated module's Go 1.26 language version. Paths, binary digests,
+  versions, architectures, and compiler flags are recorded in `batch.json`.
+- **`gc-386`** — by default the same toolchain at GOARCH=386, a degenerate clone that
   proves the harness discriminates: divergences must fall inside the
-  declared `width_dependent` tag (reported as tag yield).
+  declared `width_dependent` tag (reported as tag yield). It also accepts
+  `-clone-go` and `-clone-gcflags`; differences under custom toolchains or
+  flags may include compiler defects beyond platform-width behavior.
 - **`golean[:checkout]`** — [GoLean](../golean) (default checkout
   `deps/golean`): cases are translated into GoLean's differential-coverage
   corpus format and judged by their own `scripts/diff-coverage` harness
@@ -66,6 +77,11 @@ Clones:
   constructs are excluded). Frontend coverage gaps surface as
   `clone-infra-failure` with the stage preserved — visibly, never as a
   false match.
+
+Use `go run ./cmd/gengo -verify <batch-dir>` to check a saved campaign's
+artifact integrity and report consistency offline. Direct gc comparisons
+build the same manifested source files; GoLean additionally records its
+translated work tree.
 
 Generated programs cover: all integer kinds, bool, string, arrays, slices,
 maps (no map-range except an order-invariant fold), named structs, defined

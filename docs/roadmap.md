@@ -104,6 +104,10 @@ now snapshot state on early returns and wrapper recovery as well as normal
 returns. Controlled mutation witnesses reproduce the former zero-slot blindness
 and check all returning paths; generation sweeps and execution counters check
 composition and budget preservation. Fingerprint collisions remain open.
+The CLI also supports `-clone gc`, a separate `-clone-go` toolchain, and
+`-clone-gcflags` for optimization comparisons. Direct gc clone identities
+include compiler flags and binary digests, and offline verification recognizes
+that gc clones build the same manifested inputs as the reference.
 
 ## House convention: wording
 

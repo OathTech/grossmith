@@ -3,6 +3,7 @@
 //
 //	gengo -n 1000 -seed 1 -out out                 # generate only
 //	gengo -n 1000 -seed 1 -out out -judge          # + gc reference pass
+//	gengo -n 300 -out out -clone gc -clone-gcflags='-N -l' # compare optimization
 //	gengo -n 1000 -seed 1 -out out -clone gc-386   # + degenerate clone (cross-arch)
 //	gengo -n 1000 -seed 1 -out out -clone golean   # + GoLean campaign (deps/golean)
 //
@@ -32,15 +33,17 @@ import (
 )
 
 type config struct {
-	n       int
-	seed    int64
-	out     string
-	swarm   bool
-	stats   bool
-	judge   bool
-	clone   string // "", "gc-386", "golean", "golean:<checkout>"
-	goBin   string
-	policy  string
+	n            int
+	seed         int64
+	out          string
+	swarm        bool
+	stats        bool
+	judge        bool
+	clone        string // "", "gc", "gc-386", "golean", "golean:<checkout>"
+	goBin        string
+	cloneGo      string
+	cloneGCFlags string
+	policy       string
 	// policySet: -panic-policy was given explicitly (vs defaulted) — the
 	// golean campaign does not apply it, so an explicit value there is a
 	// refused misconfiguration rather than a silently ignored flag.
@@ -81,8 +84,10 @@ func main() {
 	flag.BoolVar(&cfg.swarm, "swarm", true, "draw a per-seed construct mix")
 	flag.BoolVar(&cfg.stats, "stats", false, "print the choice-frequency report (valid vs chosen per site)")
 	flag.BoolVar(&cfg.judge, "judge", false, "run the gc reference pass over the batch")
-	flag.StringVar(&cfg.clone, "clone", "", "clone to judge against: gc-386, golean, or golean:<checkout> (implies -judge)")
+	flag.StringVar(&cfg.clone, "clone", "", "clone to judge against: gc, gc-386, golean, or golean:<checkout> (implies -judge)")
 	flag.StringVar(&cfg.goBin, "go", "", "pinned go toolchain binary (default: resolve go from PATH)")
+	flag.StringVar(&cfg.cloneGo, "clone-go", "", "go binary for a gc or gc-386 clone (default: same as -go)")
+	flag.StringVar(&cfg.cloneGCFlags, "clone-gcflags", "", "go build -gcflags for a gc or gc-386 clone, e.g. '-N -l'")
 	flag.StringVar(&cfg.policy, "panic-policy", "exact", "panic equivalence: exact (message bytes) or kind (taxonomy only)")
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-case run timeout")
 	flag.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "parallel build/run workers")
@@ -239,7 +244,7 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 	}
 	checkout := ""
 	switch {
-	case c.clone == "" || c.clone == "gc-386":
+	case c.clone == "" || c.clone == "gc" || c.clone == "gc-386":
 	case c.clone == "golean":
 		checkout = filepath.Join("deps", "golean")
 	case strings.HasPrefix(c.clone, "golean:"):
@@ -248,7 +253,11 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 			return "", "", fmt.Errorf("-clone golean: empty checkout path")
 		}
 	default:
-		return "", "", fmt.Errorf("-clone %q: use gc-386, golean, or golean:<checkout>", c.clone)
+		return "", "", fmt.Errorf("-clone %q: use gc, gc-386, golean, or golean:<checkout>", c.clone)
+	}
+	if c.clone != "gc" && c.clone != "gc-386" &&
+		(c.cloneGo != "" || c.cloneGCFlags != "" || c.explicit["clone-go"] || c.explicit["clone-gcflags"]) {
+		return "", "", fmt.Errorf("-clone-go and -clone-gcflags require -clone gc or -clone gc-386")
 	}
 	if checkout != "" {
 		// Refuse BEFORE the generation and reference pass (audit F9): a
@@ -354,6 +363,8 @@ func run(cfg config) error {
 					return err
 				}
 				fmt.Printf("  clone tree bound: every recorded clone source and work file matches golean-work/\n")
+			case rep.CloneName == "gc" || rep.CloneName == "gc-386":
+				fmt.Printf("  clone inputs bound: %s built the same manifested case files as the reference\n", rep.CloneName)
 			case rep.CloneName != "" && cfg.allowLegacyVerify:
 				fmt.Printf("  clone tree NOT bound (-allow-legacy-verify): no clone digests in the report — golean-work/ is unchecked\n")
 			case rep.CloneName != "":
@@ -394,7 +405,8 @@ func run(cfg config) error {
 	// absolute binary (E2; audit P0: the clone's nested oracle resolved
 	// `go` from ambient PATH — a different Go could do the value
 	// comparison than the one the report named). Everything downstream —
-	// both GcAdapters and the GoLean script shim — uses this one path.
+	// the reference and the GoLean script shim — uses this one path.
+	// A directly judged gc clone is resolved separately below.
 	var refOracle *harness.OracleIdentity
 	if judging || cfg.goBin != "" {
 		probe := &harness.GcAdapter{GoBin: cfg.goBin}
@@ -404,6 +416,26 @@ func run(cfg config) error {
 		}
 		cfg.goBin = oid.Path
 		refOracle = &oid
+	}
+	var cloneAd harness.Adapter
+	var cloneOracle *harness.OracleIdentity
+	if cfg.clone == "gc" || cfg.clone == "gc-386" {
+		cloneGo := cfg.cloneGo
+		if cloneGo == "" {
+			cloneGo = cfg.goBin
+		}
+		gc := &harness.GcAdapter{
+			GoBin: cloneGo, Timeout: cfg.timeout, AdapterName: cfg.clone,
+			GCFlags: cfg.cloneGCFlags,
+		}
+		if cfg.clone == "gc-386" {
+			gc.GOARCH = "386"
+		}
+		oid, err := gc.Oracle(context.Background())
+		if err != nil {
+			return fmt.Errorf("clone toolchain preflight (-clone-go %q): %w", cloneGo, err)
+		}
+		cloneAd, cloneOracle = gc, &oid
 	}
 
 	// Batches are IMMUTABLE runs built in a STAGING sibling and published
@@ -608,10 +640,6 @@ func run(cfg config) error {
 
 	ctx := context.Background()
 	ref := &harness.GcAdapter{GoBin: cfg.goBin, Timeout: cfg.timeout, AdapterName: "gc"}
-	var cloneAd harness.Adapter
-	if cfg.clone == "gc-386" {
-		cloneAd = &harness.GcAdapter{GoBin: cfg.goBin, GOARCH: "386", Timeout: cfg.timeout, AdapterName: "gc-386"}
-	}
 	rep, err := harness.RunBatch(ctx, work, ref, cloneAd, policy, cfg.workers)
 	if err != nil {
 		return err
@@ -620,6 +648,7 @@ func run(cfg config) error {
 	rep.Seeds = [2]int64{cfg.seed, cfg.seed + int64(len(specs)) - 1}
 	rep.Composition = tagCount
 	rep.ReferenceOracle = refOracle
+	rep.CloneOracle = cloneOracle
 	if rep.Budgets != nil {
 		rep.Budgets.RunTimeout = cfg.timeout.String()
 	}
@@ -690,10 +719,10 @@ func run(cfg config) error {
 // caseRecordIn is CaseRecord with the config typed for reading back —
 // the harness keeps it opaque, the CLI knows it is a gen.Config.
 type caseRecordIn struct {
-	Schema        string      `json:"schema"`
-	ID            string      `json:"id"`
-	Seed          int64       `json:"seed"`
-	GeneratorRev  string      `json:"generatorRev"`
+	Schema        string         `json:"schema"`
+	ID            string         `json:"id"`
+	Seed          int64          `json:"seed"`
+	GeneratorRev  string         `json:"generatorRev"`
 	SubjectSHA256 string         `json:"subjectSha256"`
 	DriverSHA256  string         `json:"driverSha256"`
 	Features      map[string]int `json:"features"`
@@ -996,8 +1025,9 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 		fmt.Printf("  %s %s: %s\n", cr.ID, cr.Verdict, firstLine(detail))
 		shown++
 	}
-	// Cross-arch discrimination: divergences must fall inside the declared
-	// width_dependent quotient (tag honesty).
+	// Stratify cross-architecture differences by width dependence. With a
+	// different clone toolchain or compiler flags, an untagged difference
+	// may be a compiler defect as well as a missing generator tag.
 	if cfg.clone == "gc-386" {
 		inTag, offTag := 0, 0
 		for _, cr := range rep.Cases {
@@ -1008,7 +1038,7 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 				inTag++
 			} else {
 				offTag++
-				fmt.Printf("  UNTAGGED divergence in %s (tag honesty violation)\n", cr.ID)
+				fmt.Printf("  UNTAGGED divergence in %s\n", cr.ID)
 			}
 		}
 		// The denominator is JUDGED cases (E1; audit: an all-infra batch

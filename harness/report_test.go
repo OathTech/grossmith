@@ -155,6 +155,9 @@ func TestReportMutationsRefuse(t *testing.T) {
 		{"malformed oracle digest", func(r *BatchReport) {
 			r.ReferenceOracle = &OracleIdentity{Path: "/go", Version: "go1.26", SHA256: "nope"}
 		}, "not a sha256 digest"},
+		{"malformed clone oracle digest", func(r *BatchReport) {
+			r.CloneOracle = &OracleIdentity{Path: "/clone-go", Version: "go1.26", SHA256: "nope"}
+		}, "not a sha256 digest"},
 		{"oracle without a path", func(r *BatchReport) {
 			r.ReferenceOracle = &OracleIdentity{Version: "go1.26", SHA256: strings.Repeat("a", 64)}
 		}, "names no path or version"},

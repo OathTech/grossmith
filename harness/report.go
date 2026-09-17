@@ -270,6 +270,7 @@ func ValidateBatchReport(root string, rep BatchReport, m Manifest) error {
 	}
 	for name, o := range map[string]*OracleIdentity{
 		"referenceOracle": rep.ReferenceOracle, "cloneNestedOracle": rep.CloneNestedOracle,
+		"cloneOracle": rep.CloneOracle,
 	} {
 		if o == nil {
 			continue

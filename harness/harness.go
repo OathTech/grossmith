@@ -130,11 +130,11 @@ func docDetail(d observe.Document) string {
 // CaseRecord is the durable per-case metadata (audit H2): everything needed
 // to identify, regenerate, and re-judge one case.
 type CaseRecord struct {
-	Schema        string         `json:"schema"`
-	ID            string         `json:"id"`
-	Seed          int64          `json:"seed"`
-	GeneratorRev  string         `json:"generatorRev"`
-	SubjectSHA256 string         `json:"subjectSha256"`
+	Schema        string `json:"schema"`
+	ID            string `json:"id"`
+	Seed          int64  `json:"seed"`
+	GeneratorRev  string `json:"generatorRev"`
+	SubjectSHA256 string `json:"subjectSha256"`
 	// DriverSHA256 pins the driver too (audit F10; additive — absent in
 	// records written before it existed, and readers treat absence as
 	// "verify via observation only").
@@ -232,6 +232,9 @@ type BatchReport struct {
 	// the artifact alone.
 	ReferenceOracle   *OracleIdentity `json:"referenceOracle,omitempty"`
 	CloneNestedOracle *OracleIdentity `json:"cloneNestedOracle,omitempty"`
+	// CloneOracle identifies a directly executed gc clone, which may
+	// use a different toolchain or compiler flags from the reference.
+	CloneOracle *OracleIdentity `json:"cloneOracle,omitempty"`
 	// CloneWorkFiles digests the clone campaign's run artifacts at the
 	// work-tree root (the translated manifest and the published results;
 	// E5, arc-end review B2) — with the per-case CloneSourceSHA256 these
@@ -276,6 +279,9 @@ type GcAdapter struct {
 	// BuildTimeout. Exists so the budget path is exercisable in tests
 	// (arc-end review: BuildTimeout was a const no test ever reached).
 	BuildBudget time.Duration
+	// GCFlags is the go build -gcflags value, passed as one argument.
+	// Empty uses the toolchain defaults. It is part of both identities.
+	GCFlags string
 	// name distinguishes multiple instances (reference vs degenerate clone).
 	AdapterName string
 
@@ -336,6 +342,9 @@ func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
 		arch = runtime.GOARCH
 	}
 	id += ", GOARCH=" + arch
+	if a.GCFlags != "" {
+		id += fmt.Sprintf(", gcflags=%q", a.GCFlags)
+	}
 	return id + ")", nil
 }
 
@@ -352,6 +361,7 @@ type OracleIdentity struct {
 	GOARCH       string `json:"goarch"`
 	ModuleMode   string `json:"moduleMode"`
 	ScriptSHA256 string `json:"scriptSha256,omitempty"`
+	GCFlags      string `json:"gcflags,omitempty"`
 }
 
 // Oracle returns the adapter's structured identity. The probe carries
@@ -385,6 +395,7 @@ func (a *GcAdapter) Oracle(ctx context.Context) (OracleIdentity, error) {
 		Path: bin, SHA256: sum, Version: strings.TrimSpace(string(out)),
 		GOOS: runtime.GOOS, GOARCH: arch,
 		ModuleMode: "module (go 1.26)",
+		GCFlags:    a.GCFlags,
 	}, nil
 }
 
@@ -456,7 +467,12 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	}
 	buildCtx, buildCancel := context.WithTimeout(ctx, buildBudget)
 	defer buildCancel()
-	build := exec.CommandContext(buildCtx, bin, "build", "-buildvcs=false", "-o", exe, ".")
+	args := []string{"build", "-buildvcs=false"}
+	if a.GCFlags != "" {
+		args = append(args, "-gcflags="+a.GCFlags)
+	}
+	args = append(args, "-o", exe, ".")
+	build := exec.CommandContext(buildCtx, bin, args...)
 	build.Dir = caseDir
 	build.Env = a.buildEnv()
 	buildOut := newCappedBuffer(BuildOutputCap)
@@ -567,8 +583,8 @@ func newCappedBuffer(cap int) *cappedBuffer { return &cappedBuffer{cap: cap} }
 
 // NewCappedBuffer / KillGroup: the E4 primitives, exported for sibling
 // adapters (golean's script invocation).
-func NewCappedBuffer(cap int) *cappedBuffer     { return newCappedBuffer(cap) }
-func (c *cappedBuffer) Truncated() bool         { return c.truncated }
+func NewCappedBuffer(cap int) *cappedBuffer { return newCappedBuffer(cap) }
+func (c *cappedBuffer) Truncated() bool     { return c.truncated }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
 	room := c.cap - c.buf.Len()
