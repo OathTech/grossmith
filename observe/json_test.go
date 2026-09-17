@@ -14,6 +14,8 @@ func TestParseRejectsAmbiguousJSON(t *testing.T) {
 		"closing bracket":  good + "]",
 		"closing brace":    good + "}",
 		"second document":  good + "{}",
+		"invalid UTF-8":    `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"string","goType":"string","str":"` + "\xff" + `"}]}`,
+		"unpaired escape":  `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"string","goType":"string","str":"\ud800"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Parse([]byte(raw)); err == nil {

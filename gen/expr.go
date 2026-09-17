@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // value is a generated expression together with the one fact the generator
@@ -128,13 +129,8 @@ var indexableWords = func() []string {
 	return out
 }()
 
-// asciiWords are the all-ASCII alphabet entries — the only legal targets for
-// VARIABLE-bound slicing. A variable bound that lands mid-rune would emit an
-// invalid-UTF-8 string, which the JSON observation channel canonicalizes
-// lossily (U+FFFD replacement): two different byte strings would observe
-// identically, breaking injectivity, and adapters with byte-faithful channels
-// would diverge on infrastructure rather than semantics. ASCII operands make
-// every non-panicking outcome valid UTF-8.
+// asciiWords keep variable-bound slicing valid UTF-8 for profiles whose
+// observation channels do not support arbitrary string bytes.
 var asciiWords = func() []string {
 	var out []string
 	for _, w := range stringWords {
@@ -152,9 +148,7 @@ var asciiWords = func() []string {
 }()
 
 // runeBounds are the legal constant slice offsets of w: every rune start plus
-// len(w). Constant slicing only at rune boundaries keeps every generated
-// string valid UTF-8 (same hazard as asciiWords — the alphabet's µ is the
-// one multi-byte entry).
+// len(w). Used when string_bytes is disabled by the mix or profile.
 func runeBounds(w string) []int {
 	bounds := []int{}
 	for i := range w {
@@ -875,25 +869,41 @@ func (g *Generator) stringExpr(fuel int) value {
 			// s[a:b] never GROWS (a substring of the operand), so slicing
 			// is safe for the linear-space half of HALTS with no extra
 			// bookkeeping. The safe majority slices an alphabet literal at
-			// constant RUNE-BOUNDARY offsets, in range by construction
+			// constant offsets, in range by construction
 			// (out-of-range constants on a constant string are compile
-			// errors; mid-rune bounds would emit invalid UTF-8 — see
-			// runeBounds). The hot minority slices an ASCII literal at a
-			// raw variable low bound — panic kind slice-bounds — under
-			// the risk budget.
+			// errors). string_bytes allows splitting a UTF-8 sequence;
+			// otherwise rune boundaries/ASCII keep the profile's narrower
+			// observation channel valid. The hot minority uses a variable
+			// low bound under the panic-risk budget.
 			g.c.choose("string-slice", []arm{
 				{name: "literal", weight: 3, ok: true, emit: func() {
 					w := pick(g.c, stringWords)
 					bounds := runeBounds(w)
+					if g.enabled("string_bytes") {
+						bounds = make([]int, len(w)+1)
+						for i := range bounds {
+							bounds[i] = i
+						}
+					}
 					ai := g.c.draw(len(bounds))
 					bi := ai + g.c.draw(len(bounds)-ai)
 					g.mark("strings", "string_slice")
+					if !utf8.ValidString(w[bounds[ai]:bounds[bi]]) {
+						g.mark("string_bytes")
+					}
 					// A substring of a literal: at most the literal's bytes.
 					out = value{text: fmt.Sprintf("%q[%d:%d]", w, bounds[ai], bounds[bi]), strLen: litLen(w)}
 				}},
 				{name: "panicky", weight: 1 + 3*boolToInt(g.guardBias), ok: g.riskOK(), emit: func() {
 					g.spendRisk()
-					w := pick(g.c, asciiWords)
+					words := asciiWords
+					if g.enabled("string_bytes") {
+						words = stringWords
+					}
+					w := pick(g.c, words)
+					if len(runeBounds(w)) != len(w)+1 {
+						g.mark("string_bytes")
+					}
 					iv := g.variable(Int(0, false))
 					g.mark("strings", "string_slice")
 					g.note(tagPanicRisk)

@@ -16,6 +16,11 @@ func TestValidate(t *testing.T) {
 		`{}}`,
 		`{} trailing`,
 		`{"incomplete":`,
+		`"\ud800"`,
+		`"\udc00"`,
+		`"\ud800\u0041"`,
+		`"\ud800x"`,
+		"\"\xff\"",
 		``,
 		strings.Repeat("[", 10001) + strings.Repeat("]", 10001),
 	} {
@@ -32,6 +37,9 @@ func TestValidate(t *testing.T) {
 		"\n {} \r\n\t",
 		`null`,
 		`[true, false, null, 1, "x"]`,
+		`"\ud83d\ude00"`,
+		`"\\ud800"`,
+		`"\"escaped quote\" and \/"`,
 		strings.Repeat("[", 10000) + "0" + strings.Repeat("]", 10000),
 	} {
 		if err := Validate([]byte(raw)); err != nil {
@@ -56,7 +64,7 @@ func TestUnmarshalRejectsUnknownFieldsAndPreservesWidths(t *testing.T) {
 }
 
 func FuzzValidate(f *testing.F) {
-	for _, raw := range []string{`{}`, `{"x":1,"x":2}`, `{"a":[{"b":null}]}`, `[]]`, `"x"`} {
+	for _, raw := range []string{`{}`, `{"x":1,"x":2}`, `{"a":[{"b":null}]}`, `[]]`, `"x"`, `"\ud800"`, `"\ud83d\ude00"`} {
 		f.Add(raw)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {

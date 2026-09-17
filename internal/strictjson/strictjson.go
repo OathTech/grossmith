@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"unicode/utf8"
 )
 
 // Unmarshal rejects duplicate object names, unknown struct fields, and
@@ -29,11 +31,54 @@ func Validate(data []byte) error {
 	if !json.Valid(data) {
 		return fmt.Errorf("invalid JSON document (malformed or trailing data)")
 	}
+	if err := validUnicode(data); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	// The structural walk must not round integers or reject large JSON
 	// numbers merely because they do not fit in float64.
 	dec.UseNumber()
 	return value(dec)
+}
+
+// encoding/json replaces invalid UTF-8 and unpaired UTF-16 escapes with
+// U+FFFD. Evidence readers must reject those inputs instead of changing
+// their string values during decoding. json.Valid already checked syntax.
+func validUnicode(data []byte) error {
+	if !utf8.Valid(data) {
+		return fmt.Errorf("invalid UTF-8 in JSON document")
+	}
+	for i := 0; i < len(data); i++ {
+		if data[i] != '"' {
+			continue
+		}
+		for i++; data[i] != '"'; i++ {
+			if data[i] != '\\' {
+				continue
+			}
+			i++
+			if data[i] != 'u' {
+				continue
+			}
+			n, _ := strconv.ParseUint(string(data[i+1:i+5]), 16, 16)
+			i += 4
+			if n >= 0xdc00 && n <= 0xdfff {
+				return fmt.Errorf("unpaired Unicode surrogate at byte %d", i)
+			}
+			if n < 0xd800 || n > 0xdbff {
+				continue
+			}
+			if i+6 >= len(data) || data[i+1] != '\\' || data[i+2] != 'u' {
+				return fmt.Errorf("unpaired Unicode surrogate at byte %d", i)
+			}
+			low, err := strconv.ParseUint(string(data[i+3:i+7]), 16, 16)
+			if err != nil || low < 0xdc00 || low > 0xdfff {
+				return fmt.Errorf("unpaired Unicode surrogate at byte %d", i)
+			}
+			i += 6
+		}
+	}
+	return nil
 }
 
 func value(dec *json.Decoder) error {

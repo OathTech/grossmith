@@ -40,6 +40,7 @@ func Optional() []string {
 		"slice_triple", "type_switch",
 		"order_witness",
 		"tuple_forward",
+		"string_bytes",
 	}
 }
 

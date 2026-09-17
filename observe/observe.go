@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 
 	"grossmith/internal/strictjson"
 )
@@ -90,15 +91,19 @@ const (
 // marshal as their zero values inside the kinds that use them (the canonical
 // form is the deterministic field order of this struct).
 type Value struct {
-	Kind   string  `json:"kind"`
-	GoType string  `json:"goType"`
-	Bool   bool    `json:"bool,omitempty"`
-	Int    int64   `json:"int,omitempty"`
-	Uint   uint64  `json:"uint,omitempty"`
-	Str    string  `json:"str,omitempty"`
-	Len    int     `json:"len,omitempty"`
-	Elems  []Value `json:"elems,omitempty"`
-	Fields []Field `json:"fields,omitempty"`
+	Kind   string `json:"kind"`
+	GoType string `json:"goType"`
+	Bool   bool   `json:"bool,omitempty"`
+	Int    int64  `json:"int,omitempty"`
+	Uint   uint64 `json:"uint,omitempty"`
+	Str    string `json:"str,omitempty"`
+	// StrBytes preserves strings containing invalid UTF-8. JSON encodes
+	// []byte as base64, avoiding replacement characters. Valid UTF-8 uses
+	// Str instead, so each byte string has one canonical representation.
+	StrBytes []byte  `json:"strBytes,omitempty"`
+	Len      int     `json:"len,omitempty"`
+	Elems    []Value `json:"elems,omitempty"`
+	Fields   []Field `json:"fields,omitempty"`
 	// Entries carries map content with KEYS SORTED by the driver — the
 	// deterministic full-map observation (stronger than alphabet probes).
 	Entries []Entry `json:"entries,omitempty"`
@@ -106,6 +111,26 @@ type Value struct {
 	// value (the C4 fix: type identity AND payload).
 	DynType string `json:"dynType,omitempty"`
 	Payload *Value `json:"payload,omitempty"`
+}
+
+// StringValue constructs a lossless string observation, including Go strings
+// that contain arbitrary bytes. goType preserves the static type spelling.
+func StringValue(goType, s string) Value {
+	v := Value{Kind: "string", GoType: goType}
+	if utf8.ValidString(s) {
+		v.Str = s
+	} else {
+		v.StrBytes = []byte(s)
+	}
+	return v
+}
+
+// StringData returns a string value's original bytes in a Go string.
+func (v Value) StringData() string {
+	if v.StrBytes != nil {
+		return string(v.StrBytes)
+	}
+	return v.Str
 }
 
 // Field is one member of an observed struct.
@@ -327,7 +352,7 @@ func checkValue(v Value) error {
 		if kind != "uint" && v.Uint != 0 {
 			return fmt.Errorf("observe: kind %q carries a uint payload", kind)
 		}
-		if kind != "string" && v.Str != "" {
+		if kind != "string" && (v.Str != "" || v.StrBytes != nil) {
 			return fmt.Errorf("observe: kind %q carries a string payload", kind)
 		}
 		return nil
@@ -336,6 +361,14 @@ func checkValue(v Value) error {
 	case "bool", "int", "uint", "string":
 		if err := scalarOnly(v.Kind); err != nil {
 			return err
+		}
+		if v.Kind == "string" {
+			if !utf8.ValidString(v.Str) {
+				return fmt.Errorf("observe: invalid UTF-8 in str; use strBytes")
+			}
+			if v.StrBytes != nil && (v.Str != "" || utf8.Valid(v.StrBytes)) {
+				return fmt.Errorf("observe: strBytes requires invalid UTF-8 bytes and an absent str payload")
+			}
 		}
 	case "array", "slice":
 		if err := noScalarPayload(v); err != nil {
@@ -412,7 +445,7 @@ func checkValue(v Value) error {
 // noScalarPayload: container/interface kinds carry no scalar payload
 // field at all (finding 1's other half).
 func noScalarPayload(v Value) error {
-	if v.Bool || v.Int != 0 || v.Uint != 0 || v.Str != "" {
+	if v.Bool || v.Int != 0 || v.Uint != 0 || v.Str != "" || v.StrBytes != nil {
 		return fmt.Errorf("observe: kind %q carries scalar payload fields", v.Kind)
 	}
 	return nil
@@ -432,8 +465,8 @@ func keyOrdered(prev, cur Value) error {
 			return fmt.Errorf("observe: map keys not strictly increasing (%d, %d)", prev.Uint, cur.Uint)
 		}
 	case prev.Kind == "string" && cur.Kind == "string":
-		if prev.Str >= cur.Str {
-			return fmt.Errorf("observe: map keys not strictly increasing (%q, %q)", prev.Str, cur.Str)
+		if prev.StringData() >= cur.StringData() {
+			return fmt.Errorf("observe: map keys not strictly increasing (%q, %q)", prev.StringData(), cur.StringData())
 		}
 	default:
 		pb, err := json.Marshal(prev)

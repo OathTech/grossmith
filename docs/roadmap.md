@@ -118,6 +118,10 @@ checks are witnessed by report mutations with faithfully rebound file digests.
 All JSON evidence readers now reject duplicate object names (including escaped
 aliases) and trailing content. GoLean's external observation reader retains its
 unknown-field compatibility while rejecting ambiguous status fields.
+String observations now preserve arbitrary bytes through the additive
+`strBytes` payload, and `string_bytes` enables slicing across UTF-8 boundaries.
+The driver and comparator preserve scalar, nested and event values. GoLean
+also supports this coverage through its existing byte-array string channel.
 
 ## House convention: wording
 

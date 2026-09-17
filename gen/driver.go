@@ -30,6 +30,7 @@ import (
 	_greflect "reflect"
 	_gsort "sort"
 	_gstrings "strings"
+	_gutf8 "unicode/utf8"
 )
 
 var _gEvents = []map[string]any{}
@@ -55,7 +56,14 @@ func obsUint(at, goType string, v uint64) {
 }
 
 func obsStr(at, goType string, v string) {
-	_gEventValue(at, goType, "string", map[string]any{"str": v})
+	_gEventValue(at, goType, "string", _gStringPayload(v))
+}
+
+func _gStringPayload(s string) map[string]any {
+	if _gutf8.ValidString(s) {
+		return map[string]any{"str": s}
+	}
+	return map[string]any{"strBytes": []byte(s)}
 }
 
 func obsRecovered(msg string) {
@@ -99,7 +107,9 @@ func _gReflect(v _greflect.Value) map[string]any {
 	case _greflect.Uint, _greflect.Uint8, _greflect.Uint16, _greflect.Uint32, _greflect.Uint64:
 		return map[string]any{"kind": "uint", "goType": goType, "uint": v.Uint()}
 	case _greflect.String:
-		return map[string]any{"kind": "string", "goType": goType, "str": v.String()}
+		payload := _gStringPayload(v.String())
+		payload["kind"], payload["goType"] = "string", goType
+		return payload
 	case _greflect.Array:
 		elems := []any{}
 		for i := 0; i < v.Len(); i++ {

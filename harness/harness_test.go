@@ -81,14 +81,19 @@ func TestVerdictTaxonomy(t *testing.T) {
 	if err := copyTree(root, altRoot); err != nil {
 		t.Fatal(err)
 	}
-	// Flip every observed int's sign in EVERY altered driver: doctoring
-	// only one case made the witness hostage to that case's draw path (a
-	// panicking case observes no values and the flip is invisible).
+	// Flip the low bit of top-level returned ints in EVERY altered driver:
+	// a panicking case observes no return values, so one draw is not enough.
+	// Leave map keys alone: changing their order would invalidate the
+	// document and test infrastructure failure instead of a wrong answer.
 	dirs, _ := filepath.Glob(filepath.Join(altRoot, "*", "driver.go"))
 	applied := 0
 	for _, doctored := range dirs {
 		b, _ := os.ReadFile(doctored)
-		nb := strings.Replace(string(b), `"int": v.Int()`, `"int": -(v.Int() + 1)`, 1)
+		nb := strings.Replace(string(b), `values = append(values, _gValue(p))`, `v := _gValue(p)
+			if v["kind"] == "int" {
+				v["int"] = v["int"].(int64) ^ 1
+			}
+			values = append(values, v)`, 1)
 		if nb != string(b) {
 			applied++
 		}

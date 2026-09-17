@@ -100,6 +100,12 @@ corpus — produces byte-identical output on every run; other lanes
 (designed, not yet emitted — membership first) carry explicit
 lane-specific oracles (`docs/2026-08-09_membership-lane-emission-design.md`).
 
+String slicing can split UTF-8 sequences. The reference observation format
+preserves the resulting bytes with a base64 `strBytes` payload, including
+strings in containers and events; ordinary UTF-8 strings remain readable.
+See [string observations](docs/observation-format.md). GoLean also supports
+these cases through its byte-array string channel.
+
 For adapters that cannot directly observe maps and slices, selected containers
 contribute scalar fingerprints. These capture current state on normal returns,
 early returns, and recovered panics. Fingerprints can collide; they offer less

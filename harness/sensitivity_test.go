@@ -86,7 +86,9 @@ func sensitivityControls() []control {
 			func(d observe.Document) bool { return hasKind(d, "uint") }, false},
 		{"bool", `"bool": v.Bool()`, `"bool": !v.Bool()`,
 			func(d observe.Document) bool { return hasKind(d, "bool") }, false},
-		{"string", `"str": v.String()`, `"str": v.String() + "x"`,
+		// A common prefix preserves bytewise map-key ordering, including
+		// when one original key is a prefix of another.
+		{"string", `_gStringPayload(v.String())`, `_gStringPayload("x" + v.String())`,
 			func(d observe.Document) bool { return hasKind(d, "string") }, false},
 		// len and map-order corrupt the CANONICAL FORM (len no longer
 		// matches the element count; keys no longer sorted): since E1
@@ -132,7 +134,7 @@ func sensitivityControls() []control {
 				for _, e := range d.Events {
 					if e.Value != nil {
 						keys = append(keys, fmt.Sprintf("%s|%s|%v|%v|%v|%v",
-							e.At, e.Value.GoType, e.Value.Bool, e.Value.Int, e.Value.Uint, e.Value.Str))
+							e.At, e.Value.GoType, e.Value.Bool, e.Value.Int, e.Value.Uint, e.Value.StringData()))
 					}
 				}
 				for i := range keys {
