@@ -80,6 +80,7 @@ jobs:
     timeout-minutes: 90
     env:
       HAVE_KEY: ${{ secrets.GOLEAN_DEPLOY_KEY != '' }}
+      GOTOOLCHAIN: local
     steps:
       - name: require deploy key
         if: env.HAVE_KEY != 'true'
@@ -92,9 +93,27 @@ jobs:
           repository: OathTech/golean
           ssh-key: ${{ secrets.GOLEAN_DEPLOY_KEY }}
           path: deps/golean
+      - name: read GoLean oracle version
+        id: oracle
+        run: |
+          PIN="$(head -1 deps/golean/baselines/go-oracle-pin | tr -d '[:space:]')"
+          if [[ ! "$PIN" =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid GoLean oracle version: $PIN" >&2
+            exit 1
+          fi
+          echo "version=${PIN#go}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # go.mod declares a language version, not GoLean's exact oracle.
+          go-version: ${{ steps.oracle.outputs.version }}
+      - name: verify GoLean oracle version
+        run: |
+          PIN="$(head -1 deps/golean/baselines/go-oracle-pin | tr -d '[:space:]')"
+          LIVE="$(go env GOVERSION)"
+          if [[ "$LIVE" != "$PIN" ]]; then
+            echo "Go toolchain $LIVE differs from GoLean oracle $PIN" >&2
+            exit 1
+          fi
       - name: install elan
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
@@ -146,4 +165,5 @@ jobs:
           path: |
             ${{ runner.temp }}/campaign/batch.json
             ${{ runner.temp }}/campaign/golean-work/diff-coverage.log
+            ${{ runner.temp }}/campaign.staging/golean-work/diff-coverage.log
           if-no-files-found: warn
