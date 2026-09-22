@@ -302,15 +302,24 @@ func TestStuckIsInfraNotMismatch(t *testing.T) {
 // TestGoLeanEndToEnd is the Phase 1 vertical slice: profile-generated
 // cases, gc reference pass, GoLean campaign, verdicts. Requires the
 // deps/golean checkout (skipped elsewhere) and builds real binaries.
+// GOLEAN_CHECKOUT selects a different checkout for integration validation.
 func TestGoLeanEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("invokes GoLean's differential harness")
 	}
-	checkout, err := filepath.Abs(filepath.Join("..", "deps", "golean"))
+	checkout := os.Getenv("GOLEAN_CHECKOUT")
+	explicit := checkout != ""
+	if !explicit {
+		checkout = filepath.Join("..", "deps", "golean")
+	}
+	checkout, err := filepath.Abs(checkout)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(checkout, "scripts", "diff-coverage")); err != nil {
+		if explicit {
+			t.Fatal(err)
+		}
 		t.Skip("no GoLean checkout at deps/golean")
 	}
 

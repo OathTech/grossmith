@@ -63,6 +63,13 @@ const (
 	DefaultLakeBuildTimeout = 20 * time.Minute
 	// LogCap bounds diff-coverage's captured output.
 	LogCap = 16 << 20
+	// strictChoiceDepth requests three seeded choice streams in addition
+	// to GoLean's fixed adversarial streams. The fixed streams have only
+	// 8–10 entries; generated loops can exhaust them without producing
+	// different observations. This is a bounded sampling budget, not an
+	// upper bound on every subject's choices: GoLean's choice tracer must
+	// still establish zero wide choices after each seeded stream ends.
+	strictChoiceDepth = 1024
 )
 
 // RunCeiling is the hard outer bound on one diff-coverage invocation —
@@ -456,7 +463,7 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 		features = "none"
 	}
 	row = strings.Join([]string{
-		c.ID, dir, gen.Subject, "-", status, features, reason, "strict", "-", "-",
+		c.ID, dir, gen.Subject, "-", status, features, reason, "strict", "-", fmt.Sprintf("depth=%d", strictChoiceDepth),
 	}, "\t") + "\n"
 	return row, Result{}, true
 }

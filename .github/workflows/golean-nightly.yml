@@ -128,6 +128,10 @@ jobs:
           key: lake-${{ hashFiles('deps/golean/lean-toolchain', 'deps/golean/lake-manifest.json') }}
       - name: lake build
         run: cd deps/golean && lake build
+      - name: GoLean depth witnesses
+        env:
+          GOLEAN_CHECKOUT: ${{ github.workspace }}/deps/golean
+        run: go test -count=1 -run '^TestGoLeanChoiceDepth$' ./golean
       - name: campaign
         run: |
           N="${{ github.event.inputs.cases || '300' }}"
