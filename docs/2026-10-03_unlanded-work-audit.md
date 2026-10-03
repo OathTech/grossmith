@@ -1,5 +1,8 @@
 **Recovery and audit of unlanded work — 2026-10-03**
 
+Follow-up: the [repair record](2026-10-03_improvements-repair-record.md) records
+the fixes and validation completed after this historical audit.
+
 Recommendation: fix the three reproduced findings below before landing
 `codex/grossmith-improvements`. The ordinary generated-program paths passed
 validation, but the new source-check path can produce a false semantic mismatch
@@ -24,8 +27,8 @@ It contains eight commits from September 17, based on `e68867d`:
 
 The branch changes 42 files, with 3,164 insertions and 310 deletions relative to
 its merge base. The earlier audit and response are preserved on that branch:
-[audit](../.tmp/audit-2026-10-03/docs/2026-09-17_grossmith-improvements-prelanding-audit.md),
-[response](../.tmp/audit-2026-10-03/docs/2026-09-17_grossmith-improvements-review-response.md).
+[audit](2026-09-17_grossmith-improvements-prelanding-audit.md),
+[response](2026-09-17_grossmith-improvements-review-response.md).
 The last recorded step was remediation and validation; the branch was not merged
 into local `main`.
 

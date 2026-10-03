@@ -50,6 +50,21 @@ Validation completed with Go 1.26.5 on Linux/amd64:
 - The strict JSON fuzz target ran for 10 seconds with two workers and passed.
 - `git diff --check` passed. Local `main` is an ancestor of the branch.
 
+Final campaigns ran from clean implementation commit
+`8ad78ef667ab69c6f08efdeed01d8cd98c0d558b`, without `-allow-dirty`:
+
+| Campaign | Result |
+| --- | --- |
+| 100 cases, seeds 1–100, gc versus gc with `-N -l` | 100 matches; five wrapper catches, all judged; offline verification and case-7 replay passed |
+| 100 cases, seeds 4242–4341, current GoLean at the revision above | 100 matches; eight wrapper catches, all judged; zero infrastructure failures; offline verification passed |
+| Exact `panic("\x01")` audit reproduction against old and current GoLean | Clone infrastructure refusal on each checkout, original reference message preserved, explicit empty clone-work map, both reports verified |
+| Audit report containing both `strBytes` and empty `str`, with rebound digest | Input integrity passed, report decoding refused the mixed payload as required |
+
+Local logs and artifacts are retained in
+[`.tmp/landing-2026-10-03`](../.tmp/landing-2026-10-03/). The branch is locally
+ready for review and landing; these records do not claim that it was pushed or
+merged into `main`.
+
 The earlier audit's limitations remain explicit: this host cannot execute the
 386 canary, and no second actual Go release was tested. GitHub PR status and
 remote CI are not verified from this sandbox. Current local GoLean includes
