@@ -109,6 +109,13 @@ the current observation driver: GoLean's nested comparison runs its own driver
 over the subject alone. Edited or older drivers are refused. Selecting the
 `subject.go` file explicitly opts into the current driver instead.
 
+GoLean manifest rows request `depth=1024`: three seeded choice streams
+supplement its fixed adversarial streams. GoLean checks that observations
+agree and that the seeded streams cover every choice with multiple options;
+exhausting that budget still fails the campaign. This is sampled invariance,
+not exhaustive schedule enumeration. The depth is recorded in the
+digest-bound `golean-work/manifest.tsv`.
+
 Generated programs cover: all integer kinds, bool, string, arrays, slices,
 maps (no map-range except an order-invariant fold), named structs, defined
 integer types, pure value-receiver methods, interfaces (derived and
