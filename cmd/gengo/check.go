@@ -73,6 +73,15 @@ func loadCheck(cfg config) (*gen.Case, *harness.CaseOrigin, error) {
 			}
 		}
 	}
+	// Generation may recover and then replace a previous batch, but a check
+	// promises a fresh destination. A missing (or recreated empty) out does
+	// not make its interrupted publish disposable. Leave recovery untouched.
+	prev := cfg.out + ".prev"
+	if _, err := os.Lstat(prev); err == nil {
+		return nil, nil, fmt.Errorf("-check would replace a previous batch at %s; preserve it and choose a different -out directory", prev)
+	} else if !os.IsNotExist(err) {
+		return nil, nil, err
+	}
 	source, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return nil, nil, err

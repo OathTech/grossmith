@@ -43,10 +43,7 @@ func WorkDigests(workDir string) (perCase, workFiles map[string]string, err erro
 	perCase, workFiles = map[string]string{}, map[string]string{}
 	caseRoot := filepath.Join(workDir, "cases")
 	entries, err := os.ReadDir(caseRoot)
-	if os.IsNotExist(err) {
-		return perCase, workFiles, nil // no case was translated
-	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, nil, err
 	}
 	for _, e := range entries {
@@ -90,6 +87,9 @@ func VerifyWork(workDir string, rep harness.BatchReport) error {
 	recordedCases := map[string]string{}
 	for _, cr := range rep.Cases {
 		if cr.CloneSourceSHA256 == "" {
+			if cr.Verdict == harness.VerdictMatch || cr.Verdict == harness.VerdictMismatch {
+				return fmt.Errorf("golean verify: case %s has a semantic verdict but no clone source digest", cr.ID)
+			}
 			continue
 		}
 		if !workDigestRe.MatchString(cr.CloneSourceSHA256) {
@@ -100,6 +100,13 @@ func VerifyWork(workDir string, rep harness.BatchReport) error {
 				cr.ID, harness.ShortDigest(cr.CloneSourceSHA256), harness.ShortDigest(cr.SubjectSHA256))
 		}
 		recordedCases[cr.ID] = cr.CloneSourceSHA256
+	}
+	if len(recordedCases) > 0 {
+		for _, name := range workFileNames {
+			if _, ok := rep.CloneWorkFiles[name]; !ok {
+				return fmt.Errorf("golean verify: translated cases require recorded work file %s", name)
+			}
+		}
 	}
 	onDisk, diskFiles, err := WorkDigests(workDir)
 	if err != nil {

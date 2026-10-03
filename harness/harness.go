@@ -301,7 +301,9 @@ type BatchReport struct {
 	// work-tree root (the translated manifest and the published results;
 	// E5, arc-end review B2) — with the per-case CloneSourceSHA256 these
 	// make the clone's side of the batch re-checkable offline.
-	CloneWorkFiles map[string]string `json:"cloneWorkFiles,omitempty"`
+	// An explicit empty map records that no clone work was produced (all
+	// cases refused translation). Keep it distinct from absent legacy evidence.
+	CloneWorkFiles map[string]string `json:"cloneWorkFiles"`
 	// Composition is the per-tag program-presence histogram — the charter
 	// lists it as part of the conformance statement (rung 5 closed the
 	// gap: it was stdout-only). Populated by the producer from generated

@@ -1,6 +1,7 @@
 package golean
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,8 +104,36 @@ func TestVerifyWork(t *testing.T) {
 	t.Run("unrecorded work file refuses", func(t *testing.T) {
 		work, rep := workFixture(t)
 		delete(rep.CloneWorkFiles, "results.tsv")
-		wantWorkRefusal(t, work, rep, "does not record it")
+		wantWorkRefusal(t, work, rep, "require recorded work file")
 	})
+}
+
+func TestVerifyEmptyCloneWork(t *testing.T) {
+	rep := harness.BatchReport{
+		CloneWorkFiles: map[string]string{},
+		Cases:          []harness.CaseResult{{ID: "refused", Verdict: harness.VerdictCloneInfra}},
+	}
+	wire, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded harness.BatchReport
+	if err := json.Unmarshal(wire, &decoded); err != nil || decoded.CloneWorkFiles == nil {
+		t.Fatalf("explicit empty work evidence lost on serialization: %s: %v", wire, err)
+	}
+	work := t.TempDir()
+	if err := VerifyWork(work, decoded); err != nil {
+		t.Fatalf("no translated cases should need no clone files: %v", err)
+	}
+	// Empty evidence cannot excuse a claimed semantic comparison.
+	decoded.Cases[0].Verdict = harness.VerdictMatch
+	wantWorkRefusal(t, work, decoded, "no clone source digest")
+	decoded.Cases[0].Verdict = harness.VerdictCloneInfra
+	// Even without a cases/ directory, unexpected result files must be seen.
+	if err := os.WriteFile(filepath.Join(work, "results.tsv"), []byte("leftover results"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantWorkRefusal(t, work, decoded, "does not record it")
 }
 
 func wantWorkRefusal(t *testing.T, work string, rep harness.BatchReport, fragment string) {

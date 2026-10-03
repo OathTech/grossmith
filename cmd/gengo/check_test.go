@@ -155,6 +155,53 @@ func TestCheckExistingSource(t *testing.T) {
 	}
 }
 
+func TestCheckPreservesInterruptedPublish(t *testing.T) {
+	for _, emptyOut := range []bool{false, true} {
+		t.Run(fmt.Sprintf("emptyOut=%v", emptyOut), func(t *testing.T) {
+			root := t.TempDir()
+			out := filepath.Join(root, "result")
+			if err := run(base(out)); err != nil {
+				t.Fatal(err)
+			}
+			complete, err := os.ReadFile(filepath.Join(out, "complete.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(out, out+".prev"); err != nil {
+				t.Fatal(err)
+			}
+			if emptyOut {
+				if err := os.Mkdir(out, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			input := filepath.Join(root, "edited.go")
+			if err := os.WriteFile(input, []byte("package main; func fuzzSubject() int { return 202 }"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := checkConfig(t, input)
+			cfg.out = out
+			if err := run(cfg); err == nil || !strings.Contains(err.Error(), "previous batch") {
+				t.Fatalf("check consumed an interrupted publish: %v", err)
+			}
+			if _, err := harness.VerifyBatch(out + ".prev"); err != nil {
+				t.Fatalf("previous batch damaged: %v", err)
+			}
+			after, err := os.ReadFile(filepath.Join(out+".prev", "complete.json"))
+			if err != nil || !bytes.Equal(after, complete) {
+				t.Fatalf("previous batch replaced: %v", err)
+			}
+			if _, err := os.Lstat(out + ".staging"); !os.IsNotExist(err) {
+				t.Fatalf("refused check started staging: %v", err)
+			}
+			entries, err := os.ReadDir(out)
+			if emptyOut && (err != nil || len(entries) != 0) || !emptyOut && !os.IsNotExist(err) {
+				t.Fatalf("refused check changed output: entries=%v err=%v", entries, err)
+			}
+		})
+	}
+}
+
 func TestCheckGoLeanRequiresCurrentDriver(t *testing.T) {
 	dir := t.TempDir()
 	source := []byte("package main; func fuzzSubject() int { return 1 }")
@@ -264,17 +311,37 @@ func TestReplayChecksSourceOrigin(t *testing.T) {
 	}
 }
 
-func TestCheckGoLeanCurrentDriver(t *testing.T) {
+func checkGoLeanCheckout(t *testing.T) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("invokes GoLean's differential harness")
 	}
-	checkout, err := filepath.Abs(filepath.Join("..", "..", "deps", "golean"))
+	checkout := os.Getenv("GOLEAN_CHECKOUT")
+	explicit := checkout != ""
+	if !explicit {
+		checkout = filepath.Join("..", "..", "deps", "golean")
+	}
+	checkout, err := filepath.Abs(checkout)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(checkout, "scripts", "diff-coverage")); err != nil {
+		if explicit {
+			t.Fatal(err)
+		}
 		t.Skip("GoLean checkout unavailable")
 	}
+	// Identity records the repository root; a test dependency may be a
+	// symlink to a shared checkout in an isolated grossmith worktree.
+	checkout, err = filepath.EvalSymlinks(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return checkout
+}
+
+func TestCheckGoLeanCurrentDriver(t *testing.T) {
+	checkout := checkGoLeanCheckout(t)
 	dir := t.TempDir()
 	source := []byte("package main; func fuzzSubject() int { return 1 }")
 	driver, err := gen.DriverForSource(source)
@@ -301,5 +368,42 @@ func TestCheckGoLeanCurrentDriver(t *testing.T) {
 	}
 	if err := run(config{verify: cfg.out}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckGoLeanPanicMessages(t *testing.T) {
+	checkout := checkGoLeanCheckout(t)
+	for _, message := range []string{"\x01", "\a", "a\x1fb", "ordinary", "quoted \"µ\" \\"} {
+		t.Run(fmt.Sprintf("%q", message), func(t *testing.T) {
+			input := filepath.Join(t.TempDir(), "subject.go")
+			source := fmt.Sprintf("package main; func fuzzSubject() int { panic(%q) }", message)
+			if err := os.WriteFile(input, []byte(source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := checkConfig(t, input)
+			cfg.clone, cfg.cloneGCFlags = "golean:"+checkout, ""
+			delete(cfg.explicit, "clone-gcflags")
+			if err := run(cfg); err != nil {
+				t.Fatal(err)
+			}
+			rep, err := harness.ReadBatchReport(cfg.out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := harness.VerdictMatch
+			if strings.ContainsAny(message, "\x01\a\x1f") {
+				want = harness.VerdictCloneInfra
+			}
+			if rep.Total != 1 || rep.Verdicts[want] != 1 {
+				t.Fatalf("panic comparison: want %s, got %+v", want, rep.Cases)
+			}
+			p := rep.Cases[0].Reference.Document.Panic
+			if p == nil || p.MessageData() != message {
+				t.Fatalf("reference panic changed: %+v", p)
+			}
+			if err := run(config{verify: cfg.out}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

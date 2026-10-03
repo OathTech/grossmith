@@ -14,16 +14,7 @@ import (
 // the actual frontend, Go harness and Lean evaluator before allowing the
 // new generator surface through this profile.
 func TestGoLeanByteStrings(t *testing.T) {
-	if testing.Short() {
-		t.Skip("invokes GoLean's differential harness")
-	}
-	checkout, err := filepath.Abs(filepath.Join("..", "deps", "golean"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(checkout, "scripts", "diff-coverage")); err != nil {
-		t.Skip("no GoLean checkout at deps/golean")
-	}
+	checkout := integrationCheckout(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-strings\n\ngo 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)

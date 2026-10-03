@@ -15,7 +15,8 @@ For example, the two halves of `"µ"` are distinct observations:
 
 The second payload is an additive extension. Existing valid UTF-8 observations
 retain their representation; older strict readers reject `strBytes` instead
-of silently replacing bytes. New readers reject mixed payloads and reject
+of silently replacing bytes. New readers reject mixed payloads (including an
+explicitly empty `str`), null payloads, numeric arrays in `strBytes`, and
 `strBytes` for valid UTF-8, keeping the representation canonical.
 
 The same encoding applies to returned values, observation events, and strings
@@ -53,7 +54,10 @@ top-level and recovered panics. This is an additive protocol extension: older
 readers reject `messageBytes`, and older readers that required nonempty messages
 also reject the now-supported explicit empty message.
 
-GoLean's `expected_reason` manifest column cannot express all of these messages
-exactly. Empty messages, invalid UTF-8, the `-` sentinel, and messages containing
-NUL, tab, or line breaks receive a clone infrastructure verdict, with the reason
-recorded. Direct gc comparisons preserve these cases as semantic observations.
+GoLean's manifest and nested Go oracle cannot express all of these messages
+exactly across the supported checkouts. Empty messages, invalid UTF-8, the `-`
+sentinel, and messages containing any U+0000–U+001F control character receive a
+clone infrastructure verdict, with the reason recorded. Some older GoLean
+panic encoders leave JSON control characters unescaped; their comparator parse
+failures must not become semantic mismatches. Direct gc comparisons preserve
+these cases as semantic observations.

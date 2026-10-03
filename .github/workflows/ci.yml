@@ -34,7 +34,7 @@ jobs:
         # gen.TestGenPackageIsSingleThreaded, which fails if concurrency
         # ever enters the package; gen still runs fully in the witness
         # suite above.
-        run: go test -race -short -count=1 ./harness/ ./golean/ ./observe/ ./cmd/gengo/
+        run: go test -race -short -count=1 ./harness/ ./golean/ ./observe/ ./cmd/gengo/ ./internal/strictjson/
       - name: race, resource witnesses
         # The E4/E5 subprocess witnesses under the race detector too —
         # the plain -short race leg skips them (E5: previously they ran

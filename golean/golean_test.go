@@ -319,7 +319,11 @@ func TestCloneObservationFieldAliases(t *testing.T) {
 }
 
 func TestGoLeanUnrepresentablePanicMessages(t *testing.T) {
-	for _, message := range []string{"", "\xc2", "\xb5", "-", "a\nb", "\x00"} {
+	messages := []string{"", "\xc2", "\xb5", "-"}
+	for b := byte(0); b < 0x20; b++ {
+		messages = append(messages, string(b), "before"+string(b)+"after")
+	}
+	for _, message := range messages {
 		doc := observe.Panicked(nil, observe.PanicOther, message)
 		if err := doc.Validate(); err != nil {
 			t.Fatal(err)
@@ -333,11 +337,27 @@ func TestGoLeanUnrepresentablePanicMessages(t *testing.T) {
 	}
 }
 
+func TestGoLeanRepresentablePanicMessages(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "subject.go"), []byte("package main; func fuzzSubject() int { panic(\"ordinary\") }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{"ordinary", "a\"b\\c", "µ", " ", "a-b"} {
+		row, result, ok := translate(t.TempDir(), Case{ID: "panic_message", Dir: dir, Reference: harness.Outcome{
+			Status: harness.StatusRan, Document: observe.Panicked(nil, observe.PanicOther, message),
+		}})
+		if !ok || strings.Split(row, "\t")[6] != message {
+			t.Errorf("representable panic %q refused or changed: row=%q result=%+v", message, row, result)
+		}
+	}
+}
+
 // TestGoLeanEndToEnd is the Phase 1 vertical slice: profile-generated
 // cases, gc reference pass, GoLean campaign, verdicts. Requires the
 // deps/golean checkout (skipped elsewhere) and builds real binaries.
 // GOLEAN_CHECKOUT selects a different checkout for integration validation.
-func TestGoLeanEndToEnd(t *testing.T) {
+func integrationCheckout(t *testing.T) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("invokes GoLean's differential harness")
 	}
@@ -356,7 +376,11 @@ func TestGoLeanEndToEnd(t *testing.T) {
 		}
 		t.Skip("no GoLean checkout at deps/golean")
 	}
+	return checkout
+}
 
+func TestGoLeanEndToEnd(t *testing.T) {
+	checkout := integrationCheckout(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)

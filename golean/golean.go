@@ -431,9 +431,14 @@ func translate(caseRoot string, c Case) (row string, res Result, ok bool) {
 				Detail: "reference panicked without a message — no expected_reason to pin"}, false
 		}
 		reason = doc.Panic.MessageData()
-		if reason == "" || reason == "-" || !utf8.ValidString(reason) || strings.ContainsAny(reason, "\x00\t\n\r") {
+		// Besides the TSV restrictions, the external Go panic encoder does
+		// not escape every JSON control character. A raw control byte there
+		// makes its comparator fail to parse identical panic observations,
+		// which the differential stage would misreport as a semantic mismatch.
+		control := strings.ContainsFunc(reason, func(r rune) bool { return r < 0x20 })
+		if reason == "" || reason == "-" || !utf8.ValidString(reason) || control {
 			return "", Result{Verdict: harness.VerdictCloneInfra,
-				Detail: fmt.Sprintf("panic message cannot be represented exactly by GoLean's expected_reason field: %q", reason)}, false
+				Detail: fmt.Sprintf("panic message cannot be represented exactly by GoLean's manifest and Go oracle: %q", reason)}, false
 		}
 	default:
 		return "", Result{Verdict: harness.VerdictRefInfra,

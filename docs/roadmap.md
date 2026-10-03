@@ -17,7 +17,7 @@ in the STRICT lane — today the entire corpus — are
 outcome-deterministic by construction; other lanes (designed, not yet
 emitted) carry explicit lane-specific oracles.
 
-## Current capability state (2026-08-09)
+## Current capability state (2026-10-03)
 
 Delivered and merged: the generator with swarm mixes, named corners,
 and capability profiles (`gen`); the `grossmith-observation-v2`
@@ -34,7 +34,7 @@ The witness arc (W0-W5) is complete. Ground truth:
   WHY (the honesty gate `TestLedgerNamesEveryTag` enforces it).
 - `docs/2026-08-09_witness-arc-closing.md` — the witness-arc record.
 
-## Closed arc: EVIDENCE (merged 2026-08-09 at 01fab3f)
+## Closed arc: EVIDENCE (merged 2026-08-10 at 01fab3f)
 
 `docs/2026-08-09_evidence-arc-charter.md` was its charter; the record
 of what held and what did not is
@@ -48,7 +48,7 @@ enforced at emission for every tape;
 `docs/2026-08-09_execution-bound-design-note.md` records why a closed
 form was abandoned). Two re-reviews, three clean campaigns.
 
-## Current arc: CONTAINMENT (in progress)
+## Closed arc: CONTAINMENT (merged 2026-08-10 at e907c22)
 
 The 2026-08-10 audit
 (`docs/2026-08-10_comprehensive-technical-audit.md`, committed
@@ -99,7 +99,9 @@ lossiness, whole-case resource limits
 bounds, real build/run matrices, and the incidence/sensitivity
 accounting.
 
-Branch work (2026-09-17, `codex/grossmith-improvements`): aggregate fingerprints
+## Current work: improvements awaiting landing
+
+Branch work (2026-10-03, `codex/grossmith-improvements`): aggregate fingerprints
 now snapshot state on early returns and wrapper recovery as well as normal
 returns. Controlled mutation witnesses reproduce the former zero-slot blindness
 and check all returning paths; generation sweeps and execution counters check
@@ -130,6 +132,15 @@ found four gaps in these additions. The
 [review response](2026-09-17_grossmith-improvements-review-response.md) records
 the driver contract, lossless panic messages, exact JSON field spelling, and
 shared source-provenance validation that address them.
+
+The [October 3 audit](2026-10-03_unlanded-work-audit.md) and its
+[repair record](2026-10-03_improvements-repair-record.md) cover the remaining
+panic-encoding, interrupted-publish and string-payload findings. The branch
+also incorporates main's September 22 oracle-version and strict-depth fixes.
+The saved assignment-before-panic divergence is checked in under
+`golean/testdata/assignment-before-panic`; a current GoLean checkout matches it,
+and the nightly runs its regression witness. The larger queue below remains
+deferred until this branch lands.
 
 ## House convention: wording
 

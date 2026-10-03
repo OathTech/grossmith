@@ -1,6 +1,8 @@
 package observe
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -54,5 +56,48 @@ func TestStringPayloadMustBeCanonical(t *testing.T) {
 	}
 	if _, err := Parse([]byte(`{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"string","goType":"string","strBytes":"invalid base64!"}]}`)); err == nil {
 		t.Fatal("malformed base64 accepted")
+	}
+}
+
+func TestStringWirePayloads(t *testing.T) {
+	// Exercise every nesting route, including report decoding's json.Unmarshal
+	// path, so a guard solely in Parse cannot hide malformed stored evidence.
+	contexts := map[string]string{
+		"result":    `{"schema":"grossmith-observation-v2","status":"ok","values":[%s]}`,
+		"array":     `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"array","goType":"[1]string","len":1,"elems":[%s]}]}`,
+		"slice":     `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"slice","goType":"[]string","len":1,"elems":[%s]}]}`,
+		"struct":    `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"struct","goType":"S","fields":[{"name":"s","value":%s}]}]}`,
+		"map key":   `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"map","goType":"map[string]int","len":1,"entries":[{"key":%s,"value":{"kind":"int","goType":"int"}}]}]}`,
+		"map value": `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"map","goType":"map[int]string","len":1,"entries":[{"key":{"kind":"int","goType":"int"},"value":%s}]}]}`,
+		"interface": `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"interface","goType":"interface{}","dynType":"string","payload":%s}]}`,
+		"point":     `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"int","goType":"int"}],"events":[{"at":"point","value":%s}]}`,
+		"defer":     `{"schema":"grossmith-observation-v2","status":"ok","values":[{"kind":"int","goType":"int"}],"events":[{"at":"defer","value":%s}]}`,
+	}
+	for name, context := range contexts {
+		t.Run(name, func(t *testing.T) {
+			for _, payload := range []string{
+				`"strBytes":"wg==","str":""`,
+				`"strBytes":"wg==","str":null`,
+				`"strBytes":[194,null]`, `"strBytes":[194]`,
+				`"strBytes":null`, `"str":null`,
+				`"strBytes":""`, `"strBytes":"YQ=="`,
+			} {
+				v := `{"kind":"string","goType":"string",` + payload + `}`
+				raw := []byte(fmt.Sprintf(context, v))
+				if _, err := Parse(raw); err == nil {
+					t.Errorf("Parse accepted %s", payload)
+				}
+				var doc Document
+				if err := json.Unmarshal(raw, &doc); err == nil {
+					t.Errorf("JSON decoding accepted %s", payload)
+				}
+			}
+			for _, payload := range []string{"", `,"str":""`, `,"str":"µ"`, `,"strBytes":"wg=="`} {
+				v := `{"kind":"string","goType":"string"` + payload + `}`
+				if _, err := Parse([]byte(fmt.Sprintf(context, v))); err != nil {
+					t.Errorf("valid payload %q refused: %v", payload, err)
+				}
+			}
+		})
 	}
 }

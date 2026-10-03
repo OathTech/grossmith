@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"grossmith/observe"
 )
 
 func TestArtifactJSONIsUnambiguous(t *testing.T) {
@@ -46,6 +48,42 @@ func TestArtifactJSONIsUnambiguous(t *testing.T) {
 					t.Fatal("ambiguous or malformed artifact accepted")
 				}
 			})
+		}
+	}
+}
+
+func TestReportStringPayloadsRefuseAfterDigestRebinding(t *testing.T) {
+	for _, payload := range []string{
+		`"strBytes":"wg==","str":""`, `"strBytes":"wg==","str":null`,
+		`"strBytes":[194,null]`, `"strBytes":null`,
+	} {
+		root, rep, m := comparisonReportFixture(t)
+		for i := range rep.Cases {
+			rep.Cases[i].Reference.Document = observe.OK(nil, []observe.Value{observe.StringValue("string", "\xc2")})
+			rep.Cases[i].Clone.Document = rep.Cases[i].Reference.Document
+		}
+		if err := ValidateBatchReport(root, rep, m); err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(rep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := strings.Replace(string(b), `"strBytes":"wg=="`, payload, 1)
+		if raw == string(b) {
+			t.Fatal("mutation did not apply")
+		}
+		if err := os.WriteFile(filepath.Join(root, "batch.json"), []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteComplete(root); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := VerifyBatch(root); err != nil {
+			t.Fatalf("honestly rebound report failed integrity: %v", err)
+		}
+		if _, err := ReadBatchReport(root); err == nil {
+			t.Errorf("report with malformed string payload accepted: %s", payload)
 		}
 	}
 }

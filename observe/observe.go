@@ -113,6 +113,46 @@ type Value struct {
 	Payload *Value `json:"payload,omitempty"`
 }
 
+// UnmarshalJSON preserves payload presence until the string wire contract has
+// been checked. Decoding directly into Value loses explicit empty/null str
+// fields, and encoding/json accepts arrays (even null elements) for []byte.
+// This method also runs for nested values and saved report documents.
+func (v *Value) UnmarshalJSON(data []byte) error {
+	var payloads struct {
+		Str      json.RawMessage `json:"str"`
+		StrBytes json.RawMessage `json:"strBytes"`
+	}
+	if err := json.Unmarshal(data, &payloads); err != nil {
+		return err
+	}
+	if payloads.Str != nil && payloads.StrBytes != nil {
+		return fmt.Errorf("observe: string value carries both str and strBytes payloads")
+	}
+	if payloads.Str != nil && (len(payloads.Str) == 0 || payloads.Str[0] != '"') {
+		return fmt.Errorf("observe: str must be a JSON string")
+	}
+	if payloads.StrBytes != nil && (len(payloads.StrBytes) == 0 || payloads.StrBytes[0] != '"') {
+		return fmt.Errorf("observe: strBytes must be a base64 string")
+	}
+	// Keep the full schema's strict spelling, Unicode and duplicate-field
+	// checks; the partial decode above only inspects payload presence/types.
+	type wireValue Value
+	var parsed wireValue
+	if err := strictjson.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	if payloads.Str != nil || payloads.StrBytes != nil {
+		if parsed.Kind != "string" {
+			return fmt.Errorf("observe: kind %q carries a string payload", parsed.Kind)
+		}
+		if payloads.StrBytes != nil && utf8.Valid(parsed.StrBytes) {
+			return fmt.Errorf("observe: strBytes requires invalid UTF-8 bytes")
+		}
+	}
+	*v = Value(parsed)
+	return nil
+}
+
 // StringValue constructs a lossless string observation, including Go strings
 // that contain arbitrary bytes. goType preserves the static type spelling.
 func StringValue(goType, s string) Value {

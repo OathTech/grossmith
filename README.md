@@ -9,7 +9,7 @@ toolchain. Generated programs in the **STRICT lane** — today the entire
 corpus — are outcome-deterministic by construction; other lanes
 (designed, not yet emitted) carry explicit lane-specific oracles.
 
-**Current status (2026-08-09):** all four phases of the 2026-08-06 audit
+**Current status (2026-10-03):** all four phases of the 2026-08-06 audit
 plan are complete and merged: a portable observation protocol
 (`observe`), a runtime-adapter harness with a closed verdict taxonomy
 (`harness`), durable per-case and per-batch artifacts, a working first
@@ -25,9 +25,11 @@ witnessing and tuple forwarding delivered). The witness arc
 merged: a campaign is an immutable, self-consistent experiment whose
 descriptor, report, and clone tree are all digest-bound, and HALTS is
 enforced at emission by the execution budget
-(`gen/budget.go`). In progress: the containment arc, closing the
-2026-08-10 audit's findings
-(`docs/2026-08-10_comprehensive-technical-audit.md`).
+(`gen/budget.go`). The containment arc closed on August 10 at `e907c22`:
+descriptor paths and output ownership are checked, adapter results fail closed,
+and saved reports are checked for consistency. The current improvements add
+lossless string bytes, observations at every returning exit, compiler
+comparisons, and checks of saved or edited source, described below.
 `docs/roadmap.md` is the one living roadmap.
 
 ## What works today
@@ -98,7 +100,8 @@ go run ./cmd/gengo -verify checked-source
 A case-directory input copies its `subject.go` and `driver.go` exactly. A
 single-file input gets a current driver for its parameterless `fuzzSubject`
 function, which must return at least one value in package `main`. Each check
-requires an explicit empty or absent output directory and runs the reference
+requires an explicit empty or absent output directory with no previous batch
+at `<out>.prev`, and runs the reference
 even without `-judge`. Its record identifies the input and driver choice;
 coverage tags and generation history are not inferred, and the recorded seed
 is a zero placeholder. These records use `-check` again, rather than draw-tape
