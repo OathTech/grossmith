@@ -123,7 +123,47 @@ unknown-field compatibility while rejecting ambiguous status fields.
 String observations now preserve arbitrary bytes through the additive
 `strBytes` payload, and `string_bytes` enables slicing across UTF-8 boundaries.
 The driver and comparator preserve scalar, nested and event values. GoLean
-also supports this coverage through its existing byte-array string channel.
+supports this coverage through its existing byte-array string channel from
+revision `3bb8f4fc9cd7dab16571787140731b6d4c1f9d0e` onward.
+A `utf8-split` string-slice arm, available only when `string_bytes` is in the
+construct mix, raises realisation over seeds 1-1000 from 5 to 30 cases under
+the default profile and from 10 to 36 under the GoLean profile. The eligible
+populations are 52 and 56 cases: each reaches a string-slice site with the
+construct enabled. With the construct excluded, generated sources and draw
+traces for those seeds are byte-identical to the generator before this arm.
+
+**Seed-to-program mapping changed on this branch.** Adding `string_bytes` to
+the optional constructs adds a construct-mix draw. Every seed therefore
+generates a different program than it does on `main`, and cases saved by
+`main`'s `gengo` are refused by this branch's `-replay` rather than replayed
+(for example `replay value 5 at draw 48 is outside the requested bound
+[0,2)`). Old saved cases must be replayed with the generator revision that
+wrote them; `case.json` records it as `generatorRev`. The `utf8-split` arm
+changes programs again for seeds whose mix enables `string_bytes`. Seed-for-seed
+comparisons across this boundary compare different programs. They do not
+attribute behaviour to a change (the
+[pre-landing review](2026-09-17_grossmith-improvements-prelanding-audit.md)
+first recorded this).
+
+Follow-ups for the CLI owner, not yet scheduled:
+
+- The replay refusal already names both revisions ("recorded under generator
+  X, this binary is Y"). The revisions can still be wrong. `generatorRev()`
+  prefers Go's `vcs.revision` build setting, and Go stamps that from the
+  nearest enclosing directory with a `.git` *directory*. A git worktree
+  (whose `.git` is a file) or a `git archive` tree extracted inside another
+  checkout therefore gets the enclosing checkout's HEAD and clean status. A
+  binary built in a nested worktree at a later commit was observed stamping
+  the outer checkout's `615498d`. A `main` build from an archive under
+  `.tmp/` stamped the same revision, so the refusal printed identical
+  revisions for two different generators. The stamp should be checked
+  against the source actually built, or the mismatch should be reported as
+  unknown provenance. Until then, `go build -buildvcs=false` from the source
+  tree uses the cwd git probe instead.
+- When decoding fails and the recorded revision differs from the current
+  one, the refusal could say "this case was written by generator revision
+  X; replay it with that revision" as its leading line. Today it prints a
+  warning and then the decode error.
 The CLI's `-check` mode now reruns saved cases or edited single-file subjects
 into a separate verifiable batch. It records source provenance and driver
 choice without claiming generated coverage or a replayable draw tape.

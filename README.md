@@ -89,6 +89,23 @@ wrapper counter against the individual verdicts. GoLean verdicts remain
 attestations by its external adapter; its clone observations are not stored
 for offline re-judging.
 
+Use `go run ./cmd/gengo -replay <case-dir>` to regenerate a saved case from
+its `case.json` draw trace and check source bytes, features, and
+observations. Replay is a same-revision contract: run it with the generator
+revision that wrote the case (`generatorRev` in `case.json`). Generator
+changes can move seeds to different programs and change how a recorded
+trace decodes. The current improvements branch does this: adding the
+optional `string_bytes` construct adds a construct-mix draw, so every seed
+generates a different program than it did on `main`, and cases saved by
+`main`'s `gengo` are refused rather than replayed (for example `replay value
+5 at draw 48 is outside the requested bound [0,2)`). Replay those cases with
+a `gengo` built from the revision recorded in their `case.json`. The refusal
+names the recorded and current revisions, but those stamps come from Go's
+build information for the enclosing git repository. A binary built from an
+archive or worktree nested inside another checkout records that checkout's
+revision, so compare the recorded revision with the source you actually
+built.
+
 Use `-check` to rerun existing source without regenerating it:
 
 ```sh
@@ -135,8 +152,12 @@ lane-specific oracles (`docs/2026-08-09_membership-lane-emission-design.md`).
 String slicing can split UTF-8 sequences. The reference observation format
 preserves the resulting bytes with a base64 `strBytes` payload, including
 strings in containers and events; ordinary UTF-8 strings remain readable.
-See [string observations](docs/observation-format.md). GoLean also supports
-these cases through its byte-array string channel.
+See [string observations](docs/observation-format.md). GoLean supports
+these cases through its byte-array string channel from revision
+`3bb8f4fc9cd7dab16571787140731b6d4c1f9d0e` onward. The GoLean integration
+tests (`go test ./golean`) need `GOLEAN_CHECKOUT` pointing at a GoLean
+checkout at or after that revision; the default `deps/golean` fallback may
+be older.
 
 For adapters that cannot directly observe maps and slices, selected containers
 contribute scalar fingerprints. These capture current state on normal returns,
