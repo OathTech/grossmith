@@ -396,7 +396,6 @@ func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s version: %w", bin, err)
 	}
-	id := strings.TrimSpace(string(out)) + " (" + bin
 	// The EFFECTIVE arch, always — Identity previously named it only for
 	// explicit cross-arch adapters, so a reference built under an
 	// overridden GOARCH (hunt F1) carried an identity that could not
@@ -405,11 +404,18 @@ func (a *GcAdapter) Identity(ctx context.Context) (string, error) {
 	if arch == "" {
 		arch = runtime.GOARCH
 	}
-	id += ", GOARCH=" + arch
-	if a.GCFlags != "" {
-		id += fmt.Sprintf(", gcflags=%q", a.GCFlags)
+	return gcIdentity(strings.TrimSpace(string(out)), bin, arch, a.GCFlags), nil
+}
+
+// gcIdentity formats a gc adapter's identity string. Report validation
+// recomputes it from the structured OracleIdentity, so both must use this
+// one spelling.
+func gcIdentity(version, bin, arch, gcflags string) string {
+	id := version + " (" + bin + ", GOARCH=" + arch
+	if gcflags != "" {
+		id += fmt.Sprintf(", gcflags=%q", gcflags)
 	}
-	return id + ")", nil
+	return id + ")"
 }
 
 // OracleIdentity is the STRUCTURED toolchain identity (evidence arc E2;

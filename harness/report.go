@@ -21,6 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"unicode/utf8"
 
 	"grossmith/internal/strictjson"
 	"grossmith/observe"
@@ -226,6 +228,14 @@ func ValidateBatchReport(root string, rep BatchReport, m Manifest) error {
 					cr.ID, cr.Verdict, want)
 			}
 		}
+		// Under the external policy the clone side is an attestation, but
+		// the reference side of the verdict is still the producer's own
+		// rule over a recorded document, so it is recomputed.
+		if externalPolicy {
+			if err := checkExternalVerdict(cr); err != nil {
+				return err
+			}
+		}
 	}
 	// Aggregates.
 	if rep.RefRan != refRan {
@@ -295,16 +305,15 @@ func ValidateBatchReport(root string, rep BatchReport, m Manifest) error {
 	// report, not an unverifiable one (found while probing: the
 	// earlier `len(...) > 0` guard let a report that dropped every tag
 	// pass, because dropping them all made the map empty).
-	for tag, claimed := range rep.Composition {
-		if composition[tag] != claimed {
-			return fmt.Errorf("report: composition[%s] claimed %d, computed %d from the case records",
-				tag, claimed, composition[tag])
-		}
-	}
+	// A zero-count entry is refused too: the producer writes only tags
+	// some case carries, so presence must match as well as counts.
 	for tag, computed := range composition {
-		if _, ok := rep.Composition[tag]; !ok && computed > 0 {
+		if _, ok := rep.Composition[tag]; !ok {
 			return fmt.Errorf("report: composition omits %s, which %d cases carry", tag, computed)
 		}
+	}
+	if err := sameFeatureHistogram(rep.Composition, composition); err != nil {
+		return fmt.Errorf("report: composition%w from the case records", err)
 	}
 	// Wrapper accounting: the three-leg identity the nightly gates on
 	// (caught == judged + cloneInfra, exactly, when a clone judged).
@@ -348,7 +357,83 @@ func ValidateBatchReport(root string, rep BatchReport, m Manifest) error {
 	if rep.CloneName == "" && (rep.CloneIdentity != "" || rep.CloneOracle != nil || rep.CloneNestedOracle != nil) {
 		return fmt.Errorf("report: clone identity recorded without a clone")
 	}
+	return checkGcCloneOracle(rep)
+}
+
+// checkGcCloneOracle requires the structured toolchain identity of a
+// directly executed gc clone and recomputes the clone identity string
+// from it. Both are written by the same adapter (GcAdapter.Oracle and
+// GcAdapter.Identity), so any difference (another binary path, other
+// compiler flags, another architecture) means one of them was edited or
+// came from a different run. A cloneOracle is refused for any other
+// clone: it would describe a gc toolchain the batch did not execute.
+func checkGcCloneOracle(rep BatchReport) error {
+	if rep.CloneName != "gc" && rep.CloneName != "gc-386" {
+		if rep.CloneOracle != nil {
+			return fmt.Errorf("report: cloneOracle recorded for clone %q, which is not a directly executed gc clone", rep.CloneName)
+		}
+		return nil
+	}
+	o := rep.CloneOracle
+	if o == nil {
+		return fmt.Errorf("report: gc clone %s has no cloneOracle, so its toolchain, compiler flags and architecture cannot be checked against cloneIdentity", rep.CloneName)
+	}
+	if rep.CloneNestedOracle != nil {
+		return fmt.Errorf("report: gc clone %s records a nested oracle; only script clones have one", rep.CloneName)
+	}
+	if o.GOARCH == "" {
+		return fmt.Errorf("report: cloneOracle names no GOARCH")
+	}
+	if rep.CloneName == "gc-386" && o.GOARCH != "386" {
+		return fmt.Errorf("report: clone gc-386 records GOARCH %q in cloneOracle", o.GOARCH)
+	}
+	if want := gcIdentity(o.Version, o.Path, o.GOARCH, o.GCFlags); rep.CloneIdentity != want {
+		return fmt.Errorf("report: cloneIdentity %q disagrees with cloneOracle (its path, version, GOARCH and gcflags give %q)", rep.CloneIdentity, want)
+	}
 	return nil
+}
+
+// GoLeanRefusesPanicMessage reports whether the GoLean adapter refuses a
+// reference panic message before translation (verdict clone-infra)
+// because its manifest and nested Go oracle cannot carry the message
+// exactly. golean.translate applies this predicate; report validation
+// uses it to recompute that part of an external verdict.
+func GoLeanRefusesPanicMessage(msg string) bool {
+	control := strings.ContainsFunc(msg, func(r rune) bool { return r < 0x20 })
+	return msg == "" || msg == "-" || !utf8.ValidString(msg) || control
+}
+
+// checkExternalVerdict recomputes the reference-side part of a GoLean
+// verdict (golean.translate): a reference that did not run, or ran and
+// produced an error document, yields ref-infra, and nothing else does; a
+// reference panic message GoLean cannot represent yields clone-infra.
+// The remaining verdicts come from GoLean's own results, which are bound
+// by the clone work digests rather than recomputed here.
+func checkExternalVerdict(cr CaseResult) error {
+	ran := cr.Reference.Status == StatusRan
+	noObservation := !ran || cr.Reference.Document.Status == observe.StatusError
+	switch {
+	case noObservation && cr.Verdict != VerdictRefInfra:
+		return fmt.Errorf("report: case %s has no reference observation (%s) but records verdict %s; the GoLean adapter records %s exactly then",
+			cr.ID, referenceState(cr.Reference), cr.Verdict, VerdictRefInfra)
+	case !noObservation && (cr.Verdict == VerdictRefInfra || cr.Verdict == VerdictBothInfra):
+		return fmt.Errorf("report: case %s has a reference observation (%s) but records verdict %s",
+			cr.ID, referenceState(cr.Reference), cr.Verdict)
+	}
+	doc := cr.Reference.Document
+	if ran && doc.Status == observe.StatusPanic && doc.Panic != nil &&
+		GoLeanRefusesPanicMessage(doc.Panic.MessageData()) && cr.Verdict != VerdictCloneInfra {
+		return fmt.Errorf("report: case %s reference panic message %q cannot be represented by GoLean, so the verdict must be %s, not %s",
+			cr.ID, doc.Panic.MessageData(), VerdictCloneInfra, cr.Verdict)
+	}
+	return nil
+}
+
+func referenceState(o Outcome) string {
+	if o.Status != StatusRan {
+		return "reference " + string(o.Status)
+	}
+	return "reference document " + string(o.Document.Status)
 }
 
 // validateOutcome checks one recorded outcome's structure: a ran outcome
@@ -387,11 +472,23 @@ func sameHistogram(claimed, computed map[Verdict]int) error {
 		if !knownVerdict(v) {
 			return fmt.Errorf("unknown verdict %q", v)
 		}
-		if claimed[v] != computed[v] {
-			return fmt.Errorf("%s claimed %d, computed %d", n, claimed[v], computed[v])
+		c, inClaimed := claimed[v]
+		p, inComputed := computed[v]
+		if inClaimed != inComputed || c != p {
+			return fmt.Errorf("%s claimed %s, computed %s", n, histogramEntry(c, inClaimed), histogramEntry(p, inComputed))
 		}
 	}
 	return nil
+}
+
+// histogramEntry distinguishes an absent entry from a zero-count one.
+// Histograms list exactly the keys that occur, so presence is compared
+// along with the count.
+func histogramEntry(n int, present bool) string {
+	if !present {
+		return "absent"
+	}
+	return fmt.Sprint(n)
 }
 
 func sameFeatureHistogram(claimed, computed map[string]int) error {
@@ -408,8 +505,10 @@ func sameFeatureHistogram(claimed, computed map[string]int) error {
 	}
 	sort.Strings(names)
 	for _, k := range names {
-		if claimed[k] != computed[k] {
-			return fmt.Errorf("[%s] claimed %d, computed %d", k, claimed[k], computed[k])
+		c, inClaimed := claimed[k]
+		p, inComputed := computed[k]
+		if inClaimed != inComputed || c != p {
+			return fmt.Errorf("[%s] claimed %s, computed %s", k, histogramEntry(c, inClaimed), histogramEntry(p, inComputed))
 		}
 	}
 	return nil

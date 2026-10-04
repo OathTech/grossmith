@@ -11,7 +11,13 @@ import (
 func comparisonReportFixture(t *testing.T) (string, BatchReport, Manifest) {
 	t.Helper()
 	root, rep, m := reportFixture(t)
-	rep.CloneName, rep.CloneIdentity = "gc", "go clone"
+	rep.CloneName = "gc"
+	rep.CloneOracle = &OracleIdentity{
+		Path: "/toolchains/clone/bin/go", SHA256: strings.Repeat("c", 64),
+		Version: "go version go1.26.0 linux/amd64", GOOS: "linux", GOARCH: "amd64",
+		ModuleMode: "module (go 1.26)", GCFlags: "-N -l",
+	}
+	rep.CloneIdentity = `go version go1.26.0 linux/amd64 (/toolchains/clone/bin/go, GOARCH=amd64, gcflags="-N -l")`
 	for i := range rep.Cases {
 		clone := rep.Cases[i].Reference
 		rep.Cases[i].Clone = &clone
