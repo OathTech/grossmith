@@ -114,12 +114,51 @@ func main() {
 	}
 }
 
+// cleanOutDir canonicalizes -out before any sibling path is derived from
+// it, and refuses paths that have no sibling to stage beside: the empty
+// path, the current or a parent directory, and filesystem roots. A
+// trailing slash previously put `<out>/.staging` inside the batch, so
+// the next run published over a tree holding its own staging.
+func cleanOutDir(out string) (string, error) {
+	if out == "" {
+		return "", fmt.Errorf("-out: empty path")
+	}
+	clean := filepath.Clean(out)
+	base := filepath.Base(clean)
+	if base == "." || base == ".." || filepath.Dir(clean) == clean ||
+		base == string(filepath.Separator) || filepath.VolumeName(clean)+string(filepath.Separator) == clean {
+		return "", fmt.Errorf("-out %q: names the current directory, a parent, or a filesystem root — the batch is published by renaming a sibling into place, so -out must name a subdirectory (e.g. -out ./batch)", out)
+	}
+	return clean, nil
+}
+
 // stageBatchDir prepares the staging sibling `<out>.staging`: leftover
 // staging from an interrupted run is removed (it is ours by naming and
 // was never published), and an interrupted PUBLISH — `<out>.prev`
 // present with `<out>` missing — is rolled back first, restoring the
 // previous valid batch (E3: interruption preserves the previous batch).
-func stageBatchDir(out string) (string, error) {
+//
+// exclusive (check mode) never removes an existing staging tree: two
+// -check runs aimed at the same new -out would otherwise each delete the
+// other's staging as an "interrupted leftover". The atomic Mkdir is the
+// claim; a second run refuses instead of taking over.
+func stageBatchDir(out string, exclusive bool) (string, error) {
+	if exclusive {
+		staging := out + ".staging"
+		if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.Mkdir(staging, 0o755); err != nil {
+			if os.IsExist(err) {
+				return "", fmt.Errorf("%s already exists: another -check to %s is still running, or an earlier one was interrupted — -check never removes a staging tree; wait for it, or inspect and remove %s yourself", staging, out, staging)
+			}
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(staging, harness.StagingMarker()), []byte(stagingMarkerContent(out)), 0o644); err != nil {
+			return "", err
+		}
+		return staging, nil
+	}
 	prev := out + ".prev"
 	if _, err := os.Stat(prev); err == nil {
 		// The leftover must be OURS before recovery touches it (mid-arc
@@ -205,6 +244,61 @@ func writeComplete(work string) error {
 // recovers the one crash window (prev present, out missing) on the next
 // run.
 func publishBatch(out, work string) error {
+	return publishBatchMode(out, work, false)
+}
+
+// publishCheck publishes a -check result WITHOUT replacing anything: a
+// check promises a fresh destination, and the start-of-run emptiness
+// test says nothing about what a second writer put at out since. Only an
+// absent out, or an EMPTY directory (removed with rmdir, which cannot
+// remove contents), is ever replaced — nothing at out is moved aside or
+// deleted. On refusal the finished result stays in staging and the error
+// names it.
+func publishCheck(out, work string) error {
+	fi, err := os.Lstat(out)
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		return checkPublishRefused(out, work, err.Error())
+	case fi.Mode()&os.ModeSymlink != 0:
+		return checkPublishRefused(out, work, "it is now a symlink")
+	case !fi.IsDir():
+		return checkPublishRefused(out, work, "it is now a file")
+	default:
+		entries, err := os.ReadDir(out)
+		if err != nil {
+			return checkPublishRefused(out, work, err.Error())
+		}
+		if len(entries) > 0 {
+			return checkPublishRefused(out, work, fmt.Sprintf("it now holds %d entries written since the run started (e.g. %s)", len(entries), entries[0].Name()))
+		}
+		// rmdir removes only an EMPTY directory, so an entry created
+		// since ReadDir makes this fail rather than vanish.
+		if err := os.Remove(out); err != nil {
+			return checkPublishRefused(out, work, err.Error())
+		}
+	}
+	// Go's rename refuses an existing destination directory, so anything
+	// recreated at out since the Remove makes this fail, not replace.
+	if err := os.Rename(work, out); err != nil {
+		return checkPublishRefused(out, work, err.Error())
+	}
+	return nil
+}
+
+func checkPublishRefused(out, work, why string) error {
+	return fmt.Errorf("-check result NOT published: %s changed during the run (%s); nothing there was touched, and the complete result is left in %s — move it into place yourself", out, why, work)
+}
+
+// beforePublish is a test seam: it runs after the batch is complete in
+// staging and immediately before publication, so tests can model a
+// second writer acting on -out during a run.
+var beforePublish = func(out string) {}
+
+func publishBatchMode(out, work string, check bool) error {
+	if check {
+		return publishCheck(out, work)
+	}
 	prev := out + ".prev"
 	if _, err := os.Stat(out); err == nil {
 		if err := os.Rename(out, prev); err != nil {
@@ -384,6 +478,14 @@ func run(cfg config) error {
 	if cfg.replay != "" {
 		return runReplay(cfg)
 	}
+	// Siblings (<out>.staging, <out>.prev) are derived by string suffix,
+	// so the path must be canonical first: "outB/" made "outB/.staging",
+	// a staging tree INSIDE the batch it was meant to replace.
+	out, err := cleanOutDir(cfg.out)
+	if err != nil {
+		return err
+	}
+	cfg.out = out
 	var input *gen.Case
 	var origin *harness.CaseOrigin
 	if cfg.check != "" {
@@ -463,7 +565,7 @@ func run(cfg config) error {
 	// `work`; cfg.out is touched only inside publishBatch. This deletes
 	// the whole in-place mutation class: no ownership token, no stale-dir
 	// sweep, no batch.json removal.
-	work, err := stageBatchDir(cfg.out)
+	work, err := stageBatchDir(cfg.out, cfg.check != "")
 	if err != nil {
 		return err
 	}
@@ -663,7 +765,8 @@ func run(cfg config) error {
 		if err := writeComplete(work); err != nil {
 			return err
 		}
-		return publishBatch(cfg.out, work)
+		beforePublish(cfg.out)
+		return publishBatchMode(cfg.out, work, cfg.check != "")
 	}
 
 	ctx := context.Background()
@@ -737,7 +840,8 @@ func run(cfg config) error {
 	if err := writeComplete(work); err != nil {
 		return err
 	}
-	if err := publishBatch(cfg.out, work); err != nil {
+	beforePublish(cfg.out)
+	if err := publishBatchMode(cfg.out, work, cfg.check != ""); err != nil {
 		return err
 	}
 	printReport(rep, cfg, featuresByID, tagCount)

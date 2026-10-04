@@ -27,6 +27,14 @@ func loadCheck(cfg config) (*gen.Case, *harness.CaseOrigin, error) {
 	if !cfg.explicit["out"] || cfg.out == "" {
 		return nil, nil, fmt.Errorf("-check requires an explicit, separate -out directory")
 	}
+	// Publication renames staging onto -out; a symlink there would be
+	// replaced by a real directory rather than written through, so refuse
+	// it instead of quietly changing what the link was.
+	if fi, err := os.Lstat(cfg.out); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("-check -out %s is a symlink; publication would replace the link with a directory — pass the link's target (or a new path) as -out", cfg.out)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, nil, err
+	}
 	// A check is a new experiment. Keep both the input and previous runs;
 	// the user picks a fresh destination for each comparison.
 	entries, err := os.ReadDir(cfg.out)
@@ -51,6 +59,23 @@ func loadCheck(cfg config) (*gen.Case, *harness.CaseOrigin, error) {
 		sourcePath = filepath.Join(input, "subject.go")
 		driverPath = filepath.Join(input, "driver.go")
 		origin.Driver = "copied"
+		// Only subject.go and driver.go are copied into the case; any
+		// other Go file in the directory would be dropped from the build
+		// without a word, so a check of an edited case that split code
+		// into a helper file would judge a different program.
+		dirEntries, err := os.ReadDir(input)
+		if err != nil {
+			return nil, nil, err
+		}
+		var extra []string
+		for _, e := range dirEntries {
+			if name := e.Name(); strings.HasSuffix(name, ".go") && name != "subject.go" && name != "driver.go" {
+				extra = append(extra, name)
+			}
+		}
+		if len(extra) > 0 {
+			return nil, nil, fmt.Errorf("-check %s: directory mode copies only subject.go and driver.go, but the directory also holds %s; merge them into subject.go or move them out", cfg.check, strings.Join(extra, ", "))
+		}
 	}
 	// Publication can clean up an interrupted staging/previous directory.
 	// Reject inputs inside any of those paths, including symlink aliases.

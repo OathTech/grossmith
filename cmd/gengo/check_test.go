@@ -407,3 +407,27 @@ func TestCheckGoLeanPanicMessages(t *testing.T) {
 		})
 	}
 }
+
+// Directory-mode -check copies only subject.go and driver.go; any other
+// Go file in the directory was dropped from the build without a word.
+func TestCheckDirectoryRefusesOtherGoFiles(t *testing.T) {
+	dir := t.TempDir()
+	source := []byte("package main\nfunc fuzzSubject() int { return helper() }\n")
+	driver, err := gen.DriverForSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"subject.go": source, "driver.go": driver,
+		"helper.go": []byte("package main\nfunc helper() int { return 4 }\n"),
+		"notes.txt": []byte("not Go"),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := checkConfig(t, dir)
+	if _, _, err := loadCheck(cfg); err == nil || !strings.Contains(err.Error(), "helper.go") || strings.Contains(err.Error(), "notes.txt") {
+		t.Fatalf("extra Go file not named in a refusal: %v", err)
+	}
+}

@@ -451,7 +451,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	// ownership is a content test now (E5: a file merely NAMED
 	// manifest.json proved nothing).
 	minimalManifest := []byte(`{"schema":"grossmith-manifest-v1","generatorRev":"t","goVersion":"go 1.26","rootFiles":{},"cases":null}`)
-	work1, err := stageBatchDir(out)
+	work1, err := stageBatchDir(out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(out+".staging", "half"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	work2, err := stageBatchDir(out)
+	work2, err := stageBatchDir(out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	if err := os.Rename(out, out+".prev"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageBatchDir(out); err != nil {
+	if _, err := stageBatchDir(out, false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(out, "marker")); string(b) != "previous" {
@@ -504,7 +504,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 
 	// A full successful replacement: the new content swaps in, the
 	// previous is cleaned up.
-	work3, err := stageBatchDir(out)
+	work3, err := stageBatchDir(out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(foreign+".prev", "user-data"), []byte("precious"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageBatchDir(foreign); err == nil {
+	if _, err := stageBatchDir(foreign, false); err == nil {
 		t.Fatal("foreign .prev accepted")
 	}
 	if b, _ := os.ReadFile(filepath.Join(foreign+".prev", "user-data")); string(b) != "precious" {
@@ -543,7 +543,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(foreign2+".staging", "user-data"), []byte("precious"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageBatchDir(foreign2); err == nil {
+	if _, err := stageBatchDir(foreign2, false); err == nil {
 		t.Fatal("foreign .staging accepted")
 	}
 	if b, _ := os.ReadFile(filepath.Join(foreign2+".staging", "user-data")); string(b) != "precious" {
@@ -561,7 +561,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(named+".prev", "manifest.json"), []byte("user notes, not a manifest"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageBatchDir(named); err == nil {
+	if _, err := stageBatchDir(named, false); err == nil {
 		t.Fatal("a file merely NAMED manifest.json proved ownership")
 	}
 	if b, _ := os.ReadFile(filepath.Join(named+".prev", "manifest.json")); string(b) != "user notes, not a manifest" {
@@ -574,7 +574,7 @@ func TestBatchPublishAtomicity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(other+".staging", harness.StagingMarker()), []byte(stagingMarkerContent(filepath.Join(t.TempDir(), "elsewhere"))), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageBatchDir(other); err == nil {
+	if _, err := stageBatchDir(other, false); err == nil {
 		t.Fatal("a staging marker bound to a different out dir was accepted")
 	}
 }
