@@ -15,7 +15,8 @@ import (
 )
 
 // Unmarshal rejects duplicate object names, unknown or incorrectly cased
-// struct fields, and anything after the document except whitespace.
+// struct fields, fixed-size arrays of the wrong length, and anything after
+// the document except whitespace.
 func Unmarshal(data []byte, dst any) error {
 	return unmarshal(data, dst, false)
 }
@@ -170,10 +171,18 @@ func value(dec *json.Decoder, typ reflect.Type, extensible bool) error {
 		if typ != nil && (typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array) {
 			child = typ.Elem()
 		}
+		n := 0
 		for dec.More() {
 			if err := value(dec, child, extensible); err != nil {
 				return err
 			}
+			n++
+		}
+		// encoding/json truncates a long array and zero-fills a short one
+		// when decoding into a Go fixed-size array; either would change the
+		// recorded value, so the element count must match exactly.
+		if typ != nil && typ.Kind() == reflect.Array && n != typ.Len() {
+			return fmt.Errorf("JSON array has %d elements, want exactly %d for %s at byte %d", n, typ.Len(), typ, dec.InputOffset())
 		}
 	}
 	_, err = dec.Token() // matching close, established by json.Valid.

@@ -125,3 +125,36 @@ func TestSchemaFieldSpelling(t *testing.T) {
 		t.Fatalf("distinct exact schema fields: %+v: %v", distinct, err)
 	}
 }
+
+// encoding/json truncates long input and zero-fills short input for Go
+// fixed-size arrays, so [1,2,3] and [5] used to decode as [1 2] and [5 0].
+func TestFixedArrayLengthMustMatch(t *testing.T) {
+	type seeds struct {
+		Seeds  [2]int64   `json:"seeds"`
+		Nested [][2]int64 `json:"nested"`
+		Ptr    *[1]string `json:"ptr"`
+		Open   []int      `json:"open"`
+	}
+	for _, raw := range []string{
+		`{"seeds":[1,2,3]}`,
+		`{"seeds":[5]}`,
+		`{"seeds":[]}`,
+		`{"nested":[[1,2],[3]]}`,
+		`{"ptr":["a","b"]}`,
+	} {
+		var s seeds
+		if err := Unmarshal([]byte(raw), &s); err == nil || !strings.Contains(err.Error(), "want exactly") {
+			t.Errorf("%s: array length mismatch accepted as %+v (err=%v)", raw, s, err)
+		}
+		if err := UnmarshalExtensible([]byte(raw), &s); err == nil {
+			t.Errorf("%s: extensible decoding accepted an array length mismatch", raw)
+		}
+	}
+	var s seeds
+	if err := Unmarshal([]byte(`{"seeds":[5,6],"nested":[[1,2]],"ptr":["a"],"open":[1,2,3]}`), &s); err != nil {
+		t.Fatalf("exact arrays refused: %v", err)
+	}
+	if s.Seeds != [2]int64{5, 6} || s.Nested[0] != [2]int64{1, 2} || s.Ptr[0] != "a" || len(s.Open) != 3 {
+		t.Fatalf("decoded %+v", s)
+	}
+}
