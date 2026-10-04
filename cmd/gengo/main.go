@@ -7,7 +7,7 @@
 //	gengo -n 1000 -seed 1 -out out -clone gc-386   # + degenerate clone (cross-arch)
 //	gengo -n 1000 -seed 1 -out out -clone golean   # + GoLean campaign (deps/golean)
 //
-// The durable output of record is out/batch.json (grossmith-batch-v1);
+// The durable output of record is out/batch.json (grossmith-batch-v2);
 // stdout is a view of it.
 package main
 

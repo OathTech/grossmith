@@ -380,7 +380,7 @@ func TestReportBinding(t *testing.T) {
 		t.Helper()
 		root := manifestFixture(t)
 		for name, content := range map[string]string{
-			"batch.json":   `{"schema":"grossmith-batch-v1","total":1}`,
+			"batch.json":   `{"schema":"grossmith-batch-v2","total":1}`,
 			"manifest.tsv": "case_00000\t1\n",
 		} {
 			if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
@@ -404,7 +404,7 @@ func TestReportBinding(t *testing.T) {
 	})
 	t.Run("edited report refuses", func(t *testing.T) {
 		root := reportFixture(t)
-		if err := os.WriteFile(filepath.Join(root, "batch.json"), []byte(`{"schema":"grossmith-batch-v1","total":99999}`), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "batch.json"), []byte(`{"schema":"grossmith-batch-v2","total":99999}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		wantRefusal(t, root, "the report changed after the batch finished")
@@ -434,7 +434,7 @@ func TestReportBinding(t *testing.T) {
 		if err := WriteComplete(root); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "batch.json"), []byte(`{"schema":"grossmith-batch-v1"}`), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "batch.json"), []byte(`{"schema":"grossmith-batch-v2"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		wantRefusal(t, root, "does not name it")

@@ -155,7 +155,7 @@ func TestStaleBatchReportRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(out, "batch.json")
-	if err := os.WriteFile(stale, []byte(`{"schema":"grossmith-batch-v1"}`), 0o644); err != nil {
+	if err := os.WriteFile(stale, []byte(`{"schema":"grossmith-batch-v2"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(base(out)); err != nil {
@@ -337,7 +337,7 @@ func TestJudgeWritesBatchReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"grossmith-batch-v1", "referenceIdentity", "\"refRan\": 2"} {
+	for _, want := range []string{"grossmith-batch-v2", "referenceIdentity", "\"refRan\": 2"} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("batch.json missing %q:\n%s", want, b)
 		}

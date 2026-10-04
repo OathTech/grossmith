@@ -318,7 +318,12 @@ type BatchReport struct {
 	SubjectBytesMax  int `json:"subjectBytesMax,omitempty"`
 }
 
-const BatchSchema = "grossmith-batch-v1"
+// BatchSchema is v2 since the improvements branch (2026-10): v2 reports
+// require subject digests, per-case records, a gc clone's toolchain
+// record, and lossless string payloads that v1 reports lack. A v1 report
+// is refused by schema name rather than verified under rules it was not
+// written for.
+const BatchSchema = "grossmith-batch-v2"
 
 // SubjectHash is the case identity hash.
 func SubjectHash(subject []byte) string {

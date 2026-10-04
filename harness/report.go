@@ -17,6 +17,7 @@ package harness
 // for the recorded documents.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,16 @@ func ReadBatchReport(root string) (BatchReport, error) {
 	b, err := os.ReadFile(filepath.Join(root, "batch.json"))
 	if err != nil {
 		return BatchReport{}, err
+	}
+	// The schema is read first so that a report written under an older
+	// schema is refused by name rather than by whichever field the strict
+	// decode meets first. This read is advisory; the strict decode below
+	// remains the gate.
+	var head struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(b, &head); err == nil && head.Schema != "" && head.Schema != BatchSchema {
+		return BatchReport{}, fmt.Errorf("batch.json: schema %q, want %q (a report written by another grossmith revision; verify it with the gengo that wrote it)", head.Schema, BatchSchema)
 	}
 	var rep BatchReport
 	if err := strictjson.Unmarshal(b, &rep); err != nil {

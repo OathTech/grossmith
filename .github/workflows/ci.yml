@@ -46,7 +46,7 @@ jobs:
         # BRIEF's mechanically-checkable acceptance, shrunk to CI size).
         run: |
           go run ./cmd/gengo -n 50 -seed 1 -out "$RUNNER_TEMP/smoke" -judge
-          jq -e '.schema == "grossmith-batch-v1" and .total == 50 and .refRan == 50' \
+          jq -e '.schema == "grossmith-batch-v2" and .total == 50 and .refRan == 50' \
             "$RUNNER_TEMP/smoke/batch.json"
       - name: verify smoke
         # -verify on the batch CI just produced, plus one edit it must
