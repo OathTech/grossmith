@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"grossmith/harness"
+	"grossmith/observe"
 )
 
 // The E5 clone-coverage witnesses (arc-end review B2): golean-work/
@@ -106,6 +107,82 @@ func TestVerifyWork(t *testing.T) {
 		delete(rep.CloneWorkFiles, "results.tsv")
 		wantWorkRefusal(t, work, rep, "require recorded work file")
 	})
+	// The work root used to be read only for cases/ and the three named
+	// files, so anything else placed beside them was never noticed.
+	t.Run("run diagnostics at the work root verify", func(t *testing.T) {
+		work, rep := workFixture(t)
+		for _, dir := range []string{"artifacts/go-run/case_00000", "goshim"} {
+			if err := os.MkdirAll(filepath.Join(work, dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, name := range []string{workMarker, "diff-coverage.log"} {
+			if err := os.WriteFile(filepath.Join(work, name), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := VerifyWork(work, rep); err != nil {
+			t.Fatalf("tree with Run's diagnostics refused: %v", err)
+		}
+	})
+	t.Run("leftover file at the work root refuses", func(t *testing.T) {
+		work, rep := workFixture(t)
+		if err := os.WriteFile(filepath.Join(work, "results.old.tsv"), []byte("previous run\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		wantWorkRefusal(t, work, rep, "unexpected entry results.old.tsv at the work root")
+	})
+	t.Run("leftover directory at the work root refuses", func(t *testing.T) {
+		work, rep := workFixture(t)
+		if err := os.MkdirAll(filepath.Join(work, "cases.bak", "case_00000"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		wantWorkRefusal(t, work, rep, "unexpected entry cases.bak at the work root")
+	})
+	t.Run("known name with the wrong type refuses", func(t *testing.T) {
+		work, rep := workFixture(t)
+		if err := os.MkdirAll(filepath.Join(work, "diff-coverage.log"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		wantWorkRefusal(t, work, rep, "want a regular file")
+	})
+	t.Run("symlinked results file refuses", func(t *testing.T) {
+		work, rep := workFixture(t)
+		path := filepath.Join(work, "results.tsv")
+		target := filepath.Join(t.TempDir(), "results.tsv")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+		wantWorkRefusal(t, work, rep, "want a regular file")
+	})
+}
+
+// Report validation recomputes golean.translate's panic-message refusal
+// with harness.GoLeanRefusesPanicMessage; the two must not drift apart.
+func TestPanicMessageRefusalMatchesTranslate(t *testing.T) {
+	for _, msg := range []string{
+		"", "-", "boom", "a\x01b", "\x1f", "tab\there", "line\nbreak", "\xc2", "µ", "\u007f", "--", " -",
+		"runtime error: integer divide by zero",
+	} {
+		c := Case{ID: "case_00000", Dir: t.TempDir(), Reference: harness.Outcome{
+			Status: harness.StatusRan, Document: observe.Panicked(nil, observe.PanicOther, msg)}}
+		_, res, _ := translate(t.TempDir(), c)
+		refused := res.Verdict == harness.VerdictCloneInfra
+		if refused != harness.GoLeanRefusesPanicMessage(msg) {
+			t.Errorf("%q: translate refusal %v (verdict %s), harness predicate %v",
+				msg, refused, res.Verdict, harness.GoLeanRefusesPanicMessage(msg))
+		}
+	}
 }
 
 func TestVerifyEmptyCloneWork(t *testing.T) {

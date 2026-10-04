@@ -19,6 +19,21 @@ of silently replacing bytes. New readers reject mixed payloads (including an
 explicitly empty `str`), null payloads, numeric arrays in `strBytes`, and
 `strBytes` for valid UTF-8, keeping the representation canonical.
 
+`strBytes` and `messageBytes` must be canonical standard base64 (RFC 4648
+alphabet with `=` padding): the exact text `base64.StdEncoding` produces for
+the bytes. Non-zero padding bits (`"wh=="` for the byte `c2`, whose canonical
+form is `"wg=="`), embedded CR/LF, and missing padding are rejected, so every
+byte string has exactly one spelling.
+
+No value field may be an explicit JSON `null`: `kind`, `goType`, `bool`,
+`int`, `uint`, `str`, `strBytes`, `len`, `elems`, `fields`, `entries`,
+`dynType`, and `payload`, nor the `name`/`value` of a struct field or the
+`key`/`value` of a map entry. A zero payload is encoded by omitting its
+field (`{"kind":"int","goType":"int"}` is the integer 0); the explicit zero
+spelling (`"int":0`, `"elems":[]`) is also read, but `"int":null` is not,
+because it would otherwise decode to the same zero as a real 0. Numeric
+fields must be JSON integers in range (no fraction or exponent).
+
 The same encoding applies to returned values, observation events, and strings
 nested in arrays, slices, structs, maps, or interfaces. String map keys are
 ordered by their original bytes. Use `observe.StringValue(goType, s)` to build
@@ -60,4 +75,27 @@ sentinel, and messages containing any U+0000–U+001F control character receive 
 clone infrastructure verdict, with the reason recorded. Some older GoLean
 panic encoders leave JSON control characters unescaped; their comparator parse
 failures must not become semantic mismatches. Direct gc comparisons preserve
-these cases as semantic observations.
+these cases as semantic observations. Report verification recomputes this
+refusal: under the GoLean policy, a recorded reference panic whose message
+GoLean cannot represent must carry the clone infrastructure verdict.
+
+## Batch report checks related to these payloads
+
+`gengo -verify` reads `batch.json` with the same strict decoder and also
+requires:
+
+- Fixed-length arrays have exactly their length; `seeds` is two integers.
+  (encoding/json would otherwise drop extra elements or zero-fill missing ones.)
+- `verdicts`, `composition` and `compositionJudged` list exactly the keys that
+  occur, with positive counts; a zero-count entry is rejected.
+- Under the GoLean policy, the reference side of each verdict matches the
+  recorded reference outcome: a reference that did not run, or produced an
+  error document, has verdict `ref-infra`, and no other case has `ref-infra` or
+  `both-infra`.
+- A `gc` or `gc-386` clone records `cloneOracle`, and `cloneIdentity` equals
+  the identity derived from its version, path, `GOARCH` and `gcflags`
+  (`gc-386` requires `GOARCH` `386`). Reports written before `cloneOracle`
+  existed do not verify; other clones must not record `cloneOracle`.
+- The GoLean work root contains only `cases/`, the three digested run files,
+  and the undigested run diagnostics (`.golean-work`, `diff-coverage.log`,
+  `artifacts/`, `goshim/`).

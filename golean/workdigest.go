@@ -18,7 +18,9 @@ package golean
 // the checkout identity pin the copier, and the copier's input is the
 // digested cases/<id>/main.go. Direct coverage of the nested copies
 // would digest a tree their script owns the layout of — deferred, and
-// the batch's verification summary claims only what is direct.
+// the batch's verification summary claims only what is direct. The set
+// of names at the work root is closed (workRootEntries): undigested
+// diagnostics are allowed by name and type, and anything else refuses.
 
 import (
 	"fmt"
@@ -35,12 +37,58 @@ var workFileNames = []string{"manifest.tsv", "results.tsv", "results.tsv.meta"}
 
 var workDigestRe = regexp.MustCompile("^[0-9a-f]{64}$")
 
+// workRootEntries is the closed set of names Run writes at the work root,
+// with whether each is a directory. Besides the digested cases/ tree and
+// workFileNames, it holds the diagnostics named in SCOPE above, which no
+// digest covers: the ownership marker, diff-coverage.log, the script's
+// artifacts/ tree, and the goshim/ PATH directory for a pinned go binary.
+var workRootEntries = map[string]bool{
+	"cases":             true,
+	"manifest.tsv":      false,
+	"results.tsv":       false,
+	"results.tsv.meta":  false,
+	workMarker:          false,
+	"diff-coverage.log": false,
+	"artifacts":         true,
+	"goshim":            true,
+}
+
+// checkWorkRoot refuses any work-root entry Run does not write, or one of
+// the wrong type. Previously only cases/ and the three named files were
+// read, so a leftover or hand-added file beside them went unnoticed.
+func checkWorkRoot(workDir string) error {
+	entries, err := os.ReadDir(workDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		wantDir, known := workRootEntries[e.Name()]
+		if !known {
+			return fmt.Errorf("golean work: unexpected entry %s at the work root — no digest or diagnostic role accounts for it", e.Name())
+		}
+		want := "regular file"
+		if wantDir {
+			want = "directory"
+		}
+		if e.Type()&os.ModeSymlink != 0 || e.IsDir() != wantDir || (!wantDir && !e.Type().IsRegular()) {
+			return fmt.Errorf("golean work: %s at the work root has file type %s, want a %s", e.Name(), e.Type(), want)
+		}
+	}
+	return nil
+}
+
 // WorkDigests digests a campaign's work tree after the run: per-case
 // main.go digests (keyed by case ID) and the work-root run artifacts.
 // Unexpected entries refuse — a file this function does not understand
 // is a file no digest vouches for.
 func WorkDigests(workDir string) (perCase, workFiles map[string]string, err error) {
 	perCase, workFiles = map[string]string{}, map[string]string{}
+	if err := checkWorkRoot(workDir); err != nil {
+		return nil, nil, err
+	}
 	caseRoot := filepath.Join(workDir, "cases")
 	entries, err := os.ReadDir(caseRoot)
 	if err != nil && !os.IsNotExist(err) {
