@@ -93,6 +93,10 @@ jobs:
           repository: OathTech/golean
           ssh-key: ${{ secrets.GOLEAN_DEPLOY_KEY }}
           path: deps/golean
+          # Full history: the integration witnesses confirm the checkout
+          # descends from a minimum GoLean revision (merge-base
+          # --is-ancestor), which a depth-1 clone cannot answer.
+          fetch-depth: 0
       - name: read GoLean oracle version
         id: oracle
         run: |
@@ -131,9 +135,27 @@ jobs:
       - name: GoLean integration witnesses
         env:
           GOLEAN_CHECKOUT: ${{ github.workspace }}/deps/golean
+        # A renamed or deleted witness would otherwise pass as "no tests
+        # to run": each named test must report its own top-level PASS.
         run: |
-          go test -count=1 -run '^TestGoLean(ChoiceDepth|ByteStrings|AssignmentBeforePanic)$' ./golean
-          go test -count=1 -run '^TestCheckGoLean' ./cmd/gengo
+          set -o pipefail
+          missing=0
+          witness() {
+            local pkg=$1; shift
+            local re log
+            re="^($(IFS='|'; echo "$*"))\$"
+            log="$RUNNER_TEMP/witness-$(basename "$pkg").log"
+            go test -count=1 -v -run "$re" "$pkg" | tee "$log"
+            for name in "$@"; do
+              if ! grep -Eq "^--- PASS: ${name} \(" "$log"; then
+                echo "::error::$name did not run and pass in $pkg" >&2
+                missing=1
+              fi
+            done
+          }
+          witness ./golean TestGoLeanChoiceDepth TestGoLeanByteStrings TestGoLeanAssignmentBeforePanic
+          witness ./cmd/gengo TestCheckGoLeanCurrentDriver TestCheckGoLeanPanicMessages
+          exit "$missing"
       - name: campaign
         run: |
           N="${{ github.event.inputs.cases || '300' }}"
