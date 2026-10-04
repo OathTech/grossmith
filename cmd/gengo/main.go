@@ -140,7 +140,13 @@ func preflightBuild(ad *harness.GcAdapter) error {
 	}
 	out := ad.Run(context.Background(), dir)
 	if out.Status != harness.StatusRan {
-		return fmt.Errorf("a trivial program did not build and run (%s): %s", out.Status, firstLine(out.Detail))
+		// The whole diagnostic (bounded): a build failure's first line is
+		// only the package header, never the cause.
+		detail := strings.TrimSpace(out.Detail)
+		if len(detail) > 2000 {
+			detail = detail[:2000] + " …"
+		}
+		return fmt.Errorf("a trivial program did not build and run (%s): %s", out.Status, detail)
 	}
 	if out.Document.Status != observe.StatusOK || len(out.Document.Values) != 1 || out.Document.Values[0].Int != 1 {
 		return fmt.Errorf("a trivial program returning 1 was observed as %+v", out.Document)
