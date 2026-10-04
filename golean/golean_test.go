@@ -361,20 +361,13 @@ func integrationCheckout(t *testing.T) string {
 	if testing.Short() {
 		t.Skip("invokes GoLean's differential harness")
 	}
-	checkout := os.Getenv("GOLEAN_CHECKOUT")
-	explicit := checkout != ""
-	if !explicit {
-		checkout = filepath.Join("..", "deps", "golean")
-	}
-	checkout, err := filepath.Abs(checkout)
+	checkout, skip, err := resolveGoLeanCheckout(os.Getenv("GOLEAN_CHECKOUT"),
+		filepath.Join("..", "deps", "golean"), goleanMinRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(checkout, "scripts", "diff-coverage")); err != nil {
-		if explicit {
-			t.Fatal(err)
-		}
-		t.Skip("no GoLean checkout at deps/golean")
+	if skip != "" {
+		t.Skip(skip)
 	}
 	return checkout
 }
