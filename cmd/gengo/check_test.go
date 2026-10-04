@@ -383,16 +383,19 @@ func TestCheckGoLeanPanicMessages(t *testing.T) {
 			cfg := checkConfig(t, input)
 			cfg.clone, cfg.cloneGCFlags = "golean:"+checkout, ""
 			delete(cfg.explicit, "clone-gcflags")
-			if err := run(cfg); err != nil {
-				t.Fatal(err)
+			want := harness.VerdictMatch
+			if strings.ContainsAny(message, "\x01\a\x1f") {
+				want = harness.VerdictCloneInfra
+			}
+			// A single clone-infra case is a zero-judged campaign: the
+			// batch is published, and the exit says no claim was made.
+			if err := run(cfg); want == harness.VerdictMatch && err != nil ||
+				want != harness.VerdictMatch && (err == nil || !strings.Contains(err.Error(), "INCOMPLETE CAMPAIGN")) {
+				t.Fatalf("want %s: %v", want, err)
 			}
 			rep, err := harness.ReadBatchReport(cfg.out)
 			if err != nil {
 				t.Fatal(err)
-			}
-			want := harness.VerdictMatch
-			if strings.ContainsAny(message, "\x01\a\x1f") {
-				want = harness.VerdictCloneInfra
 			}
 			if rep.Total != 1 || rep.Verdicts[want] != 1 {
 				t.Fatalf("panic comparison: want %s, got %+v", want, rep.Cases)
@@ -405,6 +408,51 @@ func TestCheckGoLeanPanicMessages(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// captureStdout runs f and returns what it printed.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	done := make(chan []byte)
+	go func() {
+		var buf bytes.Buffer
+		buf.ReadFrom(r)
+		done <- buf.Bytes()
+	}()
+	defer func() { os.Stdout = saved }()
+	f()
+	w.Close()
+	os.Stdout = saved
+	return string(<-done)
+}
+
+// A -check case has no inferred coverage tags, so the gc-386 width
+// stratification printed every divergence as UNTAGGED.
+func TestCheckCrossArchStratificationNotApplicable(t *testing.T) {
+	rep := harness.BatchReport{
+		CloneName: "gc-386", Total: 1,
+		Verdicts: map[harness.Verdict]int{harness.VerdictMismatch: 1},
+		Cases:    []harness.CaseResult{{ID: "case_00000", Verdict: harness.VerdictMismatch}},
+	}
+	got := captureStdout(t, func() {
+		printReport(rep, config{clone: "gc-386", check: "subject.go", out: "o"}, map[string][]string{}, map[string]int{})
+	})
+	if strings.Contains(got, "UNTAGGED") || !strings.Contains(got, "not applicable to -check") {
+		t.Fatalf("check-mode stratification:\n%s", got)
+	}
+	// Generated campaigns keep the tag-honesty line the nightly greps for.
+	got = captureStdout(t, func() {
+		printReport(rep, config{clone: "gc-386", out: "o"}, map[string][]string{}, map[string]int{})
+	})
+	if !strings.Contains(got, "UNTAGGED divergence in case_00000") {
+		t.Fatalf("generated-campaign stratification lost:\n%s", got)
 	}
 }
 

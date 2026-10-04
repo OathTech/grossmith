@@ -114,6 +114,40 @@ func main() {
 	}
 }
 
+// batchGoMod is the throwaway module every batch root (and the toolchain
+// preflight) builds under.
+const batchGoMod = "module grossmith-cases\n\ngo 1.26\n"
+
+// preflightBuild builds and runs one trivial observed program through
+// the adapter — the same environment, flags, and go.mod as every case —
+// in a temporary directory, before anything is written. A toolchain that
+// cannot do this would turn every case into an infra verdict.
+func preflightBuild(ad *harness.GcAdapter) error {
+	dir, err := os.MkdirTemp("", "gengo-preflight-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	source := []byte("package main\n\nfunc fuzzSubject() int { return 1 }\n")
+	driver, err := gen.DriverForSource(source)
+	if err != nil {
+		return err
+	}
+	for name, data := range map[string][]byte{"go.mod": []byte(batchGoMod), "subject.go": source, "driver.go": driver} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			return err
+		}
+	}
+	out := ad.Run(context.Background(), dir)
+	if out.Status != harness.StatusRan {
+		return fmt.Errorf("a trivial program did not build and run (%s): %s", out.Status, firstLine(out.Detail))
+	}
+	if out.Document.Status != observe.StatusOK || len(out.Document.Values) != 1 || out.Document.Values[0].Int != 1 {
+		return fmt.Errorf("a trivial program returning 1 was observed as %+v", out.Document)
+	}
+	return nil
+}
+
 // cleanOutDir canonicalizes -out before any sibling path is derived from
 // it, and refuses paths that have no sibling to stage beside: the empty
 // path, the current or a parent directory, and filesystem roots. A
@@ -534,6 +568,11 @@ func run(cfg config) error {
 		}
 		cfg.goBin = oid.Path
 		refOracle = &oid
+		if judging {
+			if err := preflightBuild(&harness.GcAdapter{GoBin: cfg.goBin, Timeout: cfg.timeout, AdapterName: "gc"}); err != nil {
+				return fmt.Errorf("go toolchain preflight (-go %q): %w", cfg.goBin, err)
+			}
+		}
 	}
 	var cloneAd harness.Adapter
 	var cloneOracle *harness.OracleIdentity
@@ -552,6 +591,12 @@ func run(cfg config) error {
 		oid, err := gc.Oracle(context.Background())
 		if err != nil {
 			return fmt.Errorf("clone toolchain preflight (-clone-go %q): %w", cloneGo, err)
+		}
+		// `go version` proves only that a binary answers; a bad
+		// -clone-gcflags or a toolchain older than the batch's go.mod
+		// turned every case into clone-infra and the run still exited 0.
+		if err := preflightBuild(gc); err != nil {
+			return fmt.Errorf("clone toolchain preflight (-clone-go %q, -clone-gcflags %q): %w", cloneGo, cfg.cloneGCFlags, err)
 		}
 		cloneAd, cloneOracle = gc, &oid
 	}
@@ -574,7 +619,7 @@ func run(cfg config) error {
 	// `v || v` and friends — legitimately fire on random code). Staging is
 	// fresh, so it is always written, never inherited (audit P0: a reused
 	// root's go.mod kept arbitrary module/toolchain/replace directives).
-	if err := os.WriteFile(filepath.Join(work, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "go.mod"), []byte(batchGoMod), 0o644); err != nil {
 		return err
 	}
 
@@ -845,7 +890,28 @@ func run(cfg config) error {
 		return err
 	}
 	printReport(rep, cfg, featuresByID, tagCount)
+	// A clone campaign in which no case reached a semantic verdict says
+	// nothing about the clone (B3: a bad -clone-gcflags produced an
+	// all-clone-infra batch that exited 0). The batch stays published for
+	// inspection; the exit status carries the incompleteness.
+	if rep.CloneName != "" {
+		if judged := judgedCases(rep); judged == 0 {
+			return fmt.Errorf("INCOMPLETE CAMPAIGN: 0 of %d cases reached a semantic verdict against clone %s (verdicts: %v); the batch at %s is published for inspection but makes no conformance claim",
+				rep.Total, rep.CloneName, rep.Verdicts, cfg.out)
+		}
+	}
 	return nil
+}
+
+// judgedCases counts cases that reached a semantic verdict.
+func judgedCases(rep harness.BatchReport) int {
+	judged := 0
+	for _, cr := range rep.Cases {
+		if cr.Verdict == harness.VerdictMatch || cr.Verdict == harness.VerdictMismatch {
+			judged++
+		}
+	}
+	return judged
 }
 
 // caseRecordIn is CaseRecord with the config typed for reading back —
@@ -1170,7 +1236,21 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 	// Stratify cross-architecture differences by width dependence. With a
 	// different clone toolchain or compiler flags, an untagged difference
 	// may be a compiler defect as well as a missing generator tag.
-	if cfg.clone == "gc-386" {
+	// The denominator is JUDGED cases (E1; audit: an all-infra batch
+	// printed a reassuring zero/zero). Zero judged is an incomplete
+	// campaign, said so for every clone kind (B3: only gc-386 said it).
+	judged := judgedCases(rep)
+	if rep.CloneName != "" && judged == 0 {
+		fmt.Printf("\n%s: INCOMPLETE CAMPAIGN — 0 of %d cases reached a semantic verdict; no conformance claim is made\n", rep.CloneName, rep.Total)
+	}
+	if cfg.clone == "gc-386" && cfg.check != "" {
+		// A -check case carries no inferred coverage tags, so every
+		// divergence would read as UNTAGGED — a statement about the
+		// missing inference, not about width dependence.
+		mismatches := rep.Verdicts[harness.VerdictMismatch]
+		fmt.Printf("\ncross-arch discrimination: not applicable to -check (coverage tags are not inferred for existing source); %d divergences over %d judged cases\n",
+			mismatches, judged)
+	} else if cfg.clone == "gc-386" {
 		inTag, offTag := 0, 0
 		for _, cr := range rep.Cases {
 			if cr.Verdict != harness.VerdictMismatch {
@@ -1183,18 +1263,9 @@ func printReport(rep harness.BatchReport, cfg config, featuresByID map[string][]
 				fmt.Printf("  UNTAGGED divergence in %s\n", cr.ID)
 			}
 		}
-		// The denominator is JUDGED cases (E1; audit: an all-infra batch
-		// printed a reassuring zero/zero). Zero judged is an incomplete
-		// campaign, said so.
-		judged := 0
-		for _, cr := range rep.Cases {
-			if cr.Verdict == harness.VerdictMatch || cr.Verdict == harness.VerdictMismatch {
-				judged++
-			}
-		}
 		widthTagged := tagCount["width_dependent"]
 		if judged == 0 {
-			fmt.Printf("\ncross-arch discrimination: INCOMPLETE CAMPAIGN — 0 of %d cases reached a semantic verdict; the in-tag/off-tag counts below are vacuous\n", rep.Total)
+			fmt.Printf("cross-arch discrimination: the in-tag/off-tag counts below are vacuous\n")
 		}
 		fmt.Printf("\ncross-arch discrimination: divergences in-tag %d, off-tag %d over %d judged cases; width_dependent-tagged %d\n",
 			inTag, offTag, judged, widthTagged)

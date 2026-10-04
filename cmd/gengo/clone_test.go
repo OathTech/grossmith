@@ -66,6 +66,13 @@ func TestGcCloneCampaign(t *testing.T) {
 			cfg.allowDirty = true
 			cfg.timeout = 20 * time.Second
 			if err := run(cfg); err != nil {
+				// The preflight runs a trivial 386 binary before any write;
+				// a host that builds but cannot execute 32-bit code refuses
+				// the campaign there rather than producing all clone-infra.
+				if clone == "gc-386" && strings.Contains(err.Error(), "clone toolchain preflight") &&
+					strings.Contains(err.Error(), "("+string(harness.StatusRunFailed)+")") {
+					t.Skipf("this host cannot execute 32-bit binaries: %v", err)
+				}
 				t.Fatal(err)
 			}
 			rep, err := harness.ReadBatchReport(cfg.out)
@@ -94,5 +101,46 @@ func TestGcCloneCampaign(t *testing.T) {
 				t.Fatalf("comparison did not produce semantic verdicts: %v", rep.Verdicts)
 			}
 		})
+	}
+}
+
+// `go version` alone admitted bad -clone-gcflags; every case then failed
+// to build as clone-infra and the run exited 0. The preflight builds a
+// trivial program with the clone's flags before anything is written.
+func TestClonePreflightBuildsWithCloneFlags(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds binaries")
+	}
+	cfg := base(filepath.Join(t.TempDir(), "batch"))
+	cfg.clone, cfg.cloneGCFlags, cfg.allowDirty = "gc", "-not-a-compiler-flag", true
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "clone toolchain preflight") {
+		t.Fatalf("unusable clone flags accepted: %v", err)
+	}
+	for _, path := range []string{cfg.out, cfg.out + ".staging", cfg.out + ".prev"} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("clone preflight wrote %s: %v", path, err)
+		}
+	}
+}
+
+// A clone campaign in which no case reached a semantic verdict now fails
+// with a distinct message, for every clone kind, while the batch stays
+// published and verifiable.
+func TestZeroJudgedCampaignFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds binaries")
+	}
+	input := filepath.Join(t.TempDir(), "subject.go")
+	// Compiles for neither side: no case can reach a semantic verdict.
+	if err := os.WriteFile(input, []byte("package main; func fuzzSubject() int { return notDefined }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := checkConfig(t, input)
+	err := run(cfg)
+	if err == nil || !strings.Contains(err.Error(), "INCOMPLETE CAMPAIGN") {
+		t.Fatalf("zero-judged campaign exited cleanly: %v", err)
+	}
+	if err := run(config{verify: cfg.out}); err != nil {
+		t.Fatalf("incomplete campaign not published for inspection: %v", err)
 	}
 }
