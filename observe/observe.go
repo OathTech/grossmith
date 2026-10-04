@@ -113,43 +113,18 @@ type Value struct {
 	Payload *Value `json:"payload,omitempty"`
 }
 
-// UnmarshalJSON preserves payload presence until the string wire contract has
-// been checked. Decoding directly into Value loses explicit empty/null str
-// fields, and encoding/json accepts arrays (even null elements) for []byte.
-// This method also runs for nested values and saved report documents.
+// UnmarshalJSON decodes a value and everything nested inside it in one
+// pass (see decode.go). Payload presence is preserved until the string wire
+// contract has been checked, explicit null is refused for every field, and
+// base64 payloads must be canonical. Nested values are built by the same
+// pass rather than by recursive UnmarshalJSON calls, which re-scanned each
+// subtree and made decoding quadratic in nesting depth.
 func (v *Value) UnmarshalJSON(data []byte) error {
-	var payloads struct {
-		Str      json.RawMessage `json:"str"`
-		StrBytes json.RawMessage `json:"strBytes"`
-	}
-	if err := json.Unmarshal(data, &payloads); err != nil {
+	parsed, err := decodeValueDocument(data)
+	if err != nil {
 		return err
 	}
-	if payloads.Str != nil && payloads.StrBytes != nil {
-		return fmt.Errorf("observe: string value carries both str and strBytes payloads")
-	}
-	if payloads.Str != nil && (len(payloads.Str) == 0 || payloads.Str[0] != '"') {
-		return fmt.Errorf("observe: str must be a JSON string")
-	}
-	if payloads.StrBytes != nil && (len(payloads.StrBytes) == 0 || payloads.StrBytes[0] != '"') {
-		return fmt.Errorf("observe: strBytes must be a base64 string")
-	}
-	// Keep the full schema's strict spelling, Unicode and duplicate-field
-	// checks; the partial decode above only inspects payload presence/types.
-	type wireValue Value
-	var parsed wireValue
-	if err := strictjson.Unmarshal(data, &parsed); err != nil {
-		return err
-	}
-	if payloads.Str != nil || payloads.StrBytes != nil {
-		if parsed.Kind != "string" {
-			return fmt.Errorf("observe: kind %q carries a string payload", parsed.Kind)
-		}
-		if payloads.StrBytes != nil && utf8.Valid(parsed.StrBytes) {
-			return fmt.Errorf("observe: strBytes requires invalid UTF-8 bytes")
-		}
-	}
-	*v = Value(parsed)
+	*v = parsed
 	return nil
 }
 
@@ -265,9 +240,15 @@ func (p *PanicInfo) UnmarshalJSON(data []byte) error {
 		if len(wire.MessageBytes) == 0 || wire.MessageBytes[0] != '"' {
 			return fmt.Errorf("observe: panic messageBytes must be a base64 string")
 		}
-		if err := json.Unmarshal(wire.MessageBytes, &parsed.MessageBytes); err != nil {
+		var text string
+		if err := json.Unmarshal(wire.MessageBytes, &text); err != nil {
 			return err
 		}
+		b, err := canonicalBase64("panic messageBytes", text)
+		if err != nil {
+			return err
+		}
+		parsed.MessageBytes = b
 	}
 	if err := checkPanicInfo(&parsed); err != nil {
 		return err

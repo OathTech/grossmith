@@ -88,10 +88,10 @@ func TestParseFailsClosed(t *testing.T) {
 // TestKindMapping covers the gc message prose mapping.
 func TestKindMapping(t *testing.T) {
 	cases := map[string]PanicKind{
-		"runtime error: integer divide by zero":               PanicDivide,
-		"runtime error: index out of range [44] with length 3": PanicIndexRange,
-		"runtime error: slice bounds out of range [:9]":        PanicSliceBounds,
-		"interface conversion: main.I0 is main.T0, not main.T1": PanicIfaceConv,
+		"runtime error: integer divide by zero":                            PanicDivide,
+		"runtime error: index out of range [44] with length 3":             PanicIndexRange,
+		"runtime error: slice bounds out of range [:9]":                    PanicSliceBounds,
+		"interface conversion: main.I0 is main.T0, not main.T1":            PanicIfaceConv,
 		"runtime error: invalid memory address or nil pointer dereference": PanicNilDeref,
 		"boom": PanicOther,
 	}
