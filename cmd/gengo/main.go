@@ -1379,7 +1379,8 @@ func generatorRev() string {
 			}
 		}
 	}
-	if rev != "" {
+	_, src, _, _ := runtime.Caller(0)
+	if rev != "" && stampDescribesSource(src) {
 		if dirty {
 			rev += "-dirty"
 		}
@@ -1398,6 +1399,32 @@ func generatorRev() string {
 		rev += "-dirty"
 	}
 	return rev
+}
+
+// stampDescribesSource reports whether the build's VCS stamp can be taken
+// to describe the tree this binary was built from. The go command
+// recognises a repository only by a .git DIRECTORY, so a build inside a
+// git worktree or submodule nested under another checkout (whose .git is
+// a FILE) is stamped with the OUTER checkout's revision and clean state.
+// When the build-time source file is still present and its nearest .git
+// entry is a file, the stamp is set aside and generatorRev falls back to
+// asking git directly. A source path that is relative (-trimpath) or no
+// longer present cannot be checked; the stamp is kept, as before.
+func stampDescribesSource(src string) bool {
+	if !filepath.IsAbs(src) {
+		return true
+	}
+	if _, err := os.Stat(src); err != nil {
+		return true
+	}
+	for dir := filepath.Dir(src); ; dir = filepath.Dir(dir) {
+		if fi, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return fi.IsDir()
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return true
+		}
+	}
 }
 
 func hasTag(tags []string, want string) bool {
