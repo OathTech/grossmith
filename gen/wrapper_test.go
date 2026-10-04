@@ -2,9 +2,9 @@ package gen
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/types"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"

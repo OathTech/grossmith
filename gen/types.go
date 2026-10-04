@@ -258,8 +258,8 @@ func (t Type) boundaryLiterals() []string {
 		return []string{
 			fmt.Sprintf("%d", max),
 			fmt.Sprintf("%d", max-1),
-			fmt.Sprintf("%d", uint64(1)<<(bits-1)),           // sign bit alone
-			fmt.Sprintf("%d", (alternating(bits)<<1)&max),    // 0xAA…
+			fmt.Sprintf("%d", uint64(1)<<(bits-1)),        // sign bit alone
+			fmt.Sprintf("%d", (alternating(bits)<<1)&max), // 0xAA…
 		}
 	}
 	max := int64(^uint64(0) >> (65 - bits))
