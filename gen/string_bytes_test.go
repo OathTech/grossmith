@@ -67,3 +67,40 @@ func TestByteStringSlicesRespectTheProfile(t *testing.T) {
 	}
 	t.Logf("%d byte-string slice sites", total)
 }
+
+// TestByteStringsRealisedWhenEnabled pins a floor on how often a case whose
+// mix enables string_bytes, and which reaches a string slice site, actually
+// emits a UTF-8-splitting slice. Before the utf8-split arm the construct was
+// realised in 5 of 1000 default-profile cases (seeds 1-1000) with ~52
+// eligible; the arm brings it to 30 of 52. The floor is loose: generation is
+// deterministic, so this guards against the arm being masked or starved, not
+// against noise.
+func TestByteStringsRealisedWhenEnabled(t *testing.T) {
+	eligible, realised := 0, 0
+	for seed := int64(1); seed <= 400; seed++ {
+		c, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The utf8-split arm is valid exactly when a string slice site
+		// was reached with string_bytes in the mix.
+		st := c.Stats["string-slice"]
+		if st == nil || st.Valid["utf8-split"] == 0 {
+			if hasFeature(c, "string_bytes") {
+				t.Fatalf("seed %d: string_bytes realised without an eligible slice site", seed)
+			}
+			continue
+		}
+		eligible++
+		if hasFeature(c, "string_bytes") {
+			realised++
+		}
+	}
+	t.Logf("string_bytes realised in %d of %d eligible cases (seeds 1-400)", realised, eligible)
+	if eligible < 10 {
+		t.Fatalf("only %d eligible cases in seeds 1-400: the string slice site or the mix changed", eligible)
+	}
+	if realised*3 < eligible {
+		t.Fatalf("string_bytes realised in %d of %d eligible cases; want at least a third", realised, eligible)
+	}
+}

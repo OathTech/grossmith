@@ -147,6 +147,40 @@ var asciiWords = func() []string {
 	return out
 }()
 
+// multibyteWords are the alphabet words containing a multi-byte rune: the
+// only words a constant slice can cut inside a UTF-8 sequence. Derived from
+// stringWords so the utf8-split arm adds no new literal text.
+var multibyteWords = func() []string {
+	var out []string
+	for _, w := range stringWords {
+		if len(runeBounds(w)) != len(w)+1 {
+			out = append(out, w)
+		}
+	}
+	if len(out) == 0 {
+		panic("gen: stringWords has no multi-byte word for the utf8-split arm")
+	}
+	return out
+}()
+
+// utf8SplitSlices lists every constant bound pair [a, b] whose slice w[a:b]
+// is not valid UTF-8, in ascending order. Fails loudly on a word that admits
+// none (a generator bug: multibyteWords guarantees one).
+func utf8SplitSlices(w string) [][2]int {
+	var out [][2]int
+	for a := 0; a <= len(w); a++ {
+		for b := a; b <= len(w); b++ {
+			if !utf8.ValidString(w[a:b]) {
+				out = append(out, [2]int{a, b})
+			}
+		}
+	}
+	if len(out) == 0 {
+		panic(fmt.Sprintf("gen: word %q admits no UTF-8-splitting slice", w))
+	}
+	return out
+}
+
 // runeBounds are the legal constant slice offsets of w: every rune start plus
 // len(w). Used when string_bytes is disabled by the mix or profile.
 func runeBounds(w string) []int {
@@ -908,6 +942,23 @@ func (g *Generator) stringExpr(fuel int) value {
 					g.mark("strings", "string_slice")
 					g.note(tagPanicRisk)
 					out = value{text: fmt.Sprintf("%q[%s:]", w, iv.text), strLen: litLen(w)}
+				}},
+				// The utf8-split arm exists only when string_bytes is in
+				// the mix: the literal arm alone realised the construct in
+				// ~1/36 sites (one multi-byte word in the alphabet, then a
+				// splitting bound pair), so a case with the mix bit on
+				// rarely exercised it. Masked out (ok=false) when the
+				// construct is off, which leaves the choice total — and
+				// therefore every draw — identical to the construct-off
+				// generator. Last in the list for the same reason. Constant
+				// in-range bounds on a constant literal: compile-safe, and
+				// a non-growing substring like the literal arm.
+				{name: "utf8-split", weight: 3, ok: g.enabled("string_bytes"), emit: func() {
+					w := pick(g.c, multibyteWords)
+					cuts := utf8SplitSlices(w)
+					cut := pick(g.c, cuts)
+					g.mark("strings", "string_slice", "string_bytes")
+					out = value{text: fmt.Sprintf("%q[%d:%d]", w, cut[0], cut[1]), strLen: litLen(w)}
 				}},
 			}).emit()
 		}},
