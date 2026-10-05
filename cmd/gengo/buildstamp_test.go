@@ -60,3 +60,20 @@ func TestStampDescribesSource(t *testing.T) {
 		}
 	}
 }
+
+// A judged campaign must name its generator: an identity git could not
+// state, or whose cleanliness git could not check, is not a revision.
+func TestRevisionUnstated(t *testing.T) {
+	for rev, want := range map[string]bool{
+		"unknown":                      true,
+		"cwd-git:abc123-dirty-unknown": true,
+		"abc123":                       false,
+		"abc123-dirty":                 false,
+		"cwd-git:abc123":               false,
+		"cwd-git:abc123-dirty":         false,
+	} {
+		if got := revisionUnstated(rev); got != want {
+			t.Errorf("%q: got %v, want %v", rev, got, want)
+		}
+	}
+}

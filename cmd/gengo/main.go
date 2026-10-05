@@ -542,6 +542,12 @@ func run(cfg config) error {
 	}
 	judging := cfg.judge || cfg.clone != ""
 	rev := generatorRev()
+	if judging && revisionUnstated(rev) {
+		// Neither a commit nor a content hash can be named (git missing,
+		// a status check that failed, or a build whose VCS stamp names
+		// another checkout). A judged campaign must name its generator.
+		return fmt.Errorf("judged campaign with an unstated generator revision (%s): build and run gengo from a git checkout of grossmith, or build with -buildvcs=false and run it from the checkout it was built from", rev)
+	}
 	if judging && strings.HasSuffix(rev, "-dirty") {
 		// A campaign of record from a dirty tree records an identity that
 		// names no reviewable revision (E3). Refuse, or — under
@@ -1380,11 +1386,19 @@ func generatorRev() string {
 		}
 	}
 	_, src, _, _ := runtime.Caller(0)
-	if rev != "" && stampDescribesSource(src) {
-		if dirty {
-			rev += "-dirty"
+	if rev != "" {
+		if stampDescribesSource(src) {
+			if dirty {
+				rev += "-dirty"
+			}
+			return rev
 		}
-		return rev
+		// The stamp names another checkout. The working directory's
+		// repository names this build only if it tracks the very source
+		// file that was compiled; otherwise no revision can be stated.
+		if !cwdTracksSource(src) {
+			return "unknown"
+		}
 	}
 	// Sanitized env inside gitProbe (hunt F4: an ambient GIT_DIR recorded
 	// a FOREIGN repo's HEAD here).
@@ -1435,6 +1449,28 @@ func stampDescribesSource(src string) bool {
 			return false
 		}
 	}
+}
+
+// cwdTracksSource reports whether the working directory's repository
+// tracks the build-time source file at its own path. Paths that cannot be
+// checked (relative under -trimpath, or no longer present) are accepted,
+// as for stampDescribesSource.
+func cwdTracksSource(src string) bool {
+	if !filepath.IsAbs(src) {
+		return true
+	}
+	if _, err := os.Stat(src); err != nil {
+		return true
+	}
+	_, err := gitProbe("ls-files", "--error-unmatch", "--", src)
+	return err == nil
+}
+
+// revisionUnstated reports a generator identity that names no reviewable
+// revision: git could not state one, or could not say whether the tree
+// was clean.
+func revisionUnstated(rev string) bool {
+	return rev == "unknown" || strings.HasSuffix(rev, "-dirty-unknown")
 }
 
 func hasTag(tags []string, want string) bool {
