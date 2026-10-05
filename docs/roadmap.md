@@ -145,25 +145,22 @@ attribute behaviour to a change (the
 [pre-landing review](2026-09-17_grossmith-improvements-prelanding-audit.md)
 first recorded this).
 
-Follow-ups for the CLI owner, not yet scheduled:
+The replay refusal names both revisions ("recorded under generator X, this
+binary is Y"). Those revisions could previously be wrong: Go stamps
+`vcs.revision` from the nearest enclosing `.git` *directory*, so a build in a
+git worktree nested under a checkout, or in an exported tree unpacked inside
+one, recorded the enclosing checkout's HEAD as clean. `generatorRev()` now
+keeps the stamp only when the stamping repository tracks the compiled source
+file; otherwise it uses the cwd-git probe if the working directory's
+repository tracks that file, and records `unknown` if not. Judged campaigns
+refuse `unknown` and `-dirty-unknown` revisions
+([landing review repairs](2026-10-04_landing-review-repairs.md)).
 
-- The replay refusal already names both revisions ("recorded under generator
-  X, this binary is Y"). The revisions can still be wrong. `generatorRev()`
-  prefers Go's `vcs.revision` build setting, and Go stamps that from the
-  nearest enclosing directory with a `.git` *directory*. A git worktree
-  (whose `.git` is a file) or a `git archive` tree extracted inside another
-  checkout therefore gets the enclosing checkout's HEAD and clean status. A
-  binary built in a nested worktree at a later commit was observed stamping
-  the outer checkout's `615498d`. A `main` build from an archive under
-  `.tmp/` stamped the same revision, so the refusal printed identical
-  revisions for two different generators. The stamp should be checked
-  against the source actually built, or the mismatch should be reported as
-  unknown provenance. Until then, `go build -buildvcs=false` from the source
-  tree uses the cwd git probe instead.
-- When decoding fails and the recorded revision differs from the current
-  one, the refusal could say "this case was written by generator revision
-  X; replay it with that revision" as its leading line. Today it prints a
-  warning and then the decode error.
+Follow-up for the CLI, not yet scheduled: when decoding fails and the recorded
+revision differs from the current one, the refusal could lead with "this case
+was written by generator revision X; replay it with that revision". Today it
+prints a warning and then the decode error.
+
 The CLI's `-check` mode now reruns saved cases or edited single-file subjects
 into a separate verifiable batch. It records source provenance and driver
 choice without claiming generated coverage or a replayable draw tape.
