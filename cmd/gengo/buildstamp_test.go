@@ -2,13 +2,15 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
 
-// The go command stamps a build inside a nested git worktree with the
-// outer checkout's revision; generatorRev must not record that stamp as
-// this tree's identity.
+// The go command stamps a build with the revision of the nearest enclosing
+// .git directory, which for a nested worktree or an exported tree unpacked
+// inside a checkout is another checkout's revision; generatorRev must not
+// record that stamp as this tree's identity.
 func TestStampDescribesSource(t *testing.T) {
 	write := func(path, body string) {
 		t.Helper()
@@ -20,21 +22,36 @@ func TestStampDescribesSource(t *testing.T) {
 		}
 	}
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatal(err)
+	tracked := filepath.Join(root, "cmd", "gengo", "main.go")
+	write(tracked, "package main\n")
+	write(filepath.Join(root, ".gitignore"), "/scratch/\n")
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", ".gitignore", "cmd/gengo/main.go"},
+		{"-c", "user.name=t", "-c", "user.email=t@local", "commit", "-q", "-m", "fixture"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
 	}
-	plain := filepath.Join(root, "cmd", "gengo", "main.go")
-	write(plain, "package main\n")
-	nested := filepath.Join(root, "wt", "agent", "cmd", "gengo", "main.go")
+	exported := filepath.Join(root, "scratch", "export", "cmd", "gengo", "main.go")
+	write(exported, "package main\n")
+	nested := filepath.Join(root, "scratch", "wt", "cmd", "gengo", "main.go")
 	write(nested, "package main\n")
-	write(filepath.Join(root, "wt", "agent", ".git"), "gitdir: /elsewhere\n")
+	write(filepath.Join(root, "scratch", "wt", ".git"), "gitdir: /elsewhere\n")
+	untracked := filepath.Join(root, "cmd", "gengo", "extra.go")
+	write(untracked, "package main\n")
 
 	for _, tc := range []struct {
 		name, src string
 		want      bool
 	}{
-		{"repository with a .git directory", plain, true},
+		{"file tracked by the stamping repository", tracked, true},
 		{"worktree nested under another checkout", nested, false},
+		{"exported tree unpacked inside a checkout", exported, false},
+		{"untracked file in the stamping repository", untracked, false},
 		{"trimmed source path", "grossmith/cmd/gengo/main.go", true},
 		{"source no longer present", filepath.Join(root, "gone", "main.go"), true},
 	} {

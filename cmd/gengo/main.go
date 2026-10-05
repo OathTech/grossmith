@@ -1402,14 +1402,16 @@ func generatorRev() string {
 }
 
 // stampDescribesSource reports whether the build's VCS stamp can be taken
-// to describe the tree this binary was built from. The go command
-// recognises a repository only by a .git DIRECTORY, so a build inside a
-// git worktree or submodule nested under another checkout (whose .git is
-// a FILE) is stamped with the OUTER checkout's revision and clean state.
-// When the build-time source file is still present and its nearest .git
-// entry is a file, the stamp is set aside and generatorRev falls back to
-// asking git directly. A source path that is relative (-trimpath) or no
-// longer present cannot be checked; the stamp is kept, as before.
+// to describe the tree this binary was built from. The go command stamps
+// from the nearest enclosing directory that has a .git DIRECTORY, so two
+// ordinary layouts get another checkout's revision and clean state: a git
+// worktree or submodule nested under a checkout (its .git is a FILE), and
+// an exported tree unpacked inside a checkout (no .git of its own). The
+// stamp is kept only when the build-time source file is tracked by the
+// repository the stamp came from; otherwise generatorRev falls back to
+// asking git directly. A failed check counts as unconfirmed. A source path
+// that is relative (-trimpath) or no longer present cannot be checked; the
+// stamp is kept, as before.
 func stampDescribesSource(src string) bool {
 	if !filepath.IsAbs(src) {
 		return true
@@ -1419,10 +1421,18 @@ func stampDescribesSource(src string) bool {
 	}
 	for dir := filepath.Dir(src); ; dir = filepath.Dir(dir) {
 		if fi, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
-			return fi.IsDir()
+			if !fi.IsDir() {
+				return false
+			}
+			rel, err := filepath.Rel(dir, src)
+			if err != nil {
+				return false
+			}
+			_, err = gitProbe("-C", dir, "ls-files", "--error-unmatch", "--", rel)
+			return err == nil
 		}
 		if parent := filepath.Dir(dir); parent == dir {
-			return true
+			return false
 		}
 	}
 }
