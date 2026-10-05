@@ -1,5 +1,9 @@
 **Improvements repair record — 2026-10-03**
 
+Follow-up: the [landing review repairs](2026-10-04_landing-review-repairs.md)
+record a further review and its repairs; the readiness statement below is
+superseded by that record.
+
 The [audit of `3bba169`](2026-10-03_unlanded-work-audit.md) found three remaining
 gaps in `codex/grossmith-improvements`. All three are repaired, with regression
 tests that failed on the prior code and pass on the repaired implementation.
