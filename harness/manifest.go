@@ -103,6 +103,11 @@ func caseEntries(dir string) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
+			if len(inner) == 0 {
+				// An empty battery/ lists nothing, so it would slip past
+				// the closed schema unnamed.
+				return nil, fmt.Errorf("%s is an empty directory", bdir)
+			}
 			for _, ie := range inner {
 				if err := regularFile(bdir, ie); err != nil {
 					return nil, err

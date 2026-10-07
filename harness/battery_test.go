@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"grossmith/gen"
+	"grossmith/observe"
 )
 
 var twoSpecs = []BatterySpec{
@@ -62,7 +63,7 @@ func validDoc(t *testing.T) FunctionsDoc {
 	}
 	d := FunctionsDoc{Schema: FunctionsSchema, Case: "case_00000",
 		FunctionsSHA256: strings.Repeat("a", 64), BatteryDriverSHA256: strings.Repeat("b", 64),
-		Oracle: OracleIdentity{Path: "/go", SHA256: strings.Repeat("c", 64), Version: "go version x", GOARCH: "amd64"}}
+		Oracle: OracleIdentity{Path: "/go", SHA256: strings.Repeat("c", 64), Version: "go version x", GOOS: "linux", GOARCH: "amd64", ModuleMode: "module (go 1.26)"}}
 	for i, s := range twoSpecs {
 		// Copies: mutations must not reach the shared specs.
 		e := FunctionEntry{Function: s.Name, Params: append([]string(nil), s.Params...),
@@ -99,6 +100,19 @@ func TestFunctionsDocValidate(t *testing.T) {
 		"neither":             func(d *FunctionsDoc) { d.Functions[0].Expected[0].OK = nil },
 		"panic kind mismatch": func(d *FunctionsDoc) { d.Functions[0].Expected[1].Panic.Kind = "index-out-of-range" },
 		"result type":         func(d *FunctionsDoc) { d.Functions[1].Expected[0].OK[0] = json.RawMessage("2") },
+		// Review findings (G1 pre-merge): result types are checked even
+		// when no row is ok, names are bf0.., features are real counts,
+		// and every panic is a runtime error.
+		"unknown result type": func(d *FunctionsDoc) { d.Functions[1].Results = []string{"string", "float64"} },
+		"unknown param type":  func(d *FunctionsDoc) { d.Functions[0].Params[1] = "uintptr" },
+		"renamed function":    func(d *FunctionsDoc) { d.Functions[1].Function = "main" },
+		"bad feature count":   func(d *FunctionsDoc) { d.Functions[0].Features["division"] = -5 },
+		"empty feature tag":   func(d *FunctionsDoc) { d.Functions[0].Features[""] = 1 },
+		"not a runtime error": func(d *FunctionsDoc) {
+			p := observe.NewPanicInfo(observe.PanicOther, "")
+			d.Functions[0].Expected[1].Panic = &p
+		},
+		"oracle goos": func(d *FunctionsDoc) { d.Oracle.GOOS = "" },
 	}
 	for name, m := range mutations {
 		d := validDoc(t)
@@ -150,6 +164,9 @@ func writeBatteryBatch(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, FunctionsJSON), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := WriteCaseRecord(dir, CaseRecord{Schema: CaseSchema, ID: "case_00000", Seed: 3, Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := WriteManifest(root, "test", "go 1.26", []string{"case_00000"}, map[string]int64{"case_00000": 3}); err != nil {
 		t.Fatal(err)
 	}
@@ -172,8 +189,8 @@ func TestBatteryBatchValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Cases[0].Files) != 5 {
-		t.Fatalf("manifest lists %v, want the 5 case files", m.Cases[0].Files)
+	if len(m.Cases[0].Files) != 6 {
+		t.Fatalf("manifest lists %v, want the 6 case files", m.Cases[0].Files)
 	}
 	dir := filepath.Join(root, "case_00000")
 
@@ -186,6 +203,26 @@ func TestBatteryBatchValidation(t *testing.T) {
 		},
 		"missing battery source": func(t *testing.T) {
 			os.Remove(filepath.Join(dir, BatteryDir, BatteryDriverGo))
+		},
+		"empty battery dir in a case without a battery": func(t *testing.T) {
+			for _, n := range []string{FunctionsJSON, BatteryDir + "/" + FunctionsGo, BatteryDir + "/" + BatteryDriverGo} {
+				os.Remove(filepath.Join(dir, filepath.FromSlash(n)))
+			}
+			root := filepath.Dir(dir)
+			if _, err := WriteManifest(root, "test", "go 1.26", []string{"case_00000"}, map[string]int64{"case_00000": 3}); err == nil {
+				t.Fatal("WriteManifest accepted an empty battery dir")
+			}
+		},
+		"function count disagrees with case.json": func(t *testing.T) {
+			rewriteDoc(t, dir, func(d *FunctionsDoc) { d.Functions = d.Functions[:1] })
+		},
+		"input count disagrees with case.json": func(t *testing.T) {
+			rewriteDoc(t, dir, func(d *FunctionsDoc) {
+				for i := range d.Functions {
+					d.Functions[i].Inputs = d.Functions[i].Inputs[:1]
+					d.Functions[i].Expected = d.Functions[i].Expected[:1]
+				}
+			})
 		},
 		"battery dir is a symlink": func(t *testing.T) {
 			real := filepath.Join(t.TempDir(), "b")
@@ -230,6 +267,25 @@ func TestBatteryBatchValidation(t *testing.T) {
 			t.Fatal("WriteManifest described a battery without functions.json")
 		}
 	})
+}
+
+// rewriteDoc edits functions.json into another internally valid document
+// and re-binds the manifest, so only the cross-checks can refuse it.
+func rewriteDoc(t *testing.T, dir string, edit func(*FunctionsDoc)) {
+	t.Helper()
+	d, err := ReadFunctionsDoc(filepath.Join(dir, FunctionsJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit(&d)
+	b, _ := json.MarshalIndent(d, "", " ")
+	if err := os.WriteFile(filepath.Join(dir, FunctionsJSON), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Dir(dir)
+	if _, err := WriteManifest(root, "test", "go 1.26", []string{"case_00000"}, map[string]int64{"case_00000": 3}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCaseFileNames(t *testing.T) {

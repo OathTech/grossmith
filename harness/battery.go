@@ -175,8 +175,10 @@ func parseBattery(stdout []byte, specs []BatterySpec) ([][]Expectation, error) {
 					return nil, fmt.Errorf("line %d: malformed panic row %q", pos, line)
 				}
 				msg, err := strconv.Unquote(f[4])
-				if err != nil {
-					return nil, fmt.Errorf("line %d: panic message: %w", pos, err)
+				if err != nil || strconv.Quote(msg) != f[4] {
+					// Exactly the driver's strconv.Quote spelling: one
+					// message, one spelling.
+					return nil, fmt.Errorf("line %d: panic message %s is not a strconv.Quote string", pos, f[4])
 				}
 				p := observe.NewPanicInfo(observe.KindFromMessage(msg), msg)
 				e.Panic = &p
@@ -258,7 +260,7 @@ func (d FunctionsDoc) validate() error {
 	if !digestRe.MatchString(d.FunctionsSHA256) || !digestRe.MatchString(d.BatteryDriverSHA256) || !digestRe.MatchString(d.Oracle.SHA256) {
 		return fmt.Errorf("a digest is not a sha256 digest")
 	}
-	if d.Oracle.Path == "" || d.Oracle.Version == "" || d.Oracle.GOARCH == "" {
+	if d.Oracle.Path == "" || d.Oracle.Version == "" || d.Oracle.GOOS == "" || d.Oracle.GOARCH == "" || d.Oracle.ModuleMode == "" {
 		return fmt.Errorf("oracle identity is incomplete")
 	}
 	if len(d.Functions) == 0 {
@@ -266,10 +268,20 @@ func (d FunctionsDoc) validate() error {
 	}
 	names := map[string]bool{}
 	for _, f := range d.Functions {
-		if f.Function == "" || names[f.Function] {
-			return fmt.Errorf("function name %q is empty or repeated", f.Function)
+		if want := "bf" + strconv.Itoa(len(names)); f.Function != want {
+			return fmt.Errorf("function %d is named %q, want %q", len(names), f.Function, want)
 		}
 		names[f.Function] = true
+		for _, t := range append(append([]string(nil), f.Params...), f.Results...) {
+			if !batteryType(t) {
+				return fmt.Errorf("%s: type %q is outside the battery types", f.Function, t)
+			}
+		}
+		for tag, n := range f.Features {
+			if tag == "" || n < 1 {
+				return fmt.Errorf("%s: feature %q=%d (tags are nonempty, counts positive)", f.Function, tag, n)
+			}
+		}
 		if len(f.Params) == 0 || f.Params[0] != "int" || len(f.Params) > 4 {
 			return fmt.Errorf("%s: parameters %v outside the contract (first plain int, at most 4)", f.Function, f.Params)
 		}
@@ -296,6 +308,11 @@ func (d FunctionsDoc) validate() error {
 			case (e.OK == nil) == (e.Panic == nil):
 				return fmt.Errorf("%s input %d: expectation must hold exactly one of ok and panic", f.Function, i)
 			case e.Panic != nil:
+				// The driver accepts only runtime.Error panic values, and
+				// gc's runtime errors all carry this prefix.
+				if !strings.HasPrefix(e.Panic.MessageData(), "runtime error: ") {
+					return fmt.Errorf("%s input %d: panic message %q is not a runtime error", f.Function, i, e.Panic.MessageData())
+				}
 				if want := observe.KindFromMessage(e.Panic.MessageData()); e.Panic.Kind != want {
 					return fmt.Errorf("%s input %d: panic kind %q, but the message classifies as %q", f.Function, i, e.Panic.Kind, want)
 				}
@@ -312,6 +329,14 @@ func (d FunctionsDoc) validate() error {
 		}
 	}
 	return nil
+}
+
+func batteryType(t string) bool {
+	switch t {
+	case "bool", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return true
+	}
+	return false
 }
 
 // ReadFunctionsDoc strict-decodes and validates a functions.json.
@@ -343,6 +368,50 @@ func checkFunctionsDoc(caseDir string, mc ManifestCase) error {
 	}
 	if d.FunctionsSHA256 != mc.Files[BatteryDir+"/"+FunctionsGo] || d.BatteryDriverSHA256 != mc.Files[BatteryDir+"/"+BatteryDriverGo] {
 		return fmt.Errorf("batch: %s/%s binds battery sources that differ from the manifest's", mc.ID, FunctionsJSON)
+	}
+	if err := checkAgainstRecord(caseDir, d); err != nil {
+		return fmt.Errorf("batch: %s/%s: %w", mc.ID, FunctionsJSON, err)
+	}
+	return nil
+}
+
+// checkAgainstRecord holds functions.json to the battery configuration
+// case.json records: the function count, the inputs per function, and the
+// integer-only parameter rule. (The functions' bodies are not re-derived
+// here; -replay regenerates them.)
+func checkAgainstRecord(caseDir string, d FunctionsDoc) error {
+	b, err := os.ReadFile(filepath.Join(caseDir, "case.json"))
+	if err != nil {
+		return err
+	}
+	var rec struct {
+		Config *struct {
+			Functions         int
+			BatteryInputs     int
+			FunctionIntParams bool
+		} `json:"config"`
+	}
+	// Extensible: the config's other fields belong to the generator.
+	if err := strictjson.UnmarshalExtensible(b, &rec); err != nil {
+		return fmt.Errorf("case.json: %w", err)
+	}
+	if rec.Config == nil || rec.Config.Functions == 0 {
+		return fmt.Errorf("case.json records no battery functions")
+	}
+	if len(d.Functions) != rec.Config.Functions {
+		return fmt.Errorf("%d functions, case.json records %d", len(d.Functions), rec.Config.Functions)
+	}
+	for _, f := range d.Functions {
+		if len(f.Inputs) != rec.Config.BatteryInputs {
+			return fmt.Errorf("%s has %d inputs, case.json records %d", f.Function, len(f.Inputs), rec.Config.BatteryInputs)
+		}
+		if rec.Config.FunctionIntParams {
+			for _, p := range f.Params {
+				if p == "bool" {
+					return fmt.Errorf("%s has a bool parameter, but case.json records integer-only parameters", f.Function)
+				}
+			}
+		}
 	}
 	return nil
 }

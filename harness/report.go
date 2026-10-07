@@ -360,6 +360,25 @@ func ValidateBatchReport(root string, rep BatchReport, m Manifest) error {
 			return fmt.Errorf("report: %s names no path or version", name)
 		}
 	}
+	// Battery expected outcomes come from the same pinned reference as
+	// the judged run (one go binary per batch, E2): each functions.json
+	// must name the oracle batch.json names.
+	for _, mc := range m.Cases {
+		if _, ok := mc.Files[FunctionsJSON]; !ok {
+			continue
+		}
+		if rep.ReferenceOracle == nil {
+			return fmt.Errorf("report: %s carries battery outcomes but the report names no reference oracle", mc.ID)
+		}
+		d, err := ReadFunctionsDoc(filepath.Join(root, mc.ID, FunctionsJSON))
+		if err != nil {
+			return fmt.Errorf("report: %w", err)
+		}
+		if d.Oracle != *rep.ReferenceOracle {
+			return fmt.Errorf("report: %s/%s was produced by oracle %s (%s), the report's reference is %s (%s)",
+				mc.ID, FunctionsJSON, d.Oracle.Version, ShortDigest(d.Oracle.SHA256), rep.ReferenceOracle.Version, ShortDigest(rep.ReferenceOracle.SHA256))
+		}
+	}
 	for id, d := range rep.CloneWorkFiles {
 		if !digestRe.MatchString(d) {
 			return fmt.Errorf("report: cloneWorkFiles[%s] %q is not a sha256 digest", id, d)

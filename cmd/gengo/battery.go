@@ -85,14 +85,24 @@ func runBatteries(ref *harness.GcAdapter, oracle harness.OracleIdentity, jobs []
 	return first
 }
 
-// replayBattery checks a replayed case's battery against the record: the
-// regenerated sources must equal the case's battery files byte for byte,
-// and a fresh reference run must reproduce functions.json's functions,
-// inputs and outcomes.
+// replayBattery checks a replayed case's battery against the record:
+//
+//   - the regenerated sources equal the case's battery files byte for
+//     byte, and functions.json's digests and case ID name them;
+//   - a fresh reference run reproduces functions.json's functions,
+//     inputs and outcomes.
+//
+// The fresh run builds the REGENERATED sources in a throwaway module, as
+// the subject replay does: building in the case directory would compile
+// whatever else sits there and take the batch's go.mod as found (G1
+// pre-merge review, finding 1).
 func replayBattery(caseDir, caseID string, c gen.Case, goBin string, timeout time.Duration) error {
 	recorded, err := harness.ReadFunctionsDoc(filepath.Join(caseDir, harness.FunctionsJSON))
 	if err != nil {
 		return err
+	}
+	if recorded.Case != caseID {
+		return fmt.Errorf("%s names case %s, this case is %s", harness.FunctionsJSON, recorded.Case, caseID)
 	}
 	for name, want := range map[string][]byte{harness.FunctionsGo: c.FunctionsSource, harness.BatteryDriverGo: c.BatteryDriver} {
 		got, err := os.ReadFile(filepath.Join(caseDir, harness.BatteryDir, name))
@@ -103,28 +113,39 @@ func replayBattery(caseDir, caseID string, c gen.Case, goBin string, timeout tim
 			return fmt.Errorf("replayed %s/%s differs from the case's file", harness.BatteryDir, name)
 		}
 	}
+	if recorded.FunctionsSHA256 != harness.SubjectHash(c.FunctionsSource) || recorded.BatteryDriverSHA256 != harness.SubjectHash(c.BatteryDriver) {
+		return fmt.Errorf("%s's source digests do not name the replayed battery sources", harness.FunctionsJSON)
+	}
+
+	tmp, err := os.MkdirTemp("", "grossmith-replay-battery-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	tmpCase := filepath.Join(tmp, caseID)
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte(batchGoMod), 0o644); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(tmpCase, 0o755); err != nil {
+		return err
+	}
+	if err := writeBatterySources(tmpCase, c); err != nil {
+		return err
+	}
 	ref := &harness.GcAdapter{GoBin: goBin, Timeout: timeout, AdapterName: "gc"}
 	oracle, err := ref.Oracle(context.Background())
 	if err != nil {
 		return err
 	}
-	b, err := ref.RunBattery(context.Background(), caseDir, caseID, batterySpecs(c), oracle)
+	b, err := ref.RunBattery(context.Background(), tmpCase, caseID, batterySpecs(c), oracle)
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp("", "grossmith-functions-*.json")
-	if err != nil {
+	freshPath := filepath.Join(tmp, harness.FunctionsJSON)
+	if err := os.WriteFile(freshPath, b, 0o644); err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	fresh, err := harness.ReadFunctionsDoc(tmp.Name())
+	fresh, err := harness.ReadFunctionsDoc(freshPath)
 	if err != nil {
 		return err
 	}
@@ -132,5 +153,11 @@ func replayBattery(caseDir, caseID string, c gen.Case, goBin string, timeout tim
 		return fmt.Errorf("replayed battery outcomes differ from %s (recorded under %s, replayed under %s)", harness.FunctionsJSON, recorded.Oracle.Version, fresh.Oracle.Version)
 	}
 	fmt.Printf("replay %s: battery sources byte-identical, %d functions' outcomes reproduced\n", caseID, len(fresh.Functions))
+	if recorded.Oracle != fresh.Oracle {
+		// Outcomes agreeing under another toolchain is a reproduction,
+		// but not of the recorded run; say which.
+		fmt.Printf("  note: recorded under %s (%s), replayed under %s (%s)\n",
+			recorded.Oracle.Version, harness.ShortDigest(recorded.Oracle.SHA256), fresh.Oracle.Version, harness.ShortDigest(fresh.Oracle.SHA256))
+	}
 	return nil
 }

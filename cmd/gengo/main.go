@@ -1113,14 +1113,15 @@ func runReplay(cfg config) error {
 	}
 	// Battery functions (G1): the regenerated case and the case directory
 	// must agree on whether there is a battery at all.
-	_, statErr := os.Lstat(filepath.Join(cfg.replay, harness.FunctionsJSON))
+	_, jsonErr := os.Lstat(filepath.Join(cfg.replay, harness.FunctionsJSON))
+	_, dirErr := os.Lstat(filepath.Join(cfg.replay, harness.BatteryDir))
 	switch {
 	case len(c.Functions) > 0:
 		if err := replayBattery(cfg.replay, rec.ID, c, cfg.goBin, cfg.timeout); err != nil {
 			return err
 		}
-	case statErr == nil:
-		return fmt.Errorf("the case directory has %s but its record regenerates no battery functions", harness.FunctionsJSON)
+	case jsonErr == nil || dirErr == nil:
+		return fmt.Errorf("the case directory has battery files but its record regenerates no battery functions")
 	}
 
 	dir, err := os.MkdirTemp("", "grossmith-replay-*")
