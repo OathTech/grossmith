@@ -36,8 +36,10 @@ import (
 //     panic-capable site per statement. With FunctionPanics == 0 a body
 //     cannot panic: it is exactly as panic-free as a helper.
 //   - 64-BIT INPUTS. Platform int and uint inputs use their 64-bit ranges.
-//     The battery driver refuses to run on a 32-bit target rather than
-//     report results for inputs it cannot represent.
+//     On a 32-bit target the battery driver does not compile (its 64-bit
+//     literals overflow int), so no results are reported for inputs the
+//     target cannot represent; the run-time IntSize check is a second
+//     line for drivers built some other way.
 
 // Function-panic densities (Config.FunctionPanics).
 const (
@@ -96,6 +98,20 @@ func (g *Generator) generateFunctions() error {
 	if n == 0 {
 		return nil
 	}
+	// Case.Stats describes the subject's choices (G1 review finding 3):
+	// battery draws stay on the tape but out of the per-site statistics.
+	saved := make(map[string]*SiteStats, len(g.c.stats))
+	for site, s := range g.c.stats {
+		cp := &SiteStats{Valid: map[string]int{}, Chosen: map[string]int{}}
+		for k, v := range s.Valid {
+			cp.Valid[k] = v
+		}
+		for k, v := range s.Chosen {
+			cp.Chosen[k] = v
+		}
+		saved[site] = cp
+	}
+	defer func() { g.c.stats = saved }()
 	perCall := int64(ExecBudget)/int64(n*g.cfg.BatteryInputs) - batteryCallOverhead
 	for i := 0; i < n; i++ {
 		f, src, err := g.generateFunction(i, perCall)
@@ -164,7 +180,8 @@ func (g *Generator) generateFunction(idx int, perCall int64) (BatteryFunction, s
 		rs[j] = g.resultExpr(rt)
 	}
 	body.line("return %s", strings.Join(rs, ", "))
-	cost := satAdd(perCall-g.budgetLeft, 2)
+	// The return line is already charged; add the call itself.
+	cost := satAdd(perCall-g.budgetLeft, 1)
 	breached := g.budgetBreached
 
 	g.vars, g.riskSpent, g.pureMode, g.fnRisk, g.guardBias, g.budgetBreached = saved.vars, saved.risk, saved.pure, saved.fnRisk, saved.bias, saved.br
@@ -317,9 +334,24 @@ func intKind(goType string) (bits int, unsigned bool) {
 	panic("gen: battery input for unsupported type " + goType)
 }
 
+// edgeIndex picks parameter i's edge value for edge row j. Each parameter
+// walks its alphabet with stride 1, starting i places along, over a window
+// of min(len, rows) entries: every entry in the window appears in at
+// least one row whatever the offset, and the alphabets list the core
+// values (0, +-1, the extremes and their neighbours) first, so those are
+// always reached. The offsets vary the combinations between parameters.
+// (G1 review finding 1: the earlier strides j*(i+1) skipped whole edge
+// classes when the stride shared a factor with the alphabet length.)
+func edgeIndex(j, i, alphabet, rows int) int {
+	window := alphabet
+	if rows < window {
+		window = rows
+	}
+	return (j + i) % window
+}
+
 // batteryInputs draws one function's battery. The first inputs walk the
-// edge alphabets: input j takes edge (j*(k+1)+k) mod len for parameter k,
-// so the parameters move through their alphabets at different strides.
+// edge alphabets (edgeIndex).
 // The edge rows are the leading max(1, BatteryInputs/2) inputs, capped
 // at the longest alphabet; the rest are random. A random argument is an edge value, a small
 // value in [-60,60] (clamped to the type), or uniform over the type, a
@@ -348,7 +380,7 @@ func (g *Generator) batteryInputs(params []string) [][]string {
 	for j := 0; j < edgeRows; j++ {
 		row := make([]string, len(params))
 		for i := range params {
-			row[i] = edges[i][(j*(i+1)+i)%len(edges[i])]
+			row[i] = edges[i][edgeIndex(j, i, len(edges[i]), edgeRows)]
 		}
 		inputs = append(inputs, row)
 	}

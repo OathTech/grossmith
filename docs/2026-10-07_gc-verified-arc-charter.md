@@ -119,6 +119,30 @@ work [AGENT]:
   variable shift count, so G1 cannot produce shift panics. The kind is
   decided with Mike when variable shifts become a construct.
 
+**G1 pre-merge review (2026-10-07):** two parallel reviewers (generator;
+harness and CLI), every finding reproduced. No blockers. Fixed on the
+branch, each with a test:
+- edge rows skipped whole edge classes when a parameter's stride shared a
+  factor with its alphabet length;
+- replay built the battery inside the case directory, so a leftover file
+  or an edited `go.mod` was compiled; it now builds the regenerated
+  sources in a throwaway module;
+- replay ignored `functions.json`'s source digests and case ID;
+- `-verify` did not hold `functions.json` to `case.json`'s battery
+  config; result types were checked only in `ok` rows; feature counts,
+  the runtime-error prefix and part of the oracle went unchecked; a
+  judged report did not compare the battery's oracle with its reference;
+- an empty `battery/` directory was accepted;
+- minor: battery draws leaked into `Case.Stats`; per-call cost counted
+  the return twice (an overcharge); the panic-row parser accepted other
+  quotings; the docs said the 32-bit driver refuses at run time, when it
+  in fact fails to compile.
+Held under probes: seed stability (2,400 cases against main; 2,520
+on/off pairs), halting (worst measured 1.5M of 4M statements), no panics
+at density none (static scan plus 225,000 off-battery calls), standalone
+compilation (1,008 cases), and byte-identical artifacts for batches
+without batteries.
+
 ### G2 — named construct profiles (their R2)
 
 `-profile <file>` loads a named allow-list of constructs (plus corner

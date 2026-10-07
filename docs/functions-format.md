@@ -60,12 +60,16 @@ byte for byte) and reruns the battery (the outcomes must match).
   helpers.
 - When panics are enabled, a statement holds at most one site that can
   panic, so which panic occurs is never left to evaluation order.
-- Inputs: the first half of the battery walks edge values (0, ±1, the
-  extremes and their neighbours, powers of two ±1 at byte and word
-  boundaries). The second half is random: an edge value, a small value,
-  or a uniform one.
-- Platform `int` and `uint` are **64-bit** for batteries. The battery
-  driver refuses to run on a 32-bit target.
+- Inputs: the first half of the battery (at least one row) walks edge
+  values. Each type's edge alphabet lists 0, ±1, the extremes and their
+  neighbours first, then powers of two ±1 at byte and word boundaries.
+  Every parameter takes each of the first min(alphabet length, edge rows)
+  entries at least once, so the core values are always covered; parameters
+  start at different offsets, which varies the combinations. The second
+  half is random: an edge value, a small value, or a uniform one.
+- Platform `int` and `uint` are **64-bit** for batteries. On a 32-bit
+  target the battery driver does not compile (its 64-bit literals
+  overflow), so no results are produced there.
 
 ## `functions.json` (`grossmith-functions-v1`)
 

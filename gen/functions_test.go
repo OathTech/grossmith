@@ -339,3 +339,60 @@ func TestFunctionIntParams(t *testing.T) {
 		t.Fatal("no bool parameter without the flag: the test cannot tell the flag works")
 	}
 }
+
+// TestBatteryEdgeCoverage pins G1 review finding 1: in the edge rows
+// every parameter takes each of the first min(alphabet, rows) edge values
+// at least once, whatever its position and type.
+func TestBatteryEdgeCoverage(t *testing.T) {
+	for _, k := range []int{1, 2, 3, 8, 32, 64, 1024} {
+		for seed := int64(1); seed <= 60; seed++ {
+			cfg := batteryConfig(seed, FunctionPanicsOrdinary)
+			cfg.BatteryInputs = k
+			c, err := New(cfg).Generate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range c.Functions {
+				longest := 0
+				for _, p := range f.Params {
+					if n := len(batteryEdges(p)); n > longest {
+						longest = n
+					}
+				}
+				rows := max(k/2, 1)
+				rows = min(rows, longest)
+				for i, p := range f.Params {
+					edges := batteryEdges(p)
+					window := min(len(edges), rows)
+					seen := map[string]int{}
+					for j := 0; j < rows; j++ {
+						seen[f.Inputs[j][i]]++
+					}
+					for _, e := range edges[:window] {
+						if seen[e] == 0 {
+							t.Fatalf("K=%d seed %d %s p%d %s: edge %s never in the %d edge rows", k, seed, f.Name, i, p, e, rows)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestFunctionsLeaveStatsUnchanged pins G1 review finding 3: Case.Stats
+// describes the subject's choices only.
+func TestFunctionsLeaveStatsUnchanged(t *testing.T) {
+	for seed := int64(1); seed <= 40; seed++ {
+		off, err := New(DefaultConfig(seed)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		on, err := New(batteryConfig(seed, FunctionPanicsBiased)).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(off.Stats, on.Stats) {
+			t.Fatalf("seed %d: enabling functions changed Case.Stats", seed)
+		}
+	}
+}
