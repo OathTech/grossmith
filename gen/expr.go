@@ -854,7 +854,7 @@ func (g *Generator) divModExpr(t Type, fuel int, op, tag string) value {
 		hotChance = 2
 	}
 	if g.riskOK() && g.c.chance(hotChance) && g.spendRisk() {
-		divisor = g.variable(t)
+		divisor = g.hotVariable(t)
 		variableDivisor = true
 		g.note(tagPanicRisk)
 	}

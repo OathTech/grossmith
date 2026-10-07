@@ -65,6 +65,17 @@ type Config struct {
 	// "none" disables corners; "boundary" biases literals, divisors, and
 	// shift counts toward type boundaries.
 	Corner string
+	// Functions is the number of battery functions bf0..bfN-1 per case
+	// (gc-verified arc G1; gen/functions.go). 0 disables them, and then the
+	// two fields below must be 0 too. All three are omitted from JSON when
+	// zero, so case records written with functions off are unchanged.
+	Functions int `json:",omitempty"`
+	// BatteryInputs is the number of inputs per battery function.
+	BatteryInputs int `json:",omitempty"`
+	// FunctionPanics is the density of panic-capable sites in battery
+	// function bodies: FunctionPanicsNone, FunctionPanicsOrdinary or
+	// FunctionPanicsBiased.
+	FunctionPanics int `json:",omitempty"`
 }
 
 // DefaultConfig: small programs, shallow nesting, swarm on. Stmts tracks
@@ -115,6 +126,20 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: LoopCap %d exceeds %d — derived trip arithmetic must stay exactly representable", c.LoopCap, MaxLoopCap)
 	case c.Depth > MaxDepth:
 		return fmt.Errorf("config: Depth %d exceeds %d — emitter recursion and formatting cost are not priced by the execution budget", c.Depth, MaxDepth)
+	}
+	// Battery functions: all-or-nothing, so a battery knob can never be set
+	// while silently having no effect.
+	switch {
+	case c.Functions < 0 || c.Functions > MaxFunctions:
+		return fmt.Errorf("config: Functions %d outside [0,%d]", c.Functions, MaxFunctions)
+	case c.Functions == 0 && (c.BatteryInputs != 0 || c.FunctionPanics != 0):
+		return fmt.Errorf("config: BatteryInputs %d / FunctionPanics %d set with Functions 0", c.BatteryInputs, c.FunctionPanics)
+	case c.Functions > 0 && (c.BatteryInputs < 1 || c.BatteryInputs > MaxBatteryInputs):
+		return fmt.Errorf("config: BatteryInputs %d outside [1,%d]", c.BatteryInputs, MaxBatteryInputs)
+	case c.Functions > 0 && c.FunctionPanics != FunctionPanicsNone && c.FunctionPanics != FunctionPanicsOrdinary && c.FunctionPanics != FunctionPanicsBiased:
+		return fmt.Errorf("config: FunctionPanics %d is not 0 (none), 1 (ordinary) or 2 (biased)", c.FunctionPanics)
+	case c.Functions > 0 && int64(ExecBudget)/int64(c.Functions*c.BatteryInputs)-batteryCallOverhead < batteryMinPerCall:
+		return fmt.Errorf("config: Functions x BatteryInputs = %d leaves under %d statements per call of ExecBudget", c.Functions*c.BatteryInputs, batteryMinPerCall)
 	}
 	// NoObserve is a closed enum (evidence arc E1; audit P0: Shape(255)
 	// was silently accepted and some subsets panicked the generator).
@@ -209,6 +234,13 @@ type Case struct {
 	Tape []int
 	// Stats is the per-site realized choice distribution.
 	Stats map[string]*SiteStats
+	// Functions, FunctionsSource and BatteryDriver are present only when
+	// Config.Functions > 0 (gen/functions.go): the battery functions with
+	// their inputs, the standalone functions.go, and its gc reference
+	// driver.
+	Functions       []BatteryFunction
+	FunctionsSource []byte
+	BatteryDriver   []byte
 }
 
 // binding is one declared variable. reads counts expression-position reads,
@@ -291,6 +323,11 @@ type Generator struct {
 	// helper's p0, a method's receiver r) for the nonConstExpr fallback.
 	pureMode bool
 	pureBase string
+	// fnRisk re-admits panic-capable arms inside pure mode while a battery
+	// function body is generated with FunctionPanics > 0.
+	fnRisk bool
+	// battery holds the generated battery functions (gen/functions.go).
+	battery battery
 	// corner is the resolved named corner; boundaryBias is the weight of the
 	// boundary arm at literal/divisor/shift-count sites (0 disables, 1 is
 	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
@@ -421,8 +458,10 @@ type ifaceType struct {
 
 // riskOK reports whether the current statement may still draw a hot panic
 // site: never inside a helper (helpers are panic-free so their calls compose
-// into expressions without multi-trap identity issues).
-func (g *Generator) riskOK() bool { return !g.riskSpent && !g.pureMode }
+// into expressions without multi-trap identity issues). Battery function
+// bodies are pure-mode but may opt back in (fnRisk); nothing calls them
+// from generated code, so the helper argument does not apply to them.
+func (g *Generator) riskOK() bool { return !g.riskSpent && (!g.pureMode || g.fnRisk) }
 
 // resetRisk opens a fresh statement context for the panic-risk budget.
 func (g *Generator) resetRisk() { g.riskSpent = false }
@@ -713,6 +752,11 @@ func (g *Generator) Generate() (c Case, err error) {
 		body.line("psite := 0")
 		g.emitWrapperDefer(body)
 	}
+	// Battery functions draw AFTER every subject draw: the subject and its
+	// tape prefix are the same with functions on or off.
+	if err := g.generateFunctions(); err != nil {
+		return Case{}, err
+	}
 	resultTypes := make([]string, len(observed))
 	for i, b := range observed {
 		resultTypes[i] = b.typ.GoName()
@@ -729,24 +773,7 @@ func (g *Generator) Generate() (c Case, err error) {
 	for _, p := range g.fwdPairs {
 		out.WriteString(p.src)
 	}
-	for _, dt := range g.defined {
-		fmt.Fprintf(&out, "type %s %s\n\n", dt.typ.Named, dt.typ.underlyingName())
-		for _, m := range dt.methods {
-			out.WriteString(m.src)
-		}
-	}
-	for _, it := range g.ifaces {
-		fmt.Fprintf(&out, "type %s interface {\n", it.typ.Name)
-		for _, mi := range it.methods {
-			m := g.defined[it.source].methods[mi]
-			sig := make([]string, len(m.params))
-			for pi, pt := range m.params {
-				sig[pi] = pt.GoName()
-			}
-			fmt.Fprintf(&out, "\t%s(%s) %s\n", m.name, strings.Join(sig, ", "), m.result.GoName())
-		}
-		out.WriteString("}\n\n")
-	}
+	g.writeDefinedAndInterfaces(&out)
 	if g.witSeq > 0 {
 		// The order-witness accumulator and its designated impure helper
 		// (R2b mechanism 1; E4's amendment covers exactly this pair): the
@@ -812,7 +839,40 @@ func (g *Generator) Generate() (c Case, err error) {
 		return Case{}, &ReplayError{Pos: rs.pos, Bound: len(rs.trace) - rs.pos,
 			Value: rs.trace[rs.pos], Reason: "surplus"}
 	}
-	return Case{Source: source, Driver: driver, Features: features, FeatureCounts: counts, Tape: tape, Stats: stats}, nil
+	c = Case{Source: source, Driver: driver, Features: features, FeatureCounts: counts, Tape: tape, Stats: stats}
+	if len(g.battery.funcs) > 0 {
+		if c.FunctionsSource, err = g.functionsSource(); err != nil {
+			return Case{}, err
+		}
+		if c.BatteryDriver, err = g.batteryDriverSource(); err != nil {
+			return Case{}, fmt.Errorf("generated %s does not parse (generator bug): %w", BatteryDriverFile, err)
+		}
+		c.Functions = g.battery.funcs
+	}
+	return c, nil
+}
+
+// writeDefinedAndInterfaces writes the defined types with their methods,
+// then the interface types. Shared by the subject and functions.go.
+func (g *Generator) writeDefinedAndInterfaces(out *strings.Builder) {
+	for _, dt := range g.defined {
+		fmt.Fprintf(out, "type %s %s\n\n", dt.typ.Named, dt.typ.underlyingName())
+		for _, m := range dt.methods {
+			out.WriteString(m.src)
+		}
+	}
+	for _, it := range g.ifaces {
+		fmt.Fprintf(out, "type %s interface {\n", it.typ.Name)
+		for _, mi := range it.methods {
+			m := g.defined[it.source].methods[mi]
+			sig := make([]string, len(m.params))
+			for pi, pt := range m.params {
+				sig[pi] = pt.GoName()
+			}
+			fmt.Fprintf(out, "\t%s(%s) %s\n", m.name, strings.Join(sig, ", "), m.result.GoName())
+		}
+		out.WriteString("}\n\n")
+	}
 }
 
 // pickTarget draws a write target from candidates, biased 3:1 toward
