@@ -76,6 +76,10 @@ type Config struct {
 	// function bodies: FunctionPanicsNone, FunctionPanicsOrdinary or
 	// FunctionPanicsBiased.
 	FunctionPanics int `json:",omitempty"`
+	// FunctionIntParams restricts battery function parameters to the
+	// integer kinds (no bool); results are unaffected. Requested by
+	// gc-verified: GoLean's CLI takes integer arguments only.
+	FunctionIntParams bool `json:",omitempty"`
 }
 
 // DefaultConfig: small programs, shallow nesting, swarm on. Stmts tracks
@@ -132,8 +136,8 @@ func (c Config) Validate() error {
 	switch {
 	case c.Functions < 0 || c.Functions > MaxFunctions:
 		return fmt.Errorf("config: Functions %d outside [0,%d]", c.Functions, MaxFunctions)
-	case c.Functions == 0 && (c.BatteryInputs != 0 || c.FunctionPanics != 0):
-		return fmt.Errorf("config: BatteryInputs %d / FunctionPanics %d set with Functions 0", c.BatteryInputs, c.FunctionPanics)
+	case c.Functions == 0 && (c.BatteryInputs != 0 || c.FunctionPanics != 0 || c.FunctionIntParams):
+		return fmt.Errorf("config: BatteryInputs %d / FunctionPanics %d / FunctionIntParams %t set with Functions 0", c.BatteryInputs, c.FunctionPanics, c.FunctionIntParams)
 	case c.Functions > 0 && (c.BatteryInputs < 1 || c.BatteryInputs > MaxBatteryInputs):
 		return fmt.Errorf("config: BatteryInputs %d outside [1,%d]", c.BatteryInputs, MaxBatteryInputs)
 	case c.Functions > 0 && c.FunctionPanics != FunctionPanicsNone && c.FunctionPanics != FunctionPanicsOrdinary && c.FunctionPanics != FunctionPanicsBiased:

@@ -111,6 +111,10 @@ work [AGENT]:
 - A battery function whose result draw was constant has that result
   combined with `p0`. About 1 in 6 functions is still insensitive to its
   inputs by its algebra; those are kept.
+- `-function-int-params` (integer-only parameters), at gc-verified's
+  request after their fit check (2026-10-07). Opt-in, seed-stable when
+  off. Their other ask, leaving out post-1.18 builtins for gccgo, is
+  G2's job (`min`/`max` are construct tags).
 - gc-verified asked for a `shift` panic kind. grossmith never emits a
   variable shift count, so G1 cannot produce shift panics. The kind is
   decided with Mike when variable shifts become a construct.

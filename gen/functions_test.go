@@ -96,9 +96,10 @@ func TestFunctionsConfigValidation(t *testing.T) {
 	bad := []func(*Config){
 		func(c *Config) { c.Functions = -1 },
 		func(c *Config) { c.Functions = MaxFunctions + 1; c.BatteryInputs = 1 },
-		func(c *Config) { c.BatteryInputs = 32 }, // knob without functions
-		func(c *Config) { c.FunctionPanics = 1 }, // knob without functions
-		func(c *Config) { c.Functions = 1 },      // no inputs
+		func(c *Config) { c.BatteryInputs = 32 },       // knob without functions
+		func(c *Config) { c.FunctionPanics = 1 },       // knob without functions
+		func(c *Config) { c.FunctionIntParams = true }, // knob without functions
+		func(c *Config) { c.Functions = 1 },            // no inputs
 		func(c *Config) { c.Functions, c.BatteryInputs = 1, MaxBatteryInputs+1 },
 		func(c *Config) { c.Functions, c.BatteryInputs, c.FunctionPanics = 1, 1, 3 },
 	}
@@ -307,5 +308,34 @@ func TestBatteryChargedCoversMeasured(t *testing.T) {
 			}
 			t.Logf("%s seed %d: measured %d / charged %d", tc.name, seed, measured, charged)
 		}
+	}
+}
+
+// TestFunctionIntParams: with the flag, no battery parameter is bool;
+// without it, bool parameters do occur (the flag is not vacuous).
+func TestFunctionIntParams(t *testing.T) {
+	sawBool := false
+	for seed := int64(1); seed <= 200; seed++ {
+		for _, ints := range []bool{true, false} {
+			cfg := batteryConfig(seed, FunctionPanicsOrdinary)
+			cfg.FunctionIntParams = ints
+			c, err := New(cfg).Generate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range c.Functions {
+				for _, p := range f.Params {
+					if p == "bool" {
+						if ints {
+							t.Fatalf("seed %d %s: bool parameter with FunctionIntParams", seed, f.Name)
+						}
+						sawBool = true
+					}
+				}
+			}
+		}
+	}
+	if !sawBool {
+		t.Fatal("no bool parameter without the flag: the test cannot tell the flag works")
 	}
 }

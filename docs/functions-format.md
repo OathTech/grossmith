@@ -14,6 +14,9 @@ Flags:
   budget.
 - `-function-panics none|ordinary|biased`: density of sites that can panic
   (default `ordinary`). With `none`, no function can panic.
+- `-function-int-params`: parameters use integer kinds only, no `bool`
+  (default off; results may still be `bool`). Added at gc-verified's
+  request: GoLean's command line takes integer arguments only.
 
 `-functions` needs a Go toolchain at generation time, because the expected
 outcomes come from running the battery under the pinned `go` (`-go`, or

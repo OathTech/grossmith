@@ -32,15 +32,16 @@ func TestBatteryFlagsRefuseBeforeWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutate := map[string]func(*config){
-		"negative functions":          func(c *config) { c.functions = -1 },
-		"too many functions":          func(c *config) { c.functions = 65 },
-		"too many inputs":             func(c *config) { c.batteryInputs = 5000 },
-		"zero inputs":                 func(c *config) { c.batteryInputs = 0 },
-		"unknown panic density":       func(c *config) { c.functionPanics = "often" },
-		"inputs without functions":    func(c *config) { c.functions = 0; c.explicit["battery-inputs"] = true },
-		"density without functions":   func(c *config) { c.functions = 0; c.explicit["function-panics"] = true },
-		"functions with golean":       func(c *config) { c.clone = "golean:" + fake },
-		"functions with source check": func(c *config) { c.check = filepath.Join(fake, "subject.go") },
+		"negative functions":           func(c *config) { c.functions = -1 },
+		"too many functions":           func(c *config) { c.functions = 65 },
+		"too many inputs":              func(c *config) { c.batteryInputs = 5000 },
+		"zero inputs":                  func(c *config) { c.batteryInputs = 0 },
+		"unknown panic density":        func(c *config) { c.functionPanics = "often" },
+		"inputs without functions":     func(c *config) { c.functions = 0; c.explicit["battery-inputs"] = true },
+		"density without functions":    func(c *config) { c.functions = 0; c.explicit["function-panics"] = true },
+		"int params without functions": func(c *config) { c.functions = 0; c.functionInts = true },
+		"functions with golean":        func(c *config) { c.clone = "golean:" + fake },
+		"functions with source check":  func(c *config) { c.check = filepath.Join(fake, "subject.go") },
 	}
 	for name, m := range mutate {
 		cfg := batteryBase(out)

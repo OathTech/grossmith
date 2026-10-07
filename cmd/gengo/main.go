@@ -78,6 +78,7 @@ type config struct {
 	functions      int
 	batteryInputs  int
 	functionPanics string
+	functionInts   bool
 	// explicit records which flags the user actually set (audit F5:
 	// -replay must refuse generation flags rather than ignore them).
 	explicit map[string]bool
@@ -106,6 +107,7 @@ func main() {
 	flag.IntVar(&cfg.functions, "functions", 0, "battery functions per case: standalone battery/functions.go plus functions.json with gc's expected outcomes (0 disables)")
 	flag.IntVar(&cfg.batteryInputs, "battery-inputs", 32, "inputs per battery function (requires -functions)")
 	flag.StringVar(&cfg.functionPanics, "function-panics", "ordinary", "panic-capable site density in battery functions: none, ordinary or biased (requires -functions)")
+	flag.BoolVar(&cfg.functionInts, "function-int-params", false, "battery function parameters use integer kinds only, no bool (requires -functions)")
 	flag.BoolVar(&cfg.allowLegacyVerify, "allow-legacy-verify", false, "let -verify accept a pre-E5 batch whose report/clone digests are absent (default: refuse the reduced scope)")
 	flag.Parse()
 	cfg.explicit = map[string]bool{}
@@ -391,8 +393,8 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 		return "", "", fmt.Errorf("-timeout %s: must be positive", c.timeout)
 	case c.workers < 1:
 		return "", "", fmt.Errorf("-workers %d: need at least one", c.workers)
-	case c.functions == 0 && (c.explicit["battery-inputs"] || c.explicit["function-panics"]):
-		return "", "", fmt.Errorf("-battery-inputs and -function-panics require -functions")
+	case c.functions == 0 && (c.explicit["battery-inputs"] || c.explicit["function-panics"] || c.explicit["function-int-params"] || c.functionInts):
+		return "", "", fmt.Errorf("-battery-inputs, -function-panics and -function-int-params require -functions")
 	case c.functions > 0 && c.check != "":
 		return "", "", fmt.Errorf("-functions does not apply to -check (an existing source has no generated battery)")
 	}
@@ -748,6 +750,7 @@ func run(cfg config) error {
 		if cfg.functions > 0 {
 			level, _ := cfg.functionPanicsLevel() // checked by validate
 			gcfg.Functions, gcfg.BatteryInputs, gcfg.FunctionPanics = cfg.functions, cfg.batteryInputs, level
+			gcfg.FunctionIntParams = cfg.functionInts
 		}
 		var c gen.Case
 		var recordedConfig any

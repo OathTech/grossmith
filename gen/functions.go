@@ -110,9 +110,13 @@ func (g *Generator) generateFunctions() error {
 }
 
 func (g *Generator) generateFunction(idx int, perCall int64) (BatteryFunction, string, error) {
+	paramPool := scalarTypes()
+	if g.cfg.FunctionIntParams {
+		paramPool = intTypes()
+	}
 	params := []Type{Int(0, false)}
 	for j := g.c.draw(4); j > 0; j-- {
-		params = append(params, pick(g.c, scalarTypes()))
+		params = append(params, pick(g.c, paramPool))
 	}
 	var results []Type
 	for j := 1 + g.c.draw(2); j > 0; j-- {
