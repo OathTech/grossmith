@@ -99,7 +99,21 @@ lossiness, whole-case resource limits
 bounds, real build/run matrices, and the incidence/sensitivity
 accounting.
 
-## Current work: improvements awaiting landing
+## Current work: the gc-verified arc (opened 2026-10-07)
+
+[USER] 2026-10-07: gc-verified's feature request goes ahead of the
+deferred queue below and of the proposed sensitivity arc, because it is
+a direct customer request. The charter
+(`docs/2026-10-07_gc-verified-arc-charter.md`) pins the rungs:
+
+- G1: function-level emission with input batteries;
+- G2: named construct profiles;
+- G3: pointers, stage 0, after the mechanism-2 design note;
+- G4: optimisation-stressing shapes;
+- G5: unrecovered panics and `println`;
+- G6: size and shape knobs.
+
+## Closed: improvements branch (merged 2026-10-05 at 2e98876)
 
 Branch work (2026-10-03, `codex/grossmith-improvements`): aggregate fingerprints
 now snapshot state on early returns and wrapper recovery as well as normal
@@ -176,8 +190,9 @@ panic-encoding, interrupted-publish and string-payload findings. The branch
 also incorporates main's September 22 oracle-version and strict-depth fixes.
 The saved assignment-before-panic divergence is checked in under
 `golean/testdata/assignment-before-panic`; a current GoLean checkout matches it,
-and the nightly runs its regression witness. The larger queue below remains
-deferred until this branch lands.
+and the nightly runs its regression witness. The larger queue below remained
+deferred until this branch landed. It is now behind the gc-verified
+arc.
 
 ## House convention: wording
 
