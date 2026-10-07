@@ -100,6 +100,21 @@ Decided here:
   (GoLean, `-clone gc`). The sidecar is reference-only. Clone judging is
   a recorded follow-up.
 
+**G1 status (2026-10-07): implemented on the branch, not yet merged.**
+Format and flags: `docs/functions-format.md`. Decisions made during the
+work [AGENT]:
+- The battery sources live in `battery/`, because gc builds every `.go`
+  file in a directory together. `functions.json` sits beside `case.json`,
+  as gc-verified asked.
+- Expected outcomes are produced at generation, before the manifest is
+  written, so the manifest digests them like every other case file.
+- A battery function whose result draw was constant has that result
+  combined with `p0`. About 1 in 6 functions is still insensitive to its
+  inputs by its algebra; those are kept.
+- gc-verified asked for a `shift` panic kind. grossmith never emits a
+  variable shift count, so G1 cannot produce shift panics. The kind is
+  decided with Mike when variable shifts become a construct.
+
 ### G2 — named construct profiles (their R2)
 
 `-profile <file>` loads a named allow-list of constructs (plus corner

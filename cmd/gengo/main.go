@@ -73,6 +73,11 @@ type config struct {
 	// hand-edit removed them, and an exit-0 with a reduced-scope print
 	// is exactly what a script consumer would miss (E5 re-review).
 	allowLegacyVerify bool
+	// functions, batteryInputs, functionPanics: battery functions per
+	// case (gc-verified arc G1; gen/functions.go, harness/battery.go).
+	functions      int
+	batteryInputs  int
+	functionPanics string
 	// explicit records which flags the user actually set (audit F5:
 	// -replay must refuse generation flags rather than ignore them).
 	explicit map[string]bool
@@ -98,6 +103,9 @@ func main() {
 	flag.StringVar(&cfg.verify, "verify", "", "batch directory to VERIFY offline against its descriptor (complete.json required; no generation)")
 	flag.IntVar(&cfg.pairs, "pairs", 0, "pairwise-coverage mode: generate this many cases per optional-construct PAIR (replaces -n)")
 	flag.BoolVar(&cfg.allowDirty, "allow-dirty", false, "permit judged campaigns from a dirty tree (records a content hash instead of refusing)")
+	flag.IntVar(&cfg.functions, "functions", 0, "battery functions per case: standalone battery/functions.go plus functions.json with gc's expected outcomes (0 disables)")
+	flag.IntVar(&cfg.batteryInputs, "battery-inputs", 32, "inputs per battery function (requires -functions)")
+	flag.StringVar(&cfg.functionPanics, "function-panics", "ordinary", "panic-capable site density in battery functions: none, ordinary or biased (requires -functions)")
 	flag.BoolVar(&cfg.allowLegacyVerify, "allow-legacy-verify", false, "let -verify accept a pre-E5 batch whose report/clone digests are absent (default: refuse the reduced scope)")
 	flag.Parse()
 	cfg.explicit = map[string]bool{}
@@ -355,6 +363,19 @@ func publishBatchMode(out, work string, check bool) error {
 
 // validate rejects a bad invocation BEFORE anything is written (audit H5):
 // a refused run leaves the filesystem exactly as it found it.
+// functionPanicsLevel maps -function-panics onto the generator's levels.
+func (c config) functionPanicsLevel() (int, error) {
+	switch c.functionPanics {
+	case "none":
+		return gen.FunctionPanicsNone, nil
+	case "ordinary":
+		return gen.FunctionPanicsOrdinary, nil
+	case "biased":
+		return gen.FunctionPanicsBiased, nil
+	}
+	return 0, fmt.Errorf("-function-panics %q: use none, ordinary or biased", c.functionPanics)
+}
+
 func (c config) validate() (observe.PanicPolicy, string, error) {
 	var policy observe.PanicPolicy
 	switch {
@@ -370,6 +391,25 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 		return "", "", fmt.Errorf("-timeout %s: must be positive", c.timeout)
 	case c.workers < 1:
 		return "", "", fmt.Errorf("-workers %d: need at least one", c.workers)
+	case c.functions == 0 && (c.explicit["battery-inputs"] || c.explicit["function-panics"]):
+		return "", "", fmt.Errorf("-battery-inputs and -function-panics require -functions")
+	case c.functions > 0 && c.check != "":
+		return "", "", fmt.Errorf("-functions does not apply to -check (an existing source has no generated battery)")
+	}
+	if c.functions < 0 {
+		return "", "", fmt.Errorf("-functions %d: must be non-negative", c.functions)
+	}
+	if c.functions > 0 {
+		level, err := c.functionPanicsLevel()
+		if err != nil {
+			return "", "", err
+		}
+		// The generator's own bounds, checked before anything is written.
+		probe := gen.DefaultConfig(0)
+		probe.Functions, probe.BatteryInputs, probe.FunctionPanics = c.functions, c.batteryInputs, level
+		if err := probe.Validate(); err != nil {
+			return "", "", fmt.Errorf("-functions/-battery-inputs: %w", err)
+		}
 	}
 	switch c.policy {
 	case "exact":
@@ -395,6 +435,13 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 	if c.clone != "gc" && c.clone != "gc-386" &&
 		(c.cloneGo != "" || c.cloneGCFlags != "" || c.explicit["clone-go"] || c.explicit["clone-gcflags"]) {
 		return "", "", fmt.Errorf("-clone-go and -clone-gcflags require -clone gc or -clone gc-386")
+	}
+	if checkout != "" && c.functions > 0 {
+		// The GoLean work-tree digests walk case directories and do not
+		// know the battery subdirectory; refuse rather than find out
+		// after the reference pass. Batteries are judged by their
+		// consumer, not by a grossmith clone, in G1.
+		return "", "", fmt.Errorf("-functions is not supported with -clone golean")
 	}
 	if checkout != "" {
 		// Refuse BEFORE the generation and reference pass (audit F9): a
@@ -572,7 +619,9 @@ func run(cfg config) error {
 	// the reference and the GoLean script shim — uses this one path.
 	// A directly judged gc clone is resolved separately below.
 	var refOracle *harness.OracleIdentity
-	if judging || cfg.goBin != "" {
+	// Batteries need the reference at generation: functions.json holds
+	// gc's expected outcomes.
+	if judging || cfg.goBin != "" || cfg.functions > 0 {
 		probe := &harness.GcAdapter{GoBin: cfg.goBin}
 		oid, err := probe.Oracle(context.Background())
 		if err != nil {
@@ -580,7 +629,7 @@ func run(cfg config) error {
 		}
 		cfg.goBin = oid.Path
 		refOracle = &oid
-		if judging {
+		if judging || cfg.functions > 0 {
 			if err := preflightBuild(&harness.GcAdapter{GoBin: cfg.goBin, Timeout: cfg.timeout, AdapterName: "gc"}); err != nil {
 				return fmt.Errorf("go toolchain preflight (-go %q): %w", cfg.goBin, err)
 			}
@@ -684,6 +733,7 @@ func run(cfg config) error {
 	featuresByID := map[string][]string{}
 	var caseIDs []string
 	caseSeeds := map[string]int64{}
+	var batteries []batteryJob
 	var manifest strings.Builder
 	manifest.WriteString("id\tseed\tfeatures\tpair\n")
 
@@ -695,6 +745,10 @@ func run(cfg config) error {
 			gcfg = golean.Profile(gcfg)
 		}
 		gcfg.Include = spec.include
+		if cfg.functions > 0 {
+			level, _ := cfg.functionPanicsLevel() // checked by validate
+			gcfg.Functions, gcfg.BatteryInputs, gcfg.FunctionPanics = cfg.functions, cfg.batteryInputs, level
+		}
 		var c gen.Case
 		var recordedConfig any
 		if input != nil {
@@ -717,6 +771,12 @@ func run(cfg config) error {
 		}
 		if err := os.WriteFile(filepath.Join(dir, "driver.go"), c.Driver, 0o644); err != nil {
 			return err
+		}
+		if len(c.Functions) > 0 {
+			if err := writeBatterySources(dir, c); err != nil {
+				return err
+			}
+			batteries = append(batteries, batteryJob{id: id, dir: dir, specs: batterySpecs(c)})
 		}
 		if err := harness.WriteCaseRecord(dir, harness.CaseRecord{
 			Schema: harness.CaseSchema, ID: id, Seed: caseSeed, GeneratorRev: rev,
@@ -760,6 +820,15 @@ func run(cfg config) error {
 	}
 	if err := os.WriteFile(filepath.Join(work, "manifest.tsv"), []byte(manifest.String()), 0o644); err != nil {
 		return err
+	}
+	// Expected battery outcomes BEFORE the manifest, so it digests them
+	// with the rest of each case.
+	if len(batteries) > 0 {
+		ref := &harness.GcAdapter{GoBin: cfg.goBin, Timeout: cfg.timeout, AdapterName: "gc"}
+		if err := runBatteries(ref, *refOracle, batteries, cfg.workers); err != nil {
+			return err
+		}
+		fmt.Printf("battery: expected outcomes recorded for %d cases\n", len(batteries))
 	}
 	// The AUTHORITATIVE descriptor (E3): every build input digested;
 	// RunBatch refuses the tree if anything differs at judge time.
@@ -1038,6 +1107,17 @@ func runReplay(cfg config) error {
 		fmt.Println("record has no driver hash (pre-F10 record) — driver verified via observation only")
 	} else if got := harness.SubjectHash(c.Driver); got != rec.DriverSHA256 {
 		return fmt.Errorf("replayed driver hash %s != recorded %s", got, rec.DriverSHA256)
+	}
+	// Battery functions (G1): the regenerated case and the case directory
+	// must agree on whether there is a battery at all.
+	_, statErr := os.Lstat(filepath.Join(cfg.replay, harness.FunctionsJSON))
+	switch {
+	case len(c.Functions) > 0:
+		if err := replayBattery(cfg.replay, rec.ID, c, cfg.goBin, cfg.timeout); err != nil {
+			return err
+		}
+	case statErr == nil:
+		return fmt.Errorf("the case directory has %s but its record regenerates no battery functions", harness.FunctionsJSON)
 	}
 
 	dir, err := os.MkdirTemp("", "grossmith-replay-*")

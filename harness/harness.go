@@ -512,9 +512,25 @@ func (a *GcAdapter) buildEnv() []string {
 }
 
 func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
+	stdout, o := a.buildRun(ctx, caseDir, "subject", SubjectOutputCap)
+	if o.Status != "" {
+		return o
+	}
+	doc, err := observe.Parse(bytes.TrimSpace(stdout))
+	if err != nil {
+		return Outcome{Status: StatusRunFailed, Detail: "observation parse: " + err.Error()}
+	}
+	return Outcome{Status: StatusRan, Document: doc}
+}
+
+// buildRun builds the package in dir under the pinned environment and
+// runs it under the run timeout. It returns the program's stdout, or a
+// failure Outcome (Status set) classifying why there is none. Shared by
+// the subject run and the battery run (gc-verified arc G1).
+func (a *GcAdapter) buildRun(ctx context.Context, dir, what string, outCap int) ([]byte, Outcome) {
 	bin, err := a.resolveGo()
 	if err != nil {
-		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
+		return nil, Outcome{Status: StatusAdapterErr, Detail: err.Error()}
 	}
 	// Build OUTPUT lives outside the case tree (E3): a batch is exactly
 	// its manifested inputs, and the first judged pass previously left
@@ -522,7 +538,7 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	// correctly refuses as an unlisted file. Inputs stay pristine.
 	exeDir, err := os.MkdirTemp("", "grossmith-bin-*")
 	if err != nil {
-		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
+		return nil, Outcome{Status: StatusAdapterErr, Detail: err.Error()}
 	}
 	defer os.RemoveAll(exeDir)
 	exe := filepath.Join(exeDir, "case-"+a.Name()+".bin")
@@ -548,7 +564,7 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	}
 	args = append(args, "-o", exe, ".")
 	build := exec.CommandContext(buildCtx, bin, args...)
-	build.Dir = caseDir
+	build.Dir = dir
 	build.Env = a.buildEnv()
 	buildOut := newCappedBuffer(BuildOutputCap)
 	build.Stdout, build.Stderr = buildOut, buildOut
@@ -560,11 +576,11 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 			// build (arc-end review: a 3s caller cancellation printed
 			// "build timeout after 2m0s").
 			if ctx.Err() != nil {
-				return Outcome{Status: StatusBuildFailed, Detail: "build canceled: the caller's deadline ended before the build budget"}
+				return nil, Outcome{Status: StatusBuildFailed, Detail: "build canceled: the caller's deadline ended before the build budget"}
 			}
-			return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build timeout after %s (E4 phase budget)", buildBudget)}
+			return nil, Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build timeout after %s (E4 phase budget)", buildBudget)}
 		}
-		return Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build: %v: %s", err, buildOut.String())}
+		return nil, Outcome{Status: StatusBuildFailed, Detail: fmt.Sprintf("build: %v: %s", err, buildOut.String())}
 	}
 	timeout := a.Timeout
 	if timeout <= 0 {
@@ -574,7 +590,7 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	defer cancel()
 	abs, err := filepath.Abs(exe)
 	if err != nil {
-		return Outcome{Status: StatusAdapterErr, Detail: err.Error()}
+		return nil, Outcome{Status: StatusAdapterErr, Detail: err.Error()}
 	}
 	run := exec.CommandContext(runCtx, abs)
 	run.Env = []string{}
@@ -582,24 +598,20 @@ func (a *GcAdapter) Run(ctx context.Context, caseDir string) Outcome {
 	// subject exhaust the harness before timeout classification). A
 	// truncated observation stream can never parse — classified below
 	// as the cap, not as a parse mystery.
-	stdout, stderr := newCappedBuffer(SubjectOutputCap), newCappedBuffer(BuildOutputCap)
+	stdout, stderr := newCappedBuffer(outCap), newCappedBuffer(BuildOutputCap)
 	run.Stdout, run.Stderr = stdout, stderr
 	killGroup(run)
 	err = run.Run()
 	switch {
 	case runCtx.Err() == context.DeadlineExceeded:
-		return Outcome{Status: StatusTimeout, Detail: "timeout"}
+		return nil, Outcome{Status: StatusTimeout, Detail: "timeout"}
 	case err != nil:
-		return Outcome{Status: StatusRunFailed, Detail: fmt.Sprintf("run: %v: %s", err, stderr.String())}
+		return nil, Outcome{Status: StatusRunFailed, Detail: fmt.Sprintf("run: %v: %s", err, stderr.String())}
 	}
 	if stdout.truncated {
-		return Outcome{Status: StatusRunFailed, Detail: fmt.Sprintf("subject output exceeded the %dMB cap (E4 phase budget) — flooding, not an observation", SubjectOutputCap>>20)}
+		return nil, Outcome{Status: StatusRunFailed, Detail: fmt.Sprintf("%s output exceeded the %dMB cap (E4 phase budget) — flooding, not an observation", what, outCap>>20)}
 	}
-	doc, err := observe.Parse(bytes.TrimSpace(stdout.Bytes()))
-	if err != nil {
-		return Outcome{Status: StatusRunFailed, Detail: "observation parse: " + err.Error()}
-	}
-	return Outcome{Status: StatusRan, Document: doc}
+	return stdout.Bytes(), Outcome{}
 }
 
 // E4 phase budgets — persisted in the batch report so the artifact says

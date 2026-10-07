@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"grossmith/internal/strictjson"
 )
@@ -45,8 +46,78 @@ var caseDirRe = regexp.MustCompile("^case_[0-9]+$")
 
 // caseFileRe is the closed case-input file schema. Every file the
 // generator writes into a case directory (and nothing else) matches it:
-// subject.go, driver.go, case.json.
-var caseFileRe = regexp.MustCompile(`^(subject\.go|driver\.go|case\.json)$`)
+// subject.go, driver.go, case.json, and, for a case with battery
+// functions (gc-verified arc G1), functions.json.
+var caseFileRe = regexp.MustCompile(`^(subject\.go|driver\.go|case\.json|functions\.json)$`)
+
+// batteryFiles is the closed file set of a case's battery subdirectory.
+var batteryFiles = map[string]bool{FunctionsGo: true, BatteryDriverGo: true}
+
+// caseSchemaText names the closed schema in refusals.
+const caseSchemaText = "subject.go, driver.go, case.json, functions.json, battery/functions.go, battery/battery_driver.go"
+
+// caseFileName reports whether a manifest file key is in the closed
+// schema: a top-level case file, or "battery/<file>" for one of the two
+// battery sources. These are the only two-component keys, and both
+// components are fixed strings, so a key can never reach outside its case.
+func caseFileName(name string) bool {
+	if localName(name) {
+		return caseFileRe.MatchString(name)
+	}
+	dir, file, ok := strings.Cut(name, "/")
+	return ok && dir == BatteryDir && batteryFiles[file]
+}
+
+// batteryComplete checks the battery files are all present or all absent:
+// functions.json without its sources, or sources without their expected
+// outcomes, is a half-written case.
+func batteryComplete(id string, files map[string]bool) error {
+	n := 0
+	for _, name := range []string{FunctionsJSON, BatteryDir + "/" + FunctionsGo, BatteryDir + "/" + BatteryDriverGo} {
+		if files[name] {
+			n++
+		}
+	}
+	if n != 0 && n != 3 {
+		return fmt.Errorf("case %s has %d of the 3 battery files (functions.json, battery/functions.go, battery/battery_driver.go) — all or none", id, n)
+	}
+	return nil
+}
+
+// caseEntries lists a case directory's files as manifest keys, descending
+// into the battery subdirectory. Any other directory, any symlink, and any
+// special file is refused.
+func caseEntries(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() && e.Name() == BatteryDir {
+			bdir := filepath.Join(dir, BatteryDir)
+			if err := realDir(bdir); err != nil {
+				return nil, err
+			}
+			inner, err := os.ReadDir(bdir)
+			if err != nil {
+				return nil, err
+			}
+			for _, ie := range inner {
+				if err := regularFile(bdir, ie); err != nil {
+					return nil, err
+				}
+				names = append(names, BatteryDir+"/"+ie.Name())
+			}
+			continue
+		}
+		if err := regularFile(dir, e); err != nil {
+			return nil, err
+		}
+		names = append(names, e.Name())
+	}
+	return names, nil
+}
 
 // rootFileNames is the closed set of digested batch-root inputs. Only
 // go.mod affects a build; the other root artifacts are bound by
@@ -120,22 +191,24 @@ func WriteManifest(root, generatorRev, goVersion string, ids []string, seeds map
 		}
 		mc := ManifestCase{ID: id, Seed: seeds[id], Files: map[string]string{}}
 		dir := filepath.Join(root, id)
-		entries, err := os.ReadDir(dir)
+		names, err := caseEntries(dir)
 		if err != nil {
 			return Manifest{}, fmt.Errorf("manifest: %w", err)
 		}
-		for _, e := range entries {
-			if err := regularFile(dir, e); err != nil {
-				return Manifest{}, err
+		present := map[string]bool{}
+		for _, name := range names {
+			if !caseFileName(name) {
+				return Manifest{}, fmt.Errorf("manifest: case %s holds %q, outside the closed case-input schema (%s)", id, name, caseSchemaText)
 			}
-			if !localName(e.Name()) || !caseFileRe.MatchString(e.Name()) {
-				return Manifest{}, fmt.Errorf("manifest: case %s holds %q, outside the closed case-input schema (subject.go, driver.go, case.json)", id, e.Name())
-			}
-			sum, err := FileSHA256(filepath.Join(dir, e.Name()))
+			sum, err := FileSHA256(filepath.Join(dir, filepath.FromSlash(name)))
 			if err != nil {
 				return Manifest{}, err
 			}
-			mc.Files[e.Name()] = sum
+			mc.Files[name] = sum
+			present[name] = true
+		}
+		if err := batteryComplete(id, present); err != nil {
+			return Manifest{}, fmt.Errorf("manifest: %w", err)
 		}
 		m.Cases = append(m.Cases, mc)
 	}
@@ -187,9 +260,16 @@ func ReadManifest(root string) (Manifest, error) {
 		if len(mc.Files) == 0 {
 			return Manifest{}, fmt.Errorf("manifest: case %s lists no files", mc.ID)
 		}
+		listed := map[string]bool{}
+		for name := range mc.Files {
+			listed[name] = true
+		}
+		if err := batteryComplete(mc.ID, listed); err != nil {
+			return Manifest{}, fmt.Errorf("manifest: %w", err)
+		}
 		for name, d := range mc.Files {
-			if !localName(name) || !caseFileRe.MatchString(name) {
-				return Manifest{}, fmt.Errorf("manifest: case %s names file %q — the closed case-input schema is subject.go, driver.go, case.json", mc.ID, name)
+			if !caseFileName(name) {
+				return Manifest{}, fmt.Errorf("manifest: case %s names file %q — the closed case-input schema is %s", mc.ID, name, caseSchemaText)
 			}
 			if !digestRe.MatchString(d) {
 				return Manifest{}, fmt.Errorf("manifest: %s/%s digest %q is not a sha256 digest", mc.ID, name, d)
@@ -237,25 +317,27 @@ func ValidateBatch(root string) ([]string, error) {
 		if err := realDir(dir); err != nil {
 			return nil, err
 		}
-		entries, err := os.ReadDir(dir)
+		names, err := caseEntries(dir)
 		if err != nil {
-			return nil, fmt.Errorf("batch: declared case missing: %w", err)
+			return nil, fmt.Errorf("batch: declared case missing or malformed: %w", err)
 		}
 		onDisk := map[string]bool{}
-		for _, e := range entries {
-			if err := regularFile(dir, e); err != nil {
-				return nil, err
-			}
-			onDisk[e.Name()] = true
-			if _, listed := mc.Files[e.Name()]; !listed {
-				return nil, fmt.Errorf("batch: %s/%s exists on disk but is not in the manifest — it would be compiled into the case, so the batch is refused", mc.ID, e.Name())
+		for _, name := range names {
+			onDisk[name] = true
+			if _, listed := mc.Files[name]; !listed {
+				return nil, fmt.Errorf("batch: %s/%s exists on disk but is not in the manifest — it would be compiled into the case, so the batch is refused", mc.ID, name)
 			}
 		}
 		for name, want := range mc.Files {
 			if !onDisk[name] {
 				return nil, fmt.Errorf("batch: %s/%s is in the manifest but missing on disk", mc.ID, name)
 			}
-			if err := checkFile(dir, name, want); err != nil {
+			if err := checkFile(dir, filepath.FromSlash(name), want); err != nil {
+				return nil, err
+			}
+		}
+		if _, ok := mc.Files[FunctionsJSON]; ok {
+			if err := checkFunctionsDoc(dir, mc); err != nil {
 				return nil, err
 			}
 		}
