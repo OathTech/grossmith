@@ -124,10 +124,11 @@ func caseEntries(dir string) ([]string, error) {
 	return names, nil
 }
 
-// rootFileNames is the closed set of digested batch-root inputs. Only
-// go.mod affects a build; the other root artifacts are bound by
-// complete.json's reportFiles instead.
-var rootFileNames = map[string]bool{"go.mod": true}
+// rootFileNames is the closed set of digested batch-root inputs: go.mod,
+// which affects every build, and profile.json, the construct profile a
+// batch was generated under (G2; present only then). The other root
+// artifacts are bound by complete.json's reportFiles instead.
+var rootFileNames = map[string]bool{"go.mod": true, ProfileFile: true}
 
 // localName reports whether name is a single path component that names
 // something INSIDE the directory it is joined to: no separators, no
@@ -187,6 +188,12 @@ func WriteManifest(root, generatorRev, goVersion string, ids []string, seeds map
 		return Manifest{}, fmt.Errorf("manifest: %w", err)
 	}
 	m.RootFiles["go.mod"] = sum
+	switch psum, err := FileSHA256(filepath.Join(root, ProfileFile)); {
+	case err == nil:
+		m.RootFiles[ProfileFile] = psum
+	case !os.IsNotExist(err):
+		return Manifest{}, fmt.Errorf("manifest: %w", err)
+	}
 	for _, id := range ids {
 		// The producer is held to the same closed shapes the reader
 		// enforces, so a descriptor can never be written that
@@ -247,7 +254,7 @@ func ReadManifest(root string) (Manifest, error) {
 	// nothing downstream compares or abbreviates a malformed value.
 	for name, d := range m.RootFiles {
 		if !localName(name) || !rootFileNames[name] {
-			return Manifest{}, fmt.Errorf("manifest: rootFiles names %q — the closed batch-root input set is {go.mod}", name)
+			return Manifest{}, fmt.Errorf("manifest: rootFiles names %q — the closed batch-root input set is {go.mod, profile.json}", name)
 		}
 		if !digestRe.MatchString(d) {
 			return Manifest{}, fmt.Errorf("manifest: rootFiles[%s] %q is not a sha256 digest", name, d)
@@ -368,6 +375,10 @@ func ValidateBatch(root string) ([]string, error) {
 			return nil, fmt.Errorf("batch: %s at the batch root is a symlink — refused", name)
 		case e.IsDir() && seen[name]:
 		case e.IsDir() && name == "golean-work": // judge-time artifact tree
+		case !e.IsDir() && rootFileNames[name] && m.RootFiles[name] == "":
+			// A digested input on disk that the descriptor does not
+			// list (a profile.json added after generation) is unbound.
+			return nil, fmt.Errorf("batch: %s at the batch root is not in the manifest's rootFiles — refused", name)
 		case !e.IsDir() && rootFileAllowed(name):
 		default:
 			return nil, fmt.Errorf("batch: %s at the batch root is neither a declared case nor a batch artifact — refusing", name)
@@ -555,7 +566,7 @@ func allowedReportArtifact(name string) bool {
 // rootFileAllowed is the closed set of batch-root artifacts.
 func rootFileAllowed(name string) bool {
 	switch name {
-	case "go.mod", "manifest.tsv", "manifest.json", "batch.json", "complete.json", gengoStagingMarker:
+	case "go.mod", ProfileFile, "manifest.tsv", "manifest.json", "batch.json", "complete.json", gengoStagingMarker:
 		return true
 	}
 	return false

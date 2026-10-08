@@ -100,7 +100,7 @@ Decided here:
   (GoLean, `-clone gc`). The sidecar is reference-only. Clone judging is
   a recorded follow-up.
 
-**G1 status (2026-10-07): implemented on the branch, not yet merged.**
+**G1 status: merged to main at 85c5209 (2026-10-08).**
 Format and flags: `docs/functions-format.md`. Decisions made during the
 work [AGENT]:
 - The battery sources live in `battery/`, because gc builds every `.go`
@@ -157,6 +157,17 @@ example, "slices over fixed arrays" against our literal-born slices),
 the tag is split in G2 or the gap is recorded in the ledger. Their
 `srcclass` classifier cross-checks that cases land in the intended
 fragment, and they report the result back.
+
+**G2 status (2026-10-08): implemented on the branch, not yet merged.**
+Format, guarantees and the classifier cross-check: `docs/profiles.md`.
+Decisions [AGENT]:
+- profile files carry only an allow-list. Corners and knobs stay flags:
+  the order corner is already masked when its instrument is excluded;
+- the profile file is copied into the batch root as `profile.json`,
+  digested as a root input, and named in every `case.json`;
+- the draft F0-F3 profiles are test fixtures. Classified with
+  gc-verified's own `srcclass`, 3,000 battery functions and 600 subjects
+  landed at or below their target fragment, with none outside.
 
 ### G3 — pointers, stage 0 (their R1, M-mem-0)
 

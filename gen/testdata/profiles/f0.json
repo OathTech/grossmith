@@ -1,0 +1,6 @@
+{
+ "schema": "grossmith-profile-v1",
+ "name": "f0-draft",
+ "description": "Test fixture approximating gc-verified F0 (ints, bools, arithmetic, comparisons, bitwise, if/switch; no loops, shifts, calls, division, aggregates, strings). gc-verified owns the real file.",
+ "constructs": ["if", "switch", "bitwise", "conversions", "comparisons", "equality", "min", "max", "multi_assign", "defined_types"]
+}

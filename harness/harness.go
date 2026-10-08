@@ -174,7 +174,21 @@ type CaseRecord struct {
 	// Origin identifies an existing source check. Such records have no
 	// generator configuration or draw tape; Seed is the zero placeholder.
 	Origin *CaseOrigin `json:"origin,omitempty"`
+	// Profile names the construct profile the case was generated under
+	// (gc-verified arc G2): its name and the sha256 of the batch's
+	// profile.json. Absent when no profile was used.
+	Profile *ProfileRef `json:"profile,omitempty"`
 }
+
+// ProfileRef identifies a construct profile by name and file digest.
+type ProfileRef struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+}
+
+// ProfileFile is the batch-root copy of the profile a batch was generated
+// under, digested in the manifest's rootFiles.
+const ProfileFile = "profile.json"
 
 // CaseOrigin distinguishes imported source from a generated, replayable case.
 type CaseOrigin struct {

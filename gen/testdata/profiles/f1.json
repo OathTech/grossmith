@@ -1,0 +1,21 @@
+{
+ "schema": "grossmith-profile-v1",
+ "name": "f1-draft",
+ "description": "Test fixture approximating gc-verified F1: F0 plus counted loops and shifts. gc-verified owns the real file.",
+ "constructs": [
+  "if",
+  "switch",
+  "bitwise",
+  "conversions",
+  "comparisons",
+  "equality",
+  "min",
+  "max",
+  "multi_assign",
+  "defined_types",
+  "loops",
+  "break",
+  "continue",
+  "shifts"
+ ]
+}

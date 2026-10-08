@@ -1,0 +1,31 @@
+{
+ "schema": "grossmith-profile-v1",
+ "name": "f3-draft",
+ "description": "Test fixture approximating gc-verified F3: F2 plus local arrays and structs with indexing. gc-verified owns the real file.",
+ "constructs": [
+  "if",
+  "switch",
+  "bitwise",
+  "conversions",
+  "comparisons",
+  "equality",
+  "min",
+  "max",
+  "multi_assign",
+  "defined_types",
+  "loops",
+  "break",
+  "continue",
+  "shifts",
+  "helpers",
+  "bare_call",
+  "division",
+  "modulo",
+  "methods",
+  "arrays",
+  "index",
+  "structs",
+  "field",
+  "range"
+ ]
+}

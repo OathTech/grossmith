@@ -79,6 +79,8 @@ type config struct {
 	batteryInputs  int
 	functionPanics string
 	functionInts   bool
+	// profile: path to a construct profile file (gc-verified arc G2).
+	profile string
 	// explicit records which flags the user actually set (audit F5:
 	// -replay must refuse generation flags rather than ignore them).
 	explicit map[string]bool
@@ -108,6 +110,7 @@ func main() {
 	flag.IntVar(&cfg.batteryInputs, "battery-inputs", 32, "inputs per battery function (requires -functions)")
 	flag.StringVar(&cfg.functionPanics, "function-panics", "ordinary", "panic-capable site density in battery functions: none, ordinary or biased (requires -functions)")
 	flag.BoolVar(&cfg.functionInts, "function-int-params", false, "battery function parameters use integer kinds only, no bool (requires -functions)")
+	flag.StringVar(&cfg.profile, "profile", "", "construct profile file (grossmith-profile-v1): an allow-list of optional construct tags; every other optional tag is excluded")
 	flag.BoolVar(&cfg.allowLegacyVerify, "allow-legacy-verify", false, "let -verify accept a pre-E5 batch whose report/clone digests are absent (default: refuse the reduced scope)")
 	flag.Parse()
 	cfg.explicit = map[string]bool{}
@@ -395,6 +398,8 @@ func (c config) validate() (observe.PanicPolicy, string, error) {
 		return "", "", fmt.Errorf("-workers %d: need at least one", c.workers)
 	case c.functions == 0 && (c.explicit["battery-inputs"] || c.explicit["function-panics"] || c.explicit["function-int-params"] || c.functionInts):
 		return "", "", fmt.Errorf("-battery-inputs, -function-panics and -function-int-params require -functions")
+	case c.profile != "" && c.check != "":
+		return "", "", fmt.Errorf("-profile does not apply to -check (an existing source is not generated)")
 	case c.functions > 0 && c.check != "":
 		return "", "", fmt.Errorf("-functions does not apply to -check (an existing source has no generated battery)")
 	}
@@ -498,6 +503,11 @@ func run(cfg config) error {
 			return err
 		}
 		fmt.Printf("batch %s verified: %d cases, every case-input digest intact and bound to the manifest\n", cfg.verify, len(info.IDs))
+		if name, err := verifyProfile(cfg.verify, info.IDs); err != nil {
+			return err
+		} else if name != "" {
+			fmt.Printf("  profile %s: every case's exclusions and recorded constructs re-derived from profile.json\n", name)
+		}
 		if info.ReportsBound {
 			fmt.Printf("  report bound: batch.json/manifest.tsv digests match complete.json\n")
 		} else if cfg.allowLegacyVerify {
@@ -586,6 +596,10 @@ func run(cfg config) error {
 		cfg.n, cfg.seed, cfg.judge = 1, 0, true
 	}
 	policy, checkout, err := cfg.validate()
+	if err != nil {
+		return err
+	}
+	prof, err := loadProfile(cfg.profile)
 	if err != nil {
 		return err
 	}
@@ -715,6 +729,18 @@ func run(cfg config) error {
 				len(kept), len(tags), len(tags)-len(kept))
 			tags = kept
 		}
+		if prof != nil {
+			// Forcing a tag the profile excludes would contradict it;
+			// the pair universe is the allow-list.
+			kept := tags[:0:0]
+			for _, t := range tags {
+				if prof.p.Allows(t) {
+					kept = append(kept, t)
+				}
+			}
+			fmt.Printf("pairs mode: profile %s keeps %d of %d tags in the pair universe\n", prof.p.Name, len(kept), len(tags))
+			tags = kept
+		}
 		idx := 0
 		for i := 0; i < len(tags); i++ {
 			for j := i + 1; j < len(tags); j++ {
@@ -746,6 +772,9 @@ func run(cfg config) error {
 		if checkout != "" {
 			gcfg = golean.Profile(gcfg)
 		}
+		if prof != nil {
+			gcfg = prof.p.Apply(gcfg)
+		}
 		gcfg.Include = spec.include
 		if cfg.functions > 0 {
 			level, _ := cfg.functionPanicsLevel() // checked by validate
@@ -763,6 +792,11 @@ func run(cfg config) error {
 				return fmt.Errorf("seed %d: %w", caseSeed, err)
 			}
 			recordedConfig = gcfg
+			if prof != nil {
+				if err := prof.p.CheckFeatures(c); err != nil {
+					return fmt.Errorf("seed %d: %w", caseSeed, err)
+				}
+			}
 		}
 		id := fmt.Sprintf("case_%05d", i)
 		dir := filepath.Join(work, id)
@@ -786,7 +820,7 @@ func run(cfg config) error {
 			SubjectSHA256: harness.SubjectHash(c.Source),
 			DriverSHA256:  harness.SubjectHash(c.Driver),
 			Features:      c.FeatureCounts, DrawTrace: c.Tape,
-			Config: recordedConfig, Origin: origin,
+			Config: recordedConfig, Origin: origin, Profile: prof.ref(),
 		}); err != nil {
 			return err
 		}
@@ -832,6 +866,12 @@ func run(cfg config) error {
 			return err
 		}
 		fmt.Printf("battery: expected outcomes recorded for %d cases\n", len(batteries))
+	}
+	if prof != nil {
+		// The verbatim profile file, digested as a batch-root input.
+		if err := os.WriteFile(filepath.Join(work, harness.ProfileFile), prof.raw, 0o644); err != nil {
+			return err
+		}
 	}
 	// The AUTHORITATIVE descriptor (E3): every build input digested;
 	// RunBatch refuses the tree if anything differs at judge time.
@@ -1011,6 +1051,7 @@ type caseRecordIn struct {
 	DrawTrace     []int               `json:"drawTrace"`
 	Config        *gen.Config         `json:"config"`
 	Origin        *harness.CaseOrigin `json:"origin"`
+	Profile       *harness.ProfileRef `json:"profile"`
 }
 
 // runReplay is Phase 3's done-when as a command: regenerate a case from

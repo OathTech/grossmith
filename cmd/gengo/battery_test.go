@@ -219,3 +219,133 @@ func TestBatteryReviewRefusals(t *testing.T) {
 		t.Fatalf("report validation with a different battery oracle: %v", err)
 	}
 }
+
+func profileFixture(name string) string {
+	return filepath.Join("..", "..", "gen", "testdata", "profiles", name+".json")
+}
+
+// TestProfileBatch: a profile batch publishes, verifies, records the
+// profile, and -verify re-derives it; inconsistent records are refused
+// even with every digest rebound.
+func TestProfileBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs batteries")
+	}
+	out := filepath.Join(t.TempDir(), "batch")
+	cfg := batteryBase(out)
+	cfg.n, cfg.profile, cfg.timeout = 6, profileFixture("f1"), 10*time.Second
+	if err := run(cfg); err != nil {
+		t.Fatal(err)
+	}
+	info, err := harness.VerifyBatch(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, err := verifyProfile(out, info.IDs); err != nil || name != "f1-draft" {
+		t.Fatalf("verifyProfile: %q %v", name, err)
+	}
+	rebind := func() {
+		t.Helper()
+		m, err := harness.ReadManifest(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		seeds := map[string]int64{}
+		for _, mc := range m.Cases {
+			ids = append(ids, mc.ID)
+			seeds[mc.ID] = mc.Seed
+		}
+		if _, err := harness.WriteManifest(out, m.GeneratorRev, m.GoVersion, ids, seeds); err != nil {
+			t.Fatal(err)
+		}
+		if err := harness.WriteComplete(out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	editRecord := func(edit func(map[string]any)) {
+		t.Helper()
+		path := filepath.Join(out, "case_00002", "case.json")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(b, &rec); err != nil {
+			t.Fatal(err)
+		}
+		edit(rec)
+		b, _ = json.MarshalIndent(rec, "", " ")
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rebind()
+	}
+	orig, _ := os.ReadFile(filepath.Join(out, "case_00002", "case.json"))
+	restore := func() {
+		os.WriteFile(filepath.Join(out, "case_00002", "case.json"), orig, 0o644)
+		rebind()
+	}
+	refusals := map[string]func(map[string]any){
+		"no profile reference": func(r map[string]any) { delete(r, "profile") },
+		"other profile digest": func(r map[string]any) {
+			r["profile"].(map[string]any)["sha256"] = strings.Repeat("0", 64)
+		},
+		"exclusion dropped": func(r map[string]any) {
+			c := r["config"].(map[string]any)
+			var kept []any
+			for _, t := range c["Exclude"].([]any) {
+				if t != "helpers" {
+					kept = append(kept, t)
+				}
+			}
+			c["Exclude"] = kept
+		},
+		"recorded construct outside the profile": func(r map[string]any) {
+			r["features"].(map[string]any)["helpers"] = 1
+		},
+	}
+	for name, edit := range refusals {
+		editRecord(edit)
+		if _, err := harness.VerifyBatch(out); err != nil {
+			t.Fatalf("%s: the rebound tree should pass the digest checks: %v", name, err)
+		}
+		if _, err := verifyProfile(out, info.IDs); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+		restore()
+	}
+	// profile.json left on disk but unlisted is refused by the digest
+	// layer itself.
+	m, err := harness.ReadManifest(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(m.RootFiles, harness.ProfileFile)
+	b, _ := json.MarshalIndent(m, "", " ")
+	os.WriteFile(filepath.Join(out, "manifest.json"), b, 0o644)
+	harness.WriteComplete(out)
+	if _, err := harness.VerifyBatch(out); err == nil || !strings.Contains(err.Error(), "rootFiles") {
+		t.Fatalf("unlisted profile.json: %v", err)
+	}
+}
+
+func TestProfileFlagRefusals(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "batch")
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	os.WriteFile(bad, []byte(`{"schema":"grossmith-profile-v1","name":"x","constructs":["loop"]}`), 0o644)
+	for name, m := range map[string]func(*config){
+		"missing file": func(c *config) { c.profile = filepath.Join(t.TempDir(), "absent.json") },
+		"unknown tag":  func(c *config) { c.profile = bad },
+		"with -check":  func(c *config) { c.profile = profileFixture("f0"); c.check = "x" },
+	} {
+		cfg := base(out)
+		m(&cfg)
+		if err := run(cfg); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+		if _, err := os.Stat(out); !os.IsNotExist(err) {
+			t.Fatalf("%s: wrote before refusing", name)
+		}
+	}
+}
