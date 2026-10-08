@@ -187,7 +187,7 @@ func (c Config) Validate() error {
 	// an artifact — review finding).
 	if c.Constructs != nil || len(c.Exclude) > 0 || len(c.Include) > 0 {
 		known := map[string]bool{}
-		for _, tag := range Optional() {
+		for _, tag := range append(Optional(), OptIn()...) {
 			known[tag] = true
 		}
 		var bad []string
@@ -332,6 +332,9 @@ type Generator struct {
 	fnRisk bool
 	// battery holds the generated battery functions (gen/functions.go).
 	battery battery
+	// optIn is the set of opt-in construct tags requested for this case
+	// (constructs.go OptIn).
+	optIn map[string]bool
 	// corner is the resolved named corner; boundaryBias is the weight of the
 	// boundary arm at literal/divisor/shift-count sites (0 disables, 1 is
 	// the everywhere-minority base, cornerBoundaryBias the hunted mix).
@@ -588,6 +591,14 @@ func (g *Generator) drawSetup() {
 		}
 		for _, tag := range cfg.Include {
 			g.constructs[tag] = true
+		}
+	}
+	// Opt-in tags: requested through Include or an explicit Constructs
+	// map, and still subject to Exclude. No draws.
+	g.optIn = map[string]bool{}
+	for _, tag := range OptIn() {
+		if (containsTag(cfg.Include, tag) || cfg.Constructs[tag]) && !containsTag(cfg.Exclude, tag) {
+			g.optIn[tag] = true
 		}
 	}
 	g.boundaryBias = 1

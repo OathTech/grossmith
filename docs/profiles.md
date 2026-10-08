@@ -25,6 +25,10 @@ rung G2), and work for any consumer that scopes by construct.
   constructs only.
 - Unknown fields, duplicate keys and trailing content are refused.
 
+Opt-in tags (`gen.OptIn()`, today only `variable_shift`) are off unless
+requested. A profile requests one by listing it; without a profile, use
+`Config.Include`.
+
 An allow-list fails safe: a tag grossmith adds later is excluded from every
 existing profile until its owner lists it.
 

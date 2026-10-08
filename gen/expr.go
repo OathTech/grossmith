@@ -579,6 +579,12 @@ func (g *Generator) intExpr(t Type, fuel int) value {
 			left := g.nonConstExpr(t, fuel-1)
 			g.mark("shifts")
 			op := pick(g.c, []string{"<<", ">>"})
+			// Opt-in variable counts: the enabled() check comes first, so
+			// with the tag off no draw is made and the tape is unchanged.
+			if g.enabled("variable_shift") && g.c.chance(2) {
+				out = g.variableShift(t, left, op, fuel)
+				return
+			}
 			count := g.c.draw(8)
 			if g.boundaryLiteralDrawn() {
 				// Shift AT and PAST the width: legal for a non-constant left

@@ -248,6 +248,24 @@ func (g *Generator) resultExpr(t Type) string {
 	return fmt.Sprintf("%s(%s) + %s", t.GoName(), g.pureBase, e.text)
 }
 
+// variableShift emits `left op count` with a non-constant unsigned count
+// (the variable_shift opt-in). An unsigned count never panics, and counts
+// at or past the width are legal (the result is 0 or the sign fill). A
+// left shift by an unknown count has an unknown magnitude, so it is
+// width-dependent for platform-width types; a right shift never grows the
+// magnitude, so it keeps the left operand's bound.
+func (g *Generator) variableShift(t Type, left value, op string, fuel int) value {
+	ct := pick(g.c, []Type{Int(8, true), Int(16, true), Int(32, true), Int(64, true), Int(0, true)})
+	count := g.nonConstExpr(ct, fuel-1)
+	g.mark("variable_shift")
+	b := left.bound
+	if op == "<<" {
+		b = 0
+		g.markWidthDepBounded(t, b)
+	}
+	return value{text: fmt.Sprintf("(%s %s %s)", left.text, op, count.text), bound: b}
+}
+
 // hotVariable is the operand of a panic-capable arm that needs a variable
 // (a divisor, today). In the subject the one-per-type floor makes
 // variable() total. In a battery function only the parameters are in

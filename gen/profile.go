@@ -59,7 +59,7 @@ func ParseProfile(b []byte) (Profile, error) {
 		return Profile{}, fmt.Errorf("profile %s: constructs is missing (use [] for core constructs only)", p.Name)
 	}
 	known := map[string]bool{}
-	for _, t := range Optional() {
+	for _, t := range append(Optional(), OptIn()...) {
 		known[t] = true
 	}
 	seen := map[string]bool{}
@@ -134,6 +134,12 @@ func (p Profile) Apply(cfg Config) Config {
 			delete(ex, t)
 		}
 	}
+	// Opt-in tags the profile lists are requested through Include.
+	for _, t := range OptIn() {
+		if p.Allows(t) && !containsTag(cfg.Include, t) {
+			cfg.Include = append(cfg.Include, t)
+		}
+	}
 	// Anything outside Optional() is kept for Validate to refuse.
 	var rest []string
 	for t := range ex {
@@ -149,7 +155,7 @@ func (p Profile) Apply(cfg Config) Config {
 // tags and core constructs are not constructs a profile gates.
 func (p Profile) CheckFeatures(c Case) error {
 	known := map[string]bool{}
-	for _, t := range Optional() {
+	for _, t := range append(Optional(), OptIn()...) {
 		known[t] = true
 	}
 	check := func(where string, tags map[string]int) error {

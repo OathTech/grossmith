@@ -44,6 +44,30 @@ func Optional() []string {
 	}
 }
 
+// OptIn lists construct tags that are OFF unless explicitly requested,
+// through Config.Include or Config.Constructs (a profile listing one adds
+// it to Include). They are never part of the swarm draw, so adding one
+// re-maps no seed: with every opt-in tag off, generation is byte-identical
+// to the generator before it existed (gc-verified arc; Mike's choice of
+// option B for variable shift counts, 2026-10-08).
+//
+//	variable_shift — a shift whose count is a non-constant unsigned
+//	                 expression (a parameter or computed value), so counts
+//	                 at and past the width occur. Unsigned counts never
+//	                 panic.
+func OptIn() []string {
+	return []string{"variable_shift"}
+}
+
+func isOptIn(tag string) bool {
+	for _, t := range OptIn() {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
 // Info tags, for reference (not enforced as a closed set):
 //
 //	dead_code        — statements exist after a mid-block terminal
@@ -97,6 +121,14 @@ const (
 func (g *Generator) enabled(tags ...string) bool {
 	for _, tag := range tags {
 		if coreConstructs[tag] {
+			continue
+		}
+		if isOptIn(tag) {
+			// Off unless requested; a nil construct map (everything
+			// enabled) does not turn opt-in tags on.
+			if !g.optIn[tag] {
+				return false
+			}
 			continue
 		}
 		if g.constructs == nil {

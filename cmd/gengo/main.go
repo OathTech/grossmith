@@ -772,10 +772,12 @@ func run(cfg config) error {
 		if checkout != "" {
 			gcfg = golean.Profile(gcfg)
 		}
+		gcfg.Include = spec.include
 		if prof != nil {
+			// After Include is set: Apply adds the profile's opt-in tags
+			// to it.
 			gcfg = prof.p.Apply(gcfg)
 		}
-		gcfg.Include = spec.include
 		if cfg.functions > 0 {
 			level, _ := cfg.functionPanicsLevel() // checked by validate
 			gcfg.Functions, gcfg.BatteryInputs, gcfg.FunctionPanics = cfg.functions, cfg.batteryInputs, level

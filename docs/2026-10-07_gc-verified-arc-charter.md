@@ -187,6 +187,18 @@ would re-map seeds. It is now counted by the new info tag
 `p0_conversion`, which adds that tag to the recorded features of cases
 with helpers (programs unchanged).
 
+### G2b — variable shift counts (inserted 2026-10-08)
+
+gc-verified's first G1+G2 campaign (1,000 cases, 128,000 battery inputs,
+0 disagreements) found every shift count was a literal 0-7. [USER] Mike
+chose option B: an OPT-IN construct tag `variable_shift`, never
+swarm-drawn, requested through a profile or `Config.Include`, so no seed
+or existing configuration changes (checked byte-identical against main's
+binary for defaults, batteries, profiles and pairs mode). Counts are
+non-constant unsigned expressions, so counts at and past the width occur
+and nothing panics. Signed counts, which panic, wait on the panic-kind
+decision.
+
 ### G3 — pointers, stage 0 (their R1, M-mem-0)
 
 First, the mechanism-2 design note that the effect discipline requires
