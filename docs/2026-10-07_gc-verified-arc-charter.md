@@ -198,6 +198,18 @@ binary for defaults, batteries, profiles and pairs mode). Counts are
 non-constant unsigned expressions, so counts at and past the width occur
 and nothing panics. Signed counts, which panic, wait on the panic-kind
 decision.
+Pre-merge review (one reviewer): no blockers. "Off means off" held
+against main's binary in every configuration probed. Plumbing fixes, with
+tests:
+- requesting the tag force-enables `shifts`, which was drawn off in about
+  half of swarm seeds, so a request could be void;
+- void or contradictory requests are refused: the prerequisite disabled,
+  the tag both included and excluded, or the tag requested through a
+  Constructs map;
+- `Profile.Apply` no longer writes into the caller's Include;
+- the ledger test covers opt-in tags;
+- the run test checks that charged covers measured;
+- pairs-mode behaviour is documented.
 
 ### G3 — pointers, stage 0 (their R1, M-mem-0)
 

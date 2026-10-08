@@ -44,9 +44,8 @@ func Optional() []string {
 	}
 }
 
-// OptIn lists construct tags that are OFF unless explicitly requested,
-// through Config.Include or Config.Constructs (a profile listing one adds
-// it to Include). They are never part of the swarm draw, so adding one
+// OptIn lists construct tags that are OFF unless explicitly requested
+// through Config.Include (a profile listing one adds it to Include). They are never part of the swarm draw, so adding one
 // re-maps no seed: with every opt-in tag off, generation is byte-identical
 // to the generator before it existed (gc-verified arc; Mike's choice of
 // option B for variable shift counts, 2026-10-08).
@@ -58,6 +57,14 @@ func Optional() []string {
 func OptIn() []string {
 	return []string{"variable_shift"}
 }
+
+// optInRequires is each opt-in tag's prerequisite: the ordinary tag whose
+// sites carry it. Requesting the opt-in tag force-enables the
+// prerequisite (no draws; the order corner does the same for its
+// instrument), and Validate refuses a request whose prerequisite is
+// explicitly disabled, so a request is never silently void (variable
+// shift review finding 1).
+var optInRequires = map[string]string{"variable_shift": "shifts"}
 
 func isOptIn(tag string) bool {
 	for _, t := range OptIn() {

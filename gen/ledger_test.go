@@ -16,7 +16,7 @@ func TestLedgerNamesEveryTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := string(b)
-	for _, tag := range Optional() {
+	for _, tag := range append(Optional(), OptIn()...) {
 		if !strings.Contains(ledger, "`"+tag+"`") {
 			t.Errorf("optional construct %q has no spec-ledger row", tag)
 		}

@@ -27,7 +27,13 @@ rung G2), and work for any consumer that scopes by construct.
 
 Opt-in tags (`gen.OptIn()`, today only `variable_shift`) are off unless
 requested. A profile requests one by listing it; without a profile, use
-`Config.Include`.
+`Config.Include` (the only route: an explicit `Constructs` map may not
+name one). Each opt-in tag has a prerequisite tag whose sites carry it
+(`variable_shift` needs `shifts`). A request force-enables the
+prerequisite, and a profile or config that disables it, or that both
+includes and excludes the opt-in tag, is refused. In `-pairs` mode an
+opt-in tag a profile lists is on in every case, as a background factor
+rather than a paired one.
 
 An allow-list fails safe: a tag grossmith adds later is excluded from every
 existing profile until its owner lists it.

@@ -185,6 +185,20 @@ func (c Config) Validate() error {
 	// writing {"assignment": false} would be silently ignored otherwise.
 	// Keys are sorted so the diagnosis is deterministic (map order reached
 	// an artifact — review finding).
+	// Opt-in tags: requested through Include only, never alongside an
+	// Exclude of the same tag, and never with their prerequisite
+	// explicitly disabled (variable shift review findings 1-3).
+	for _, tag := range OptIn() {
+		req := optInRequires[tag]
+		switch {
+		case c.Constructs != nil && c.Constructs[tag]:
+			return fmt.Errorf("config: request the opt-in construct %s through Include, not Constructs", tag)
+		case containsTag(c.Include, tag) && containsTag(c.Exclude, tag):
+			return fmt.Errorf("config: opt-in construct %s is both included and excluded", tag)
+		case containsTag(c.Include, tag) && (containsTag(c.Exclude, req) || (c.Constructs != nil && !c.Constructs[req])):
+			return fmt.Errorf("config: opt-in construct %s requires %s, which this config disables", tag, req)
+		}
+	}
 	if c.Constructs != nil || len(c.Exclude) > 0 || len(c.Include) > 0 {
 		known := map[string]bool{}
 		for _, tag := range append(Optional(), OptIn()...) {
@@ -597,8 +611,11 @@ func (g *Generator) drawSetup() {
 	// map, and still subject to Exclude. No draws.
 	g.optIn = map[string]bool{}
 	for _, tag := range OptIn() {
-		if (containsTag(cfg.Include, tag) || cfg.Constructs[tag]) && !containsTag(cfg.Exclude, tag) {
+		if containsTag(cfg.Include, tag) {
 			g.optIn[tag] = true
+			if g.constructs != nil {
+				g.constructs[optInRequires[tag]] = true
+			}
 		}
 	}
 	g.boundaryBias = 1

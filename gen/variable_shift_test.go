@@ -36,7 +36,7 @@ func countVariableShifts(t *testing.T, src []byte) int {
 // TestVariableShiftIsOptIn: off unless requested (no draws, no emission,
 // even with a nil construct map), on when included, refused by Exclude.
 func TestVariableShiftIsOptIn(t *testing.T) {
-	sawSubject, sawBattery := 0, 0
+	sawSubject, sawBattery, noShift := 0, 0, 0
 	for seed := int64(1); seed <= 200; seed++ {
 		all := DefaultConfig(seed)
 		all.Swarm = false // nil construct map: every optional tag enabled
@@ -56,15 +56,14 @@ func TestVariableShiftIsOptIn(t *testing.T) {
 		}
 		sawSubject += on.FeatureCounts["variable_shift"]
 		sawBattery += countVariableShifts(t, on.FunctionsSource)
-		ex := variableShiftConfig(seed)
-		ex.Exclude = []string{"variable_shift"}
-		c, err := New(ex).Generate()
-		if err != nil {
-			t.Fatal(err)
+		if on.FeatureCounts["shifts"] == 0 && on.FeatureCounts["variable_shift"] == 0 {
+			// Requesting the tag force-enables shifts; a case without a
+			// shift site at all is still possible, but rare.
+			noShift++
 		}
-		if c.FeatureCounts["variable_shift"] != 0 {
-			t.Fatalf("seed %d: Exclude did not win over Include for an opt-in tag", seed)
-		}
+	}
+	if noShift > 20 {
+		t.Fatalf("%d of 200 requested cases had no shift site: the request is not forcing shifts on", noShift)
 	}
 	if sawSubject == 0 || sawBattery == 0 {
 		t.Fatalf("variable shifts never realised (subject %d, battery %d)", sawSubject, sawBattery)
@@ -88,7 +87,13 @@ func TestVariableShiftRuns(t *testing.T) {
 			continue
 		}
 		ran++
-		measureExec(t, c) // fails the test if the subject does not build
+		g := New(variableShiftConfig(seed))
+		if _, err := g.Generate(); err != nil {
+			t.Fatal(err)
+		}
+		if measured, charged := measureExec(t, c), int64(ExecBudget)-g.budgetLeft; measured > charged {
+			t.Fatalf("seed %d: measured %d executed statements, charged %d", seed, measured, charged)
+		}
 		rows, end, _ := runBattery(t, c, false)
 		if len(rows) != end {
 			t.Fatalf("seed %d: %d rows, END %d", seed, len(rows), end)
@@ -101,6 +106,39 @@ func TestVariableShiftRuns(t *testing.T) {
 	}
 	if ran == 0 {
 		t.Fatal("no case realised a variable shift")
+	}
+}
+
+// TestOptInRequestsAreNeverVoid pins the variable shift review's
+// plumbing findings: contradictory or void requests are refused.
+func TestOptInRequestsAreNeverVoid(t *testing.T) {
+	bad := map[string]func(*Config){
+		"included and excluded": func(c *Config) { c.Include, c.Exclude = []string{"variable_shift"}, []string{"variable_shift"} },
+		"prerequisite excluded": func(c *Config) { c.Include, c.Exclude = []string{"variable_shift"}, []string{"shifts"} },
+		"prerequisite off in Constructs": func(c *Config) {
+			c.Include, c.Constructs = []string{"variable_shift"}, map[string]bool{"if": true}
+		},
+		"requested through Constructs": func(c *Config) { c.Constructs = map[string]bool{"shifts": true, "variable_shift": true} },
+	}
+	for name, m := range bad {
+		cfg := DefaultConfig(1)
+		m(&cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := ParseProfile([]byte(`{"schema":"grossmith-profile-v1","name":"s","constructs":["variable_shift"]}`)); err == nil {
+		t.Error("a profile listing variable_shift without shifts was accepted")
+	}
+	// Apply copies Include rather than writing the caller's array.
+	p, _ := ParseProfile([]byte(`{"schema":"grossmith-profile-v1","name":"s","constructs":["loops","shifts","variable_shift"]}`))
+	inc := make([]string, 1, 4)
+	inc[0] = "loops"
+	cfg := DefaultConfig(1)
+	cfg.Include = inc
+	p.Apply(cfg)
+	if inc[:2][1] != "" {
+		t.Fatal("Apply wrote into the caller's Include array")
 	}
 }
 

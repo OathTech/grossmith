@@ -64,6 +64,9 @@ func ParseProfile(b []byte) (Profile, error) {
 	}
 	seen := map[string]bool{}
 	for _, t := range p.Constructs {
+		if req := optInRequires[t]; req != "" && !containsTag(p.Constructs, req) {
+			return Profile{}, fmt.Errorf("profile %s: opt-in construct %q requires %q, which the profile does not list", p.Name, t, req)
+		}
 		switch {
 		case coreConstructs[t]:
 			return Profile{}, fmt.Errorf("profile %s: %q is a core construct, always enabled; do not list it", p.Name, t)
@@ -134,7 +137,9 @@ func (p Profile) Apply(cfg Config) Config {
 			delete(ex, t)
 		}
 	}
-	// Opt-in tags the profile lists are requested through Include.
+	// Opt-in tags the profile lists are requested through Include (a
+	// copy: the caller's slice is never written).
+	cfg.Include = append([]string(nil), cfg.Include...)
 	for _, t := range OptIn() {
 		if p.Allows(t) && !containsTag(cfg.Include, t) {
 			cfg.Include = append(cfg.Include, t)
