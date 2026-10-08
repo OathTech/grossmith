@@ -81,6 +81,10 @@ func profileNameOK(s string) bool {
 	if len(s) == 0 || len(s) > 64 {
 		return false
 	}
+	// Starts with a letter or digit, so "." and ".." are not names.
+	if c := s[0]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+		return false
+	}
 	for _, r := range s {
 		ok := r == '.' || r == '_' || r == '-' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 		if !ok {

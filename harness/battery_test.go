@@ -302,3 +302,18 @@ func TestCaseFileNames(t *testing.T) {
 		}
 	}
 }
+
+// TestEmptyBatchRefused pins G2 review finding 4: a manifest listing no
+// cases is not a batch of record.
+func TestEmptyBatchRefused(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module grossmith-cases\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(root, "test", "go 1.26", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateBatch(root); err == nil || !strings.Contains(err.Error(), "no cases") {
+		t.Fatalf("empty batch: %v", err)
+	}
+}

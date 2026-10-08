@@ -85,6 +85,12 @@ const (
 	// tagAggObserved: a profile-masked container observed through an int
 	// aggregate (rung 4, GoLean R5) instead of demoted to the feeder tier.
 	tagAggObserved = "aggregate_observed"
+	// tagPureConversion: a helper, method or battery-function body
+	// converted its guaranteed non-constant base (p0 or the receiver) to
+	// another integer kind as the non-constant fallback. These
+	// conversions are emitted whether or not `conversions` is enabled;
+	// the tag counts them (gc-verified arc G2 review).
+	tagPureConversion = "p0_conversion"
 )
 
 // enabled reports whether every named construct may be emitted.

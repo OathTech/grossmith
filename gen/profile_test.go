@@ -1,6 +1,9 @@
 package gen
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +16,7 @@ func TestParseProfileRefusals(t *testing.T) {
 		"schema":         `{"schema":"x","name":"a","constructs":[]}`,
 		"empty name":     `{"schema":"grossmith-profile-v1","name":"","constructs":[]}`,
 		"name with path": `{"schema":"grossmith-profile-v1","name":"../a","constructs":[]}`,
+		"dot name":       `{"schema":"grossmith-profile-v1","name":"..","constructs":[]}`,
 		"missing list":   `{"schema":"grossmith-profile-v1","name":"a"}`,
 		"unknown tag":    `{"schema":"grossmith-profile-v1","name":"a","constructs":["loop"]}`,
 		"core tag":       `{"schema":"grossmith-profile-v1","name":"a","constructs":["ints"]}`,
@@ -124,5 +128,41 @@ func TestCheckFeaturesRefuses(t *testing.T) {
 	// Info tags and core constructs are not gated.
 	if err := p.CheckFeatures(Case{FeatureCounts: map[string]int{"panic_risk": 1, "ints": 3, "corner_kinds": 1}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestCoreOnlyProfileEmitsNoComparisons pins G2 review finding 1: under
+// a profile allowing no optional constructs, neither the subject nor the
+// battery functions contain a comparison or equality operator (the
+// battery's constant-bool fallback used to add one unmarked).
+func TestCoreOnlyProfileEmitsNoComparisons(t *testing.T) {
+	p, err := ParseProfile([]byte(`{"schema":"grossmith-profile-v1","name":"core","constructs":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := int64(300)
+	if testing.Short() {
+		n = 60
+	}
+	for seed := int64(1); seed <= n; seed++ {
+		c, err := New(p.Apply(batteryConfig(seed, FunctionPanicsBiased))).Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, src := range map[string][]byte{"subject": c.Source, "functions.go": c.FunctionsSource} {
+			f, err := parser.ParseFile(token.NewFileSet(), name, src, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				if b, ok := n.(*ast.BinaryExpr); ok {
+					switch b.Op {
+					case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+						t.Fatalf("seed %d %s: %s operator emitted under a core-only profile", seed, name, b.Op)
+					}
+				}
+				return true
+			})
+		}
 	}
 }

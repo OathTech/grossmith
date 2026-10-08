@@ -314,6 +314,13 @@ func ValidateBatch(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(m.Cases) == 0 {
+		// gengo never writes an empty batch (-n 0 is refused), and an
+		// empty one would make every per-case claim vacuously true (G2
+		// review finding 4). ReadManifest still parses one: ownership
+		// checks only ask whether a directory is a gengo batch.
+		return nil, fmt.Errorf("batch: the manifest lists no cases")
+	}
 	for name, want := range m.RootFiles {
 		if err := checkFile(root, name, want); err != nil {
 			return nil, err

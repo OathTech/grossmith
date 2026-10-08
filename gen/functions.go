@@ -218,18 +218,33 @@ func (g *Generator) generateFunction(idx int, perCall int64) (BatteryFunction, s
 
 // resultExpr draws one return expression. A constant result would make
 // every battery row identical for that slot, so a constant draw is
-// combined with the guaranteed non-constant p0: integers add a
-// conversion of p0 (the constant is representable in the result type, so
-// this compiles; the sum wraps at run time), bools compare against
-// p0 > 0. The fallback makes no draws.
+// combined with a non-constant base. The fallback makes no draws, and
+// emits only what is enabled and recorded (G2 review finding 1):
+//
+//   - integers add the first parameter of exactly that type, or else a
+//     conversion of p0 (noted p0_conversion, like every pure-mode
+//     fallback); the constant is representable in the result type, so this
+//     compiles, and the sum wraps at run time;
+//   - bools become p0 > 0 when `comparisons` is enabled (marked), and stay
+//     the constant otherwise.
 func (g *Generator) resultExpr(t Type) string {
 	e := g.expr(t, g.cfg.ExprFuel)
 	if !e.constant {
 		return e.text
 	}
 	if t.Shape == ShapeBool {
-		return fmt.Sprintf("(%s) != (%s > 0)", e.text, g.pureBase)
+		if !g.enabled("comparisons") {
+			return e.text
+		}
+		g.mark("comparisons")
+		return fmt.Sprintf("%s > 0", g.pureBase)
 	}
+	for _, v := range g.vars {
+		if v.typ.Equal(t) && v.typ.Shape == ShapeInt {
+			return fmt.Sprintf("%s + %s", v.name, e.text)
+		}
+	}
+	g.note(tagPureConversion)
 	return fmt.Sprintf("%s(%s) + %s", t.GoName(), g.pureBase, e.text)
 }
 
@@ -247,6 +262,7 @@ func (g *Generator) hotVariable(t Type) value {
 		g.vars[i].reads++
 		return value{text: g.vars[i].name, bound: g.vars[i].bound}
 	}
+	g.note(tagPureConversion)
 	return value{text: fmt.Sprintf("%s(%s)", t.GoName(), g.pureBase)}
 }
 

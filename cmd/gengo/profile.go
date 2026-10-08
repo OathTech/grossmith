@@ -46,9 +46,10 @@ func (l *loadedProfile) ref() *harness.ProfileRef {
 	return &harness.ProfileRef{Name: l.p.Name, SHA256: l.sum}
 }
 
-// verifyProfile checks a verified batch against its profile.json, if it
-// has one, and returns the profile's name ("" when there is none). For
-// every case:
+// verifyProfile checks a verified batch's case records: every case whose
+// record promises battery functions has them, and, when the batch has a
+// profile.json, the profile claims below hold. It returns the profile's
+// name ("" when there is none). For every case of a profile batch:
 //
 //   - case.json names this profile by name and digest;
 //   - its recorded config excludes every tag the profile does not allow,
@@ -80,6 +81,12 @@ func verifyProfile(root string, ids []string) (string, error) {
 		var rec caseRecordIn
 		if err := strictjson.Unmarshal(b, &rec); err != nil {
 			return "", fmt.Errorf("%s/case.json: %w", id, err)
+		}
+		// A battery the record promises must be present (G2 review
+		// finding 3): the digest layer refuses a PARTIAL battery, but a
+		// case with none at all would otherwise pass unchecked.
+		if rec.Config != nil && rec.Config.Functions > 0 && !fileExists(filepath.Join(root, id, harness.FunctionsJSON)) {
+			return "", fmt.Errorf("%s: case.json records %d battery functions, but the case has no %s", id, rec.Config.Functions, harness.FunctionsJSON)
 		}
 		if !hasProfile {
 			if rec.Profile != nil {

@@ -169,6 +169,24 @@ Decisions [AGENT]:
   gc-verified's own `srcclass`, 3,000 battery functions and 600 subjects
   landed at or below their target fragment, with none outside.
 
+**G2 pre-merge review (2026-10-08):** one reviewer. It built its own
+source-form classifier and ran 99 profiles (all-but-one, only-one, and
+core-only), 300 cases each. Findings, all fixed with tests:
+- the G1 constant-bool result fallback emitted `!=` and `>` without
+  marking them, so a profile excluding comparisons still got them;
+- several tags' source forms were undocumented (recover, the recover
+  wrapper, observe_point/defer, order_witness, loop headers); they are
+  listed in `docs/profiles.md`;
+- a case whose record promised a battery but had no battery files
+  passed `-verify`;
+- an empty manifest verified vacuously;
+- profile names `.`/`..` were accepted.
+Found while fixing: pure-mode bodies convert `p0` as their non-constant
+fallback whatever `conversions` says. This is pre-existing; gating it
+would re-map seeds. It is now counted by the new info tag
+`p0_conversion`, which adds that tag to the recorded features of cases
+with helpers (programs unchanged).
+
 ### G3 — pointers, stage 0 (their R1, M-mem-0)
 
 First, the mechanism-2 design note that the effect discipline requires

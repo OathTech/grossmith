@@ -51,14 +51,39 @@ existing profile until its owner lists it.
 
 A profile constrains grossmith's TAGS. Whether a tag's source forms fall
 inside a consumer's fragment is the consumer's rule, so the consumer checks
-the mapping with its own classifier. Examples of the mapping:
-- `defined_types` admits named integer types;
-- `methods` admits static calls to value-receiver methods;
-- `range` ranges over literal arrays and strings;
-- `strings` admits string literals in any expression, including constant
-  ones such as `"go"[1]`;
-- folds that observe slices and maps contain loops even when `loops` is
-  excluded. They are emitted only when `slices` or `maps` is allowed.
+the mapping with its own classifier. Each mapping below is emitted only
+when its own tag is allowed, but it brings in source forms that other tags
+also describe:
+
+- `loops`: loop headers compare (`i0 < N`) even when `comparisons` is
+  excluded.
+- `recover`: the guarded statement's recover block uses `if`, `!=`, a
+  comma-ok assertion to `error`, a call to `Error()`, a string literal,
+  and a bare call to the driver's `obsRecovered`.
+- `recover_wrapper`: `defer func() { if recover() != nil { ... } }()`
+  (`if`, `!=`, a closure, `defer`).
+- `observe_point` and `defer`: calls to the driver's `obs*` functions,
+  with string-literal arguments.
+- `order_witness`: a package-level `var wOrd int` and a top-level impure
+  function `wit`, called inside expressions, even when `helpers` is
+  excluded.
+- Observation folds over slices and maps contain loops even when `loops`
+  is excluded. They are emitted only when `slices` or `maps` is allowed.
+- `defined_types`: named integer types. `methods`: static calls to
+  value-receiver methods. `range`: ranges over literal arrays and
+  strings. `strings`: string literals anywhere, including constant
+  expressions such as `"go"[1]`.
+
+One form is emitted whatever the profile: in helper, method and battery
+function bodies the guaranteed non-constant value is the first parameter
+(or the receiver), and expressions that must not be constant convert it,
+as in `int8(p0)`. These conversions appear even when `conversions` is
+excluded. Gating them would change the programs existing seeds generate,
+so the info tag `p0_conversion` counts them instead. Every conversion
+between integer kinds is in F0 for gc-verified's classifier.
+
+`-verify` checks the constructs each case RECORDED, not its source text.
+`-replay` regenerates the source.
 
 ## Cross-check against gc-verified's classifier (2026-10-08)
 

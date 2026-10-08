@@ -315,6 +315,23 @@ func TestProfileBatch(t *testing.T) {
 		}
 		restore()
 	}
+	// G2 review finding 3: a case whose record promises a battery but
+	// has none at all (every battery file removed, digests rebound).
+	bdir := filepath.Join(out, "case_00003")
+	saved := t.TempDir()
+	os.Rename(filepath.Join(bdir, harness.FunctionsJSON), filepath.Join(saved, harness.FunctionsJSON))
+	os.Rename(filepath.Join(bdir, harness.BatteryDir), filepath.Join(saved, harness.BatteryDir))
+	rebind()
+	if _, err := harness.VerifyBatch(out); err != nil {
+		t.Fatalf("the rebound tree should pass the digest checks: %v", err)
+	}
+	if _, err := verifyProfile(out, info.IDs); err == nil || !strings.Contains(err.Error(), "has no functions.json") {
+		t.Fatalf("missing battery: %v", err)
+	}
+	os.Rename(filepath.Join(saved, harness.FunctionsJSON), filepath.Join(bdir, harness.FunctionsJSON))
+	os.Rename(filepath.Join(saved, harness.BatteryDir), filepath.Join(bdir, harness.BatteryDir))
+	rebind()
+
 	// profile.json left on disk but unlisted is refused by the digest
 	// layer itself.
 	m, err := harness.ReadManifest(out)

@@ -486,6 +486,9 @@ func (g *Generator) nonConstExpr(t Type, fuel int) value {
 	if g.pureMode {
 		// The environment's guaranteed int-ish variable: a helper's p0 or a
 		// method's receiver. A conversion of a variable is non-constant.
+		// Not gated on `conversions` (gating would re-map seeds whose
+		// swarm mix disables it); recorded instead (G2 review).
+		g.note(tagPureConversion)
 		return value{text: fmt.Sprintf("%s(%s)", t.GoName(), g.pureBase)}
 	}
 	return g.variable(t)
