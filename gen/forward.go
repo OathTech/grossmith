@@ -275,7 +275,7 @@ func (g *Generator) buildForwardSource(name string, slots []fwdSlot) ([]Type, st
 	for j := g.c.draw(2); j > 0; j-- {
 		params = append(params, pick(g.c, pool))
 	}
-	savedVars, savedRisk := g.vars, g.riskSpent
+	savedVars, savedRisk, savedWit := g.vars, g.riskSpent, g.witInStmt
 	g.vars = nil
 	g.pureMode = true
 	g.pureBase = "p0"
@@ -302,7 +302,7 @@ func (g *Generator) buildForwardSource(name string, slots []fwdSlot) ([]Type, st
 		}
 	})
 	body.line("return %s", strings.Join(rs, ", "))
-	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
+	g.vars, g.riskSpent, g.witInStmt, g.pureMode, g.pureBase = savedVars, savedRisk, savedWit, false, ""
 	g.mark("helpers")
 
 	ps := make([]string, len(params))

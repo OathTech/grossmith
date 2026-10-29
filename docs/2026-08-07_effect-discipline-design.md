@@ -62,6 +62,13 @@ this note (and, prospectively, future instruments):
   accumulator then reports HOW FAR evaluation proceeded — composing
   order-before-panic with R1's store-before-panic. Specified as
   intended behavior with a witness test, not left as an accident.
+  Amended 2026-10-29: the prefix is deterministic only when the panic
+  site is ordered against the wit calls — a call's own operand, or
+  another call. A hot non-call operand beside a wit call is
+  spec-unordered (the nightly's finding, seed 20261251 under the GoLean
+  profile), so the panic-risk budget now excludes witnesses from a
+  statement that spent it; the composition holds at statement
+  granularity.
 - **E4**: purity doctrine amendment (⚑ BRIEF edit): helpers are pure
   EXCEPT designated witness/effect helpers, individually tagged, whose
   effects satisfy E2. The blanket "pure helpers dissolve evaluation

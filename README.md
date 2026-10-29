@@ -104,7 +104,10 @@ names the recorded and current revisions, but those stamps come from Go's
 build information for the enclosing git repository. A binary built from an
 archive or worktree nested inside another checkout records that checkout's
 revision, so compare the recorded revision with the source you actually
-built.
+built. The 2026-10-29 witness/risk exclusion (an order-corner statement
+carries wit wraps or a hot panic site, never both) likewise moves every
+seed whose program drew both; the nightly's seed 20261251 is the recorded
+example.
 
 Use `-check` to rerun existing source without regenerating it:
 

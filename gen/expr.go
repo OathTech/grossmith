@@ -461,8 +461,9 @@ func (g *Generator) indexExpr(bound int) string {
 	// Index operands are an R2b witness site (the design note's "index
 	// chains"), wrapped centrally here so every index read participates.
 	// A wrapped constant index stays bound-limited, so array indices stay
-	// legal as runtime-checked non-constants; a wrapped panicky index
-	// accumulates its witness BEFORE the index panic fires (E3).
+	// legal as runtime-checked non-constants. A panicky index is never
+	// wrapped: it spent the statement's risk slot, which excludes
+	// witnesses (its panic is unordered against a sibling wit call).
 	return g.witness(value{text: out}, Int(0, false)).text
 }
 

@@ -329,3 +329,49 @@ func TestOrderWitnessPanicTruncation(t *testing.T) {
 		t.Fatalf("partial state = %d, want 1 (statement 2's store never landed)", got)
 	}
 }
+
+// TestOrderWitnessExcludesHotPanicSite: the panic-risk budget is
+// EXCLUSIVE with the witness. The spec orders calls among themselves,
+// not a call against a sibling non-call operand, so a wit call and a hot
+// panic site (variable divisor, raw index, ...) in one statement have
+// unspecified relative order — and under the recover wrapper the wOrd
+// snapshot after the panic would too (the 2026-10-29 nightly finding:
+// gc ran wit(..., 9) before `v5 / v5` panicked; GoLean's reversed choice
+// stream panicked first, 24 nights running). Two lines: the generator's
+// own accounting (a clash fails Generate, like a budget breach) and the
+// emitted text (no statement line holds both a wit( call and a hot
+// divisor/modulus or raw variable index — a textual speedbump: it
+// recognises the two common hot forms, not every risky arm). The
+// nightly's exact program (seed 20261251 under the GoLean profile's
+// masks) is the pinned regression seed.
+func TestOrderWitnessExcludesHotPanicSite(t *testing.T) {
+	hot := regexp.MustCompile(`[/%] \(?-?v\d+|v\d+\[-?v\d+\]`)
+	check := func(seed int64, cfg Config) {
+		c, err := New(cfg).Generate()
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
+		for i, line := range bytes.Split(c.Source, []byte("\n")) {
+			if bytes.Contains(line, []byte("wit(")) && hot.Match(line) {
+				t.Fatalf("seed %d: statement at line %d carries a wit call AND a hot panic site:\n%s\n\n%s",
+					seed, i+1, line, c.Source)
+			}
+		}
+	}
+	profile := func(cfg Config) Config {
+		cfg.NoObserve = []Shape{ShapeSlice, ShapeMap}
+		cfg.Exclude = []string{"defer", "observe_point", "recover"}
+		return cfg
+	}
+	// The nightly's program: swarm mix under the profile's masks.
+	cfg := DefaultConfig(20261251)
+	cfg.Swarm = true
+	check(20261251, profile(cfg))
+	// Forced-corner sweep, bare and under the profile's masks.
+	for seed := int64(78000); seed < 78400; seed++ {
+		cfg := DefaultConfig(seed)
+		cfg.Corner = "order"
+		check(seed, cfg)
+		check(seed, profile(cfg))
+	}
+}

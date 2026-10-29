@@ -429,6 +429,22 @@ type Generator struct {
 	// spend it, so every panic-path program has a unique possible panic.
 	// Multi-risk statements return later as a quotient-compared corner.
 	riskSpent bool
+	// witInStmt counts the order-witness wraps in the current statement
+	// context (reset with riskSpent). The budget is EXCLUSIVE with the
+	// witness: the spec orders calls against calls, never a call against
+	// a sibling NON-CALL operand, so a wit call and a hot panic site in
+	// one statement have unspecified relative order — and under the
+	// recover wrapper the snapshot of wOrd after the panic would too
+	// (2026-10-29: the nightly's 24-night finding, seed 20261251 under
+	// the GoLean profile — gc ran wit(..., 9) before `v5 / v5` panicked,
+	// GoLean's reversed choice stream panicked first). A statement
+	// carries the hot slot or witness wraps, never both; riskOK and
+	// witness() each yield to the other.
+	witInStmt int
+	// riskWitnessClash records a breach of that exclusion by a site that
+	// bypassed riskOK — an accounting bug, failed loudly by Generate like
+	// budgetBreached (white-box witness).
+	riskWitnessClash bool
 	// done makes a Generator single-use: a second Generate would re-append
 	// declarations and silently emit a corrupt program (review finding).
 	done bool
@@ -482,14 +498,25 @@ type ifaceType struct {
 // into expressions without multi-trap identity issues). Battery function
 // bodies are pure-mode but may opt back in (fnRisk); nothing calls them
 // from generated code, so the helper argument does not apply to them.
-func (g *Generator) riskOK() bool { return !g.riskSpent && (!g.pureMode || g.fnRisk) }
+// A statement that already carries an order-witness wrap has no slot
+// (the witness/risk exclusion, see witInStmt).
+func (g *Generator) riskOK() bool {
+	return !g.riskSpent && g.witInStmt == 0 && (!g.pureMode || g.fnRisk)
+}
 
-// resetRisk opens a fresh statement context for the panic-risk budget.
-func (g *Generator) resetRisk() { g.riskSpent = false }
+// resetRisk opens a fresh statement context for the panic-risk budget
+// and the witness count it excludes.
+func (g *Generator) resetRisk() { g.riskSpent, g.witInStmt = false, 0 }
 
-// spendRisk claims the statement's single panic-risk slot.
+// spendRisk claims the statement's single panic-risk slot. A caller that
+// reaches it past a witness wrap bypassed riskOK: the slot is refused
+// and the clash recorded for Generate to fail on.
 func (g *Generator) spendRisk() bool {
 	if g.riskSpent {
+		return false
+	}
+	if g.witInStmt > 0 {
+		g.riskWitnessClash = true
 		return false
 	}
 	g.riskSpent = true
@@ -768,6 +795,11 @@ func (g *Generator) Generate() (c Case, err error) {
 	if g.budgetBreached {
 		return Case{}, fmt.Errorf("gen: execution-budget accounting breach — a mandatory emission outran its floor (generator bug; seed %d)", g.cfg.Seed)
 	}
+	// Likewise a hot panic site drawn past a witness wrap in the same
+	// statement: the program would carry spec-unordered effects.
+	if g.riskWitnessClash {
+		return Case{}, fmt.Errorf("gen: panic-risk slot spent in a witnessed statement (generator bug; seed %d)", g.cfg.Seed)
+	}
 	observed := g.observe(stmts)
 	if g.wrapped {
 		// SITE encoding (2026-08-08 review, G1): the old message-prefix
@@ -813,7 +845,10 @@ func (g *Generator) Generate() (c Case, err error) {
 		// generator emits. Effects are confined to wOrd; wit calls sit in
 		// call-argument/operand position, which the spec orders
 		// left-to-right, so the accumulator value is a deterministic
-		// fingerprint of evaluation order. Emitted iff a wit call was.
+		// fingerprint of evaluation order — of calls against calls: a
+		// hot NON-CALL operand is unordered against a sibling wit call,
+		// so the risk budget keeps the two out of one statement
+		// (witInStmt). Emitted iff a wit call was.
 		out.WriteString("var wOrd int\n\n")
 		out.WriteString("func wit(x int, tag int) int {\n\twOrd = wOrd*31 + tag\n\treturn x\n}\n\n")
 	}
@@ -962,7 +997,7 @@ func (g *Generator) generateHelper(idx int) helper {
 		results = append(results, pick(g.c, pool))
 	}
 
-	savedVars, savedRisk := g.vars, g.riskSpent
+	savedVars, savedRisk, savedWit := g.vars, g.riskSpent, g.witInStmt
 	g.vars = nil
 	g.pureMode = true
 	g.pureBase = "p0"
@@ -988,7 +1023,7 @@ func (g *Generator) generateHelper(idx int) helper {
 		}
 	})
 	body.line("return %s", strings.Join(rs, ", "))
-	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
+	g.vars, g.riskSpent, g.witInStmt, g.pureMode, g.pureBase = savedVars, savedRisk, savedWit, false, ""
 	g.mark("helpers")
 
 	ps := make([]string, len(params))
@@ -1158,7 +1193,7 @@ func (g *Generator) generateMethod(di int) method {
 	}
 	result := pick(g.c, append(intTypes(), dt))
 
-	savedVars, savedRisk := g.vars, g.riskSpent
+	savedVars, savedRisk, savedWit := g.vars, g.riskSpent, g.witInStmt
 	g.vars = []binding{{name: "r", typ: dt}}
 	g.pureMode = true
 	g.pureBase = "r"
@@ -1177,7 +1212,7 @@ func (g *Generator) generateMethod(di int) method {
 		ret = g.expr(result, g.cfg.ExprFuel).text
 	})
 	body.line("return %s", ret)
-	g.vars, g.riskSpent, g.pureMode, g.pureBase = savedVars, savedRisk, false, ""
+	g.vars, g.riskSpent, g.witInStmt, g.pureMode, g.pureBase = savedVars, savedRisk, savedWit, false, ""
 	g.mark("methods")
 
 	ps := make([]string, len(params))
@@ -1241,12 +1276,18 @@ func (g *Generator) argList(params []Type, fuel int) string {
 // keeps wrapped and unwrapped operands mixed within a site. Wrapping
 // erases constness (a call is never a Go constant), which is exactly why
 // witness sites are the caller's choice: every named site tolerates a
-// non-constant operand.
+// non-constant operand. A statement whose panic-risk slot is spent gets
+// no wrap (the witness/risk exclusion, see witInStmt): the hot site's
+// panic is unordered against a sibling call, so the recovered wOrd
+// would depend on which came first.
 func (g *Generator) witness(v value, t Type) value {
 	if g.corner != "order" || g.pureMode || !g.enabled("order_witness") {
 		return v
 	}
 	if t.Shape != ShapeInt || t.Bits != 0 || t.Unsigned || t.Named != "" {
+		return v
+	}
+	if g.riskSpent {
 		return v
 	}
 	// Budget mask before the density draw (E6): the wrap costs two
@@ -1262,6 +1303,7 @@ func (g *Generator) witness(v value, t Type) value {
 		return v
 	}
 	g.witSeq++
+	g.witInStmt++
 	g.mark("order_witness")
 	// The wit helper's two lines execute per evaluation of this site (E6).
 	g.charge(satMul(2, g.execMul))

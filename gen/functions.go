@@ -146,11 +146,12 @@ func (g *Generator) generateFunction(idx int, perCall int64) (BatteryFunction, s
 	saved := struct {
 		vars                         []binding
 		risk, pure, fnRisk, bias, br bool
+		wit                          int
 		base                         string
 		left, liab, mul              int64
 		sink                         *int64
 	}{g.vars, g.riskSpent, g.pureMode, g.fnRisk, g.guardBias, g.budgetBreached,
-		g.pureBase, g.budgetLeft, g.floorLiability, g.execMul, g.costSink}
+		g.witInStmt, g.pureBase, g.budgetLeft, g.floorLiability, g.execMul, g.costSink}
 
 	g.vars = nil
 	g.pureMode, g.pureBase = true, "p0"
@@ -185,6 +186,7 @@ func (g *Generator) generateFunction(idx int, perCall int64) (BatteryFunction, s
 	breached := g.budgetBreached
 
 	g.vars, g.riskSpent, g.pureMode, g.fnRisk, g.guardBias, g.budgetBreached = saved.vars, saved.risk, saved.pure, saved.fnRisk, saved.bias, saved.br
+	g.witInStmt = saved.wit
 	g.pureBase, g.budgetLeft, g.floorLiability, g.execMul, g.costSink = saved.base, saved.left, saved.liab, saved.mul, saved.sink
 	if breached {
 		return BatteryFunction{}, "", fmt.Errorf("gen: battery function bf%d breached its per-call budget %d (generator bug; seed %d)", idx, perCall, g.cfg.Seed)
