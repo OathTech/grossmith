@@ -1,0 +1,6 @@
+# The GoLean commit the nightly campaign (.github/workflows/golean-nightly.yml)
+# checks out: a full 40-hex SHA of OathTech/golean, never a branch. Bump it on
+# purpose, in its own commit, after a green dispatch run against the candidate
+# (workflow_dispatch input golean_ref). It must descend from goleanMinRevision
+# in golean/checkout_test.go; the nightly's integration witnesses check that.
+6e05137a6fa7c49e72ab444a6ed51ddcd2452ac6

@@ -159,6 +159,14 @@ tests (`go test ./golean`) need `GOLEAN_CHECKOUT` pointing at a GoLean
 checkout at or after that revision; the default `deps/golean` fallback may
 be older.
 
+The nightly campaign (`.github/workflows/golean-nightly.yml`) runs against
+the GoLean commit named in `deps/golean.pin`, never GoLean's moving `main`:
+bump the pin in its own commit, after a `workflow_dispatch` run with
+`golean_ref` set to the candidate comes back green. Each night draws a
+disjoint seed window (the UTC date times 10000, plus the case index), so a
+finding names a seed that regenerates the case alone and never recurs by
+accident the next night.
+
 For adapters that cannot directly observe maps and slices, selected containers
 contribute scalar fingerprints. These capture current state on normal returns,
 early returns, and recovered panics. Fingerprints can collide; they offer less

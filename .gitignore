@@ -1,5 +1,6 @@
 deps/*
 !deps/go.mod
+!deps/golean.pin
 /out*/
 case*.bin
 .tmp/
